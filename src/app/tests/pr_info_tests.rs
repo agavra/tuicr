@@ -320,3 +320,86 @@ fn should_unreview_pr_description_on_clear_without_counting_it_as_a_file() {
     let message = app.message.as_ref().map(|m| m.content.clone());
     assert_eq!(message.as_deref(), Some("Unreviewed the PR description"));
 }
+
+fn draw_full(app: &mut App) -> String {
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| crate::ui::app_layout::render(frame, app))
+        .expect("draw frame");
+    let buffer = terminal.backend().buffer().clone();
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn should_lay_out_pr_description_at_real_width_on_first_frame() {
+    let body = "Ship it with a reasonably long description line";
+    for (mode, stale_width) in [
+        (crate::app::DiffViewMode::Unified, 0),
+        (crate::app::DiffViewMode::Unified, 8),
+        (crate::app::DiffViewMode::SideBySide, 0),
+        (crate::app::DiffViewMode::SideBySide, 8),
+    ] {
+        let mut app = build_pr_app();
+        let mut info = sample_pr_info();
+        info.details.body = body.to_string();
+        app.pr_info = Some(info);
+        app.diff_view_mode = mode;
+        app.diff_state.wrap_lines = true;
+        // What the first frame (0) or a pre-resize frame (8) leaves behind.
+        app.diff_state.viewport_width = stale_width;
+        app.rebuild_annotations();
+
+        let screen = draw_full(&mut app);
+
+        assert!(
+            screen.contains(body),
+            "{mode:?} stale width {stale_width}: description must not be wrapped at the stale width\n{screen}"
+        );
+    }
+}
+
+#[test]
+fn should_reuse_pr_info_rows_until_width_metadata_or_theme_changes() {
+    use crate::ui::pr_info_panel::pr_info_display_lines;
+    use std::sync::Arc;
+
+    let mut app = build_pr_app();
+    app.diff_state.viewport_width = 80;
+    let first = pr_info_display_lines(&app);
+    assert!(
+        Arc::ptr_eq(&first, &pr_info_display_lines(&app)),
+        "same width and metadata reuse the built rows"
+    );
+
+    app.diff_state.viewport_width = 60;
+    let narrower = pr_info_display_lines(&app);
+    assert!(!Arc::ptr_eq(&first, &narrower), "width change rebuilds");
+
+    app.pr_info.as_mut().unwrap().details.body = "Changed body".to_string();
+    let edited = pr_info_display_lines(&app);
+    assert!(!Arc::ptr_eq(&narrower, &edited), "metadata change rebuilds");
+    assert!(edited.iter().any(|line| {
+        line.spans
+            .iter()
+            .any(|s| s.content.contains("Changed body"))
+    }));
+
+    app.set_theme(Theme::light());
+    assert!(
+        !Arc::ptr_eq(&edited, &pr_info_display_lines(&app)),
+        "theme change rebuilds"
+    );
+
+    app.session.pr_description_reviewed = true;
+    assert_eq!(pr_info_display_lines(&app).len(), 1, "reviewed collapses");
+    app.session.pr_description_reviewed = false;
+    assert!(pr_info_display_lines(&app).len() > 1, "expands again");
+}

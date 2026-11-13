@@ -1362,6 +1362,10 @@ pub struct App {
     pub current_pr_head: Option<String>,
     /// Extended PR metadata rendered at the top of the diff view. Populated in PR mode.
     pub pr_info: Option<crate::forge::traits::PullRequestInfo>,
+    /// Built PR-info panel rows, reused until the width, PR metadata or theme
+    /// changes (see `ui::pr_info_panel::pr_info_display_lines`).
+    pub(crate) pr_info_rows_cache:
+        std::cell::RefCell<Option<crate::ui::pr_info_panel::PrInfoRowsCache>>,
     /// Whether pull-request CI checks are fetched and rendered. Defaults to
     /// false; configured before the first direct PR load.
     pub show_pr_checks: bool,

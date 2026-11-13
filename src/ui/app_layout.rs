@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Flex, Layout, Rect},
     widgets::Block,
 };
 
@@ -216,6 +216,15 @@ fn active_confirm(app: &App) -> Option<ConfirmAction> {
     (app.input_mode == InputMode::Confirm)
         .then_some(app.pending_confirm)
         .flatten()
+}
+
+/// Rect of `percent_x` x `percent_y` of `area`, centered in it.
+pub(crate) fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
+    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
+    let [area] = vertical.areas(area);
+    let [area] = horizontal.areas(area);
+    area
 }
 
 #[cfg(test)]

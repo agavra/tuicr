@@ -1,7 +1,11 @@
+use std::sync::Arc;
+
 use ratatui::{
     style::Style,
     text::{Line, Span},
 };
+
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::forge::traits::{
@@ -36,18 +40,39 @@ pub fn pr_info_render_height(app: &App) -> usize {
 /// the description is marked reviewed. Every counter of PR-info rows
 /// (annotations, row heights, search) goes through this so they agree with
 /// the renderer.
-pub fn pr_info_display_lines(app: &App) -> Vec<Line<'static>> {
+///
+/// The full panel (markdown highlighting included) is expensive and is asked
+/// for once per row by the height counters, so it is built once per
+/// (width, PR metadata) and shared. `App::set_theme` drops the cache.
+pub fn pr_info_display_lines(app: &App) -> Arc<Vec<Line<'static>>> {
     let Some(info) = app.pr_info.as_ref() else {
-        return Vec::new();
+        return Arc::new(Vec::new());
     };
     if app.session.pr_description_reviewed {
-        return vec![build_collapsed_pr_info_line(info, &app.theme)];
+        return Arc::new(vec![build_collapsed_pr_info_line(info, &app.theme)]);
     }
-    build_pr_info_lines(
-        info,
-        pr_info_content_width(app.diff_state.viewport_width),
-        &app.theme,
-    )
+    let width = pr_info_content_width(app.diff_state.viewport_width);
+    let mut cache = app.pr_info_rows_cache.borrow_mut();
+    if let Some(hit) = cache
+        .as_ref()
+        .filter(|hit| hit.width == width && hit.info == *info)
+    {
+        return Arc::clone(&hit.rows);
+    }
+    let rows = Arc::new(build_pr_info_lines(info, width, &app.theme));
+    *cache = Some(PrInfoRowsCache {
+        width,
+        info: info.clone(),
+        rows: Arc::clone(&rows),
+    });
+    rows
+}
+
+/// Memoised output of `pr_info_display_lines`, keyed on width and PR metadata.
+pub(crate) struct PrInfoRowsCache {
+    width: usize,
+    info: PullRequestInfo,
+    rows: Arc<Vec<Line<'static>>>,
 }
 
 /// Single row a reviewed PR description collapses to. The `✓` mirrors the
@@ -90,7 +115,8 @@ pub fn append_pr_info_section(
     line_idx: &mut usize,
     current_line_idx: usize,
 ) {
-    for mut pr_line in pr_info_display_lines(app) {
+    for pr_line in pr_info_display_lines(app).iter() {
+        let mut pr_line = pr_line.clone();
         let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
         pr_line.spans.insert(
             0,
@@ -274,7 +300,7 @@ pub fn build_pr_info_lines(
         push_blank(&mut lines);
         push_wrapped_line(&mut lines, "Checks".to_string(), content_width);
         for check in &info.checks {
-            lines.push(format_check_line(check, content_width, theme));
+            lines.push(format_check_line(check, theme));
         }
     }
 
@@ -285,13 +311,7 @@ pub fn issue_comment_display_lines(
     comment: &PullRequestIssueComment,
     viewport_width: usize,
 ) -> usize {
-    let content_area = viewport_width.saturating_sub(10);
-    let visual_lines: usize = comment
-        .body
-        .split('\n')
-        .map(|line| comment_panel::wrap_segments(line, content_area).len())
-        .sum();
-    2 + visual_lines
+    comment_panel::comment_box_rows(&comment.body, viewport_width)
 }
 
 fn format_issue_comment_lines(
@@ -334,16 +354,10 @@ fn push_blank(lines: &mut Vec<Line<'static>>) {
     }
 }
 
-fn format_check_line(
-    check: &PullRequestCheckStatus,
-    content_width: usize,
-    theme: &Theme,
-) -> Line<'static> {
+fn format_check_line(check: &PullRequestCheckStatus, theme: &Theme) -> Line<'static> {
+    // The summary stays one span; the outer wrap pass breaks the row.
     let summary = format!("{} {}", check_glyph(check), format_check_summary(check));
-    let mut spans = Vec::new();
-    for chunk in wrap_text(&summary, content_width) {
-        spans.push(Span::raw(chunk));
-    }
+    let mut spans = vec![Span::raw(summary)];
     if let Some(url) = check.url.as_deref().filter(|url| !url.is_empty()) {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(url.to_string(), styles::dim_style(theme)));
@@ -359,7 +373,7 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     let mut current = String::new();
     let mut current_width = 0usize;
     for word in text.split_whitespace() {
-        let word_width = word.chars().count();
+        let word_width = word.width();
         if current_width == 0 {
             current.push_str(word);
             current_width = word_width;
@@ -424,7 +438,7 @@ fn check_glyph(check: &PullRequestCheckStatus) -> &'static str {
         .or(check.status.as_deref())
         .unwrap_or("");
     match outcome {
-        "SUCCESS" | "COMPLETED" if check.conclusion.as_deref() == Some("SUCCESS") => "✓",
+        "SUCCESS" => "✓",
         "FAILURE" | "ERROR" | "TIMED_OUT" | "ACTION_REQUIRED" => "✗",
         "PENDING" | "IN_PROGRESS" | "QUEUED" | "WAITING" => "○",
         _ => "·",
@@ -516,6 +530,31 @@ mod tests {
                 .iter()
                 .any(|line| { line.contains("https://github.com/owner/repo/actions/runs/1") })
         );
+    }
+
+    #[test]
+    fn should_keep_check_summary_spaces_when_narrow() {
+        let mut info = sample_info();
+        info.checks[0].name = "build and test linux".to_string();
+        info.checks[0].url = None;
+        let lines = build_pr_info_lines(&info, 20, &Theme::dark());
+        let check = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .find(|text| text.contains("build and test"))
+            .expect("check row");
+        assert_eq!(check, "✓ build and test linux · COMPLETED · SUCCESS");
+    }
+
+    #[test]
+    fn should_wrap_text_by_display_width() {
+        // Two 3-char CJK words are 6 cells each: 13 cells cannot fit in 7.
+        assert_eq!(wrap_text("日本語 日本語", 7), vec!["日本語", "日本語"]);
     }
 
     #[test]

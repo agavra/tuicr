@@ -24,11 +24,17 @@ impl App {
         self.input_mode = InputMode::ThemePicker;
     }
 
+    /// Replace the active theme and drop caches built with the old one.
+    pub(crate) fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+        self.pr_info_rows_cache.replace(None);
+    }
+
     /// `Esc` on the picker itself (not the filter draft): revert the live
     /// preview and close.
     pub fn cancel_theme_picker(&mut self) {
         if let Some(original) = self.theme_picker.original.take() {
-            self.theme = original;
+            self.set_theme(original);
             // Undo the scrub-time rehighlight of the current file (see
             // `preview_theme`) so nothing is left recolored under a theme
             // that was never actually chosen.
@@ -99,7 +105,7 @@ impl App {
         };
         match resolve_theme_name(name, &theme_dir) {
             Ok(Some((theme, warnings))) => {
-                self.theme = theme;
+                self.set_theme(theme);
                 self.rehighlight_current_file();
                 self.show_theme_preview_warnings(&warnings);
             }
@@ -123,7 +129,7 @@ impl App {
         };
         match resolve_theme_name(name, &theme_dir) {
             Ok(Some((theme, warnings))) => {
-                self.theme = theme;
+                self.set_theme(theme);
                 self.show_theme_preview_warnings(&warnings);
                 self.announce_session_theme(name);
                 self.rehighlight_all_files();

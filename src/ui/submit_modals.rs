@@ -1,9 +1,10 @@
 //! Modal renderers for `:submit*`: the unmappable-comment resolver and the
 //! final confirmation. Driven off `App::submit_state`.
 
+use crate::ui::app_layout::centered_rect;
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Flex, Layout, Rect},
+    layout::{Alignment, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
@@ -287,14 +288,6 @@ fn prompt_spans(stale: bool, event: SubmitEvent) -> Vec<Span<'static>> {
 /// Falls back to the full frame when no diff area is laid out yet.
 fn modal_anchor(app: &App, fallback: Rect) -> Rect {
     app.diff_area.unwrap_or(fallback)
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
-    let [area] = vertical.areas(area);
-    let [area] = horizontal.areas(area);
-    area
 }
 
 #[cfg(test)]

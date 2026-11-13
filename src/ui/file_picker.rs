@@ -2,9 +2,10 @@
 //! `:theme` picker (`ui/theme_picker.rs`); this module only renders the
 //! current `FilePickerState`.
 
+use crate::ui::app_layout::centered_rect;
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Flex, Layout, Rect},
+    layout::{Alignment, Constraint, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
@@ -116,12 +117,4 @@ pub fn render_file_picker(frame: &mut Frame, app: &mut App) {
         ))),
         footer_area,
     );
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
-    let [area] = vertical.areas(area);
-    let [area] = horizontal.areas(area);
-    area
 }

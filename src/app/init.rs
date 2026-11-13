@@ -562,6 +562,7 @@ impl App {
             pr_submit_rx: None,
             current_pr_head: None,
             pr_info: None,
+            pr_info_rows_cache: std::cell::RefCell::new(None),
             show_pr_checks: false,
             show_pr_comments: true,
             should_quit: false,

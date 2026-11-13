@@ -1,6 +1,6 @@
+use crate::ui::app_layout::centered_rect;
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
@@ -67,6 +67,19 @@ pub(crate) fn wrap_segments(text: &str, content_area: usize) -> Vec<&str> {
         remaining = rest;
     }
     segments
+}
+
+/// Rows a comment box with this body occupies (top border + wrapped body +
+/// bottom border) at `viewport_width`. Shared by local and PR issue comments
+/// so the annotation counters match `format_comment_lines`.
+pub(crate) fn comment_box_rows(body: &str, viewport_width: usize) -> usize {
+    // indicator(1) + border_prefix(7) + safety_margin(2) = 10
+    let content_area = viewport_width.saturating_sub(10);
+    let visual_lines: usize = body
+        .split('\n')
+        .map(|line| wrap_segments(line, content_area).len())
+        .sum();
+    2 + visual_lines
 }
 
 fn comment_content_width(width: usize) -> usize {
@@ -405,9 +418,8 @@ pub fn format_remote_thread_lines(
     // Remote review threads always anchor on a specific line/range, so the
     // top corner is a tee — the bar painter draws the rest going up.
     let mut result = Vec::new();
-    let mut iter = thread.comments.iter().peekable();
     let mut is_first = true;
-    while let Some(comment) = iter.next() {
+    for comment in &thread.comments {
         let author = comment.author.as_deref().unwrap_or("unknown");
         if is_first {
             let mut badge_text = format!("[{} @{author}", forge_badge_label(forge_kind));
@@ -443,7 +455,6 @@ pub fn format_remote_thread_lines(
         }
 
         is_first = false;
-        let _ = iter.peek();
     }
 
     result.push(Line::from(vec![Span::styled(
@@ -652,14 +663,6 @@ pub fn render_confirm_dialog(frame: &mut Frame, app: &App, message: &str) {
         .style(styles::popup_style(theme))
         .alignment(ratatui::layout::Alignment::Center);
     frame.render_widget(paragraph, inner);
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
-    let [area] = vertical.areas(area);
-    let [area] = horizontal.areas(area);
-    area
 }
 
 #[cfg(test)]
