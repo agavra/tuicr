@@ -360,6 +360,7 @@ impl App {
             review_comment_ids,
             moved_to_summary_count: summary_items.len(),
             head_sha_snapshot: state.commit_id.clone(),
+            pr_head_sha: pr.key.head_sha.clone(),
             repository: pr.key.repository.clone(),
             pr_number: pr.key.number,
             started_at: Instant::now(),
@@ -434,23 +435,22 @@ impl App {
         };
         self.pr_submit_rx = None;
         let in_flight = self.pr_submit_state.take();
-        let PrSubmitEvent::Done {
-            repository,
-            pr_number,
-            head_sha,
-            result,
-        } = event;
+        let PrSubmitEvent::Done { result, .. } = event;
 
-        // Stale-result discard: if the user reloaded the PR mid-submit, the
-        // active head SHA may have moved. Drop the result rather than
-        // silently mutating the wrong session.
+        // The review is already posted, so a result for a PR that is no
+        // longer open must still reach its own session: otherwise those
+        // drafts stay `LocalDraft` and get submitted a second time.
         let Some(in_flight) = in_flight else {
             return;
         };
-        let stale = in_flight.repository != repository
-            || in_flight.pr_number != pr_number
-            || in_flight.head_sha_snapshot != head_sha;
-        if stale {
+        if !self.pr_result_is_current(
+            &in_flight.repository,
+            in_flight.pr_number,
+            &in_flight.pr_head_sha,
+        ) {
+            if let Ok(response) = result {
+                self.persist_submit_receipt_to_origin(&in_flight, &response);
+            }
             self.set_message("Discarded stale submit result (PR was reloaded)".to_string());
             return;
         }
@@ -546,6 +546,39 @@ impl App {
         in_flight: &SubmitInFlightState,
         response: &crate::forge::traits::GhCreateReviewResponse,
     ) {
+        Self::apply_submit_lifecycle(&mut self.session, in_flight, response);
+        self.rebuild_annotations();
+    }
+
+    /// Write the submit receipt into the session of the PR it was posted to,
+    /// when that is not the PR now on screen. Best-effort: a missing or
+    /// unreadable session leaves the drafts as they were.
+    fn persist_submit_receipt_to_origin(
+        &self,
+        in_flight: &SubmitInFlightState,
+        response: &crate::forge::traits::GhCreateReviewResponse,
+    ) {
+        let key = crate::forge::traits::PrSessionKey::new(
+            in_flight.repository.clone(),
+            in_flight.pr_number,
+            in_flight.pr_head_sha.clone(),
+        );
+        let Ok(Some((_path, origin))) = crate::persistence::storage::load_pr_session(&key) else {
+            return;
+        };
+        let _ = crate::persistence::storage::save_session_by_identity(&origin.clone(), |latest| {
+            let mut session = latest.unwrap_or(origin);
+            Self::apply_submit_lifecycle(&mut session, in_flight, response);
+            session.updated_at = chrono::Utc::now();
+            Ok((session, ()))
+        });
+    }
+
+    fn apply_submit_lifecycle(
+        session: &mut crate::model::ReviewSession,
+        in_flight: &SubmitInFlightState,
+        response: &crate::forge::traits::GhCreateReviewResponse,
+    ) {
         use crate::forge::submit::SubmitEvent;
         use crate::model::comment::CommentLifecycleState;
 
@@ -566,13 +599,13 @@ impl App {
             return;
         }
 
-        for comment in self.session.review_comments.iter_mut() {
+        for comment in session.review_comments.iter_mut() {
             if target_ids.contains(comment.id.as_str()) {
                 comment.lifecycle_state = new_state;
                 comment.remote_review_id = Some(review_id.clone());
             }
         }
-        for review in self.session.files.values_mut() {
+        for review in session.files.values_mut() {
             for comment in review.file_comments.iter_mut() {
                 if target_ids.contains(comment.id.as_str()) {
                     comment.lifecycle_state = new_state;
@@ -588,7 +621,6 @@ impl App {
                 }
             }
         }
-        self.rebuild_annotations();
     }
 
     /// Drop locked (`Submitted`/`PushedDraft`) comments from the session.

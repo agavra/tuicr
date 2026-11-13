@@ -330,7 +330,7 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 9. **`gh api` writes the response body to STDOUT on non-2xx**, while STDERR only carries the short status line. The error formatter combines both so the user sees the actual GitHub error.
 
-10. **Stale-result discard for submit needs (repo, PR#, head SHA).** A different PR opened mid-submit could otherwise consume the result and apply lifecycle writes to the wrong comments.
+10. **Stale-result discard for submit needs (repo, PR#, head SHA).** A different PR opened mid-submit could otherwise consume the result and apply lifecycle writes to the wrong comments. The check is against the *live* `diff_source` (`App::pr_result_is_current`), never the in-flight snapshot, and applies to reload and range-reload results too (range also needs `commit_selection_range == request.range`). `SubmitInFlightState::pr_head_sha` is the session head; `head_sha_snapshot` is the subset `commit_id`. A successful receipt for a PR no longer open is written to that PR's own session, not dropped (else its drafts get posted twice). Entering a PR and widening to all commits cancel in-flight reload/range state.
 
 11. **TestBackend modal sizing.** A 60%×40% modal on 120×24 is 72×9 (7 content rows after borders). The submit confirmation modal needs 70% height to fit. The submit-action picker needs 50% height to fit the footer line.
 
