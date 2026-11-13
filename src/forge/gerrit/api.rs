@@ -42,8 +42,8 @@ use crate::vcs::git::raw::run_git_diff;
 use crate::vcs::slice_context_lines;
 
 use super::models::{
-    GerritChange, GerritComment, PATCHSET_LEVEL, mark_drafts, summaries_from_drafts,
-    threads_from_comment_map,
+    EMPTY_TREE_SHA, GerritChange, GerritComment, PATCHSET_LEVEL, mark_drafts,
+    summaries_from_drafts, threads_from_comment_map,
 };
 
 /// Gerrit's canonical SSH port. A remote on this port is a Gerrit remote, full
@@ -412,7 +412,7 @@ impl GerritBackend {
     /// patch-set ref when they don't. Gerrit changes live under
     /// `refs/changes/*`, which a normal clone does not carry.
     fn ensure_revision_local(&self, root: &Path, pr: &PullRequestDetails) -> bool {
-        if commit_present(root, &pr.base_sha) && commit_present(root, &pr.head_sha) {
+        if revision_present(root, pr) {
             return true;
         }
         let Some(remote) = remote_for_repository(root, &pr.repository) else {
@@ -431,7 +431,7 @@ impl GerritBackend {
             Some(root),
             ["fetch", "--quiet", remote.as_str(), ref_name.as_str()],
         );
-        commit_present(root, &pr.base_sha) && commit_present(root, &pr.head_sha)
+        revision_present(root, pr)
     }
 
     /// File content at the request's revision: local blob first, REST fallback.
@@ -657,8 +657,19 @@ impl ForgeBackend for GerritBackend {
     }
 
     fn list_pull_request_commits(&self, pr: &PullRequestDetails) -> Result<Vec<PullRequestCommit>> {
-        let change = self.fetch_change(&pr.repository, pr.number)?;
-        Ok(change.into_commits())
+        // A Gerrit change is one commit per patch set, and the pinned details
+        // already describe it, so there is nothing to refetch.
+        if pr.head_sha.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(vec![PullRequestCommit {
+            oid: pr.head_sha.clone(),
+            short_oid: pr.head_sha.chars().take(8).collect(),
+            summary: pr.title.clone(),
+            body: Some(pr.body.clone()).filter(|body| !body.is_empty()),
+            author: pr.author.clone().unwrap_or_default(),
+            timestamp: pr.updated_at,
+        }])
     }
 
     fn create_review(
@@ -854,6 +865,16 @@ fn comment_input(comment: &InlineComment) -> Map<String, Value> {
         );
     }
     input
+}
+
+// ---------- Local git helpers ----------
+
+/// Both ends of the change's diff are available. A root change's base is the
+/// empty tree, which git knows without storing it, so it bypasses the
+/// commit check (the empty tree is a tree, not a commit).
+fn revision_present(root: &Path, pr: &PullRequestDetails) -> bool {
+    (pr.base_sha == EMPTY_TREE_SHA || commit_present(root, &pr.base_sha))
+        && commit_present(root, &pr.head_sha)
 }
 
 /// Name of the remote in `root` that points at `repo`, preferring `origin`.
@@ -1833,7 +1854,7 @@ mod tests {
                 r#")]}'
                 {"src/main.rs": [
                     {"id": "reply", "in_reply_to": "pub", "line": 7, "message": "because",
-                     "patch_set": 2, "updated": "2013-02-21 12:00:00.000000000"},
+                     "unresolved": true, "patch_set": 2, "updated": "2013-02-21 12:00:00.000000000"},
                     {"id": "fresh", "line": 12, "message": "[ISSUE] looks wrong",
                      "unresolved": true, "patch_set": 2,
                      "updated": "2013-02-21 12:30:00.000000000"}
@@ -1857,6 +1878,62 @@ mod tests {
         assert!(fresh.is_active(), "an unresolved draft shows by default");
         assert!(fresh.comments[0].is_draft);
         assert_eq!(fresh.comments[0].author.as_deref(), Some("me"));
+    }
+
+    #[test]
+    fn should_build_the_only_commit_from_the_details_without_a_request() {
+        // given
+        let (backend, http) = backend_with(true, vec![]);
+        let mut pr = details();
+        pr.title = "Implement feature X".to_string();
+        pr.body = "Longer rationale.".to_string();
+        pr.author = Some("alice".to_string());
+        // when
+        let commits = backend.list_pull_request_commits(&pr).expect("commits");
+        // then
+        assert!(http.calls().is_empty(), "details already describe it");
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].oid, "abc1234");
+        assert_eq!(commits[0].summary, "Implement feature X");
+        assert_eq!(commits[0].body.as_deref(), Some("Longer rationale."));
+        assert_eq!(commits[0].author, "alice");
+        // and a subject-only message has no body, an unknown head no commit
+        pr.body.clear();
+        let commits = backend.list_pull_request_commits(&pr).expect("commits");
+        assert_eq!(commits[0].body, None);
+        pr.head_sha.clear();
+        assert!(backend.list_pull_request_commits(&pr).unwrap().is_empty());
+    }
+
+    #[test]
+    fn should_diff_a_root_change_against_the_empty_tree() {
+        // given — a checkout whose only commit has no parent
+        let dir = tempfile::tempdir().expect("tempdir");
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(dir.path())
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "{args:?}");
+            String::from_utf8(out.stdout).unwrap()
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "root"]);
+        let mut pr = details();
+        pr.head_sha = git(&["rev-parse", "HEAD"]).trim().to_string();
+        pr.base_sha = EMPTY_TREE_SHA.to_string();
+        let (backend, _http) = backend_with(true, vec![]);
+        let backend = backend.with_local_checkout(Some(dir.path().to_path_buf()));
+        // when
+        let patches = backend.get_pull_request_diff(&pr).expect("diff");
+        // then
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].new_path.as_deref(), Some(Path::new("a.txt")));
+        assert_eq!(patches[0].status, crate::model::FileStatus::Added);
     }
 
     #[test]
