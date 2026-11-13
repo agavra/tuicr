@@ -178,7 +178,7 @@ impl ExportConfig {
 #[serde(default)]
 pub struct GeneratedConfig {
     /// Whether to hide the diff body of generated files, leaving the header.
-    /// `Space` still expands an individual file.
+    /// Defaults to true. `Space` still expands an individual file.
     pub collapse: Option<bool>,
     /// Whether generated files count toward the reviewed/total progress
     /// indicator. Deliberately independent of `collapse`: expanding a
@@ -189,7 +189,7 @@ pub struct GeneratedConfig {
 
 impl GeneratedConfig {
     pub fn collapse(&self) -> bool {
-        self.collapse.unwrap_or(false)
+        self.collapse.unwrap_or(true)
     }
 
     pub fn count(&self) -> bool {
@@ -2538,12 +2538,11 @@ scope_line = "no"
     // generated
 
     #[test]
-    fn generated_accessors_reproduce_pre_feature_behavior() {
-        // Both defaults are load-bearing: they are what makes an absent
-        // `[generated]` section behave exactly as tuicr did before generated
-        // files were recognized, and skip attribute detection entirely.
+    fn generated_accessors_default_to_collapsing_and_counting() {
+        // An absent `[generated]` section collapses generated files and
+        // still counts them toward review progress.
         let cfg = GeneratedConfig::default();
-        assert!(!cfg.collapse());
+        assert!(cfg.collapse());
         assert!(cfg.count());
     }
 

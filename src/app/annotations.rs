@@ -197,10 +197,12 @@ impl App {
                     .push(AnnotatedLine::FileHeader { file_idx });
             }
 
-            // Reviewed files normally collapse to their header in continuous
-            // view. A summary jump can reveal its target file without clearing
-            // the persisted marker. Single-file view also shows reviewed file
-            // bodies, under a banner that needs a matching annotation row.
+            // Reviewed and generated files normally collapse to their header in
+            // continuous view, and `Space` can collapse or expand any file. A
+            // summary jump, `--line`, or a new comment reveals its target file
+            // without clearing the persisted marker. Single-file view also
+            // shows reviewed file bodies, under a banner that needs a matching
+            // annotation row.
             if self.should_collapse_file(file_idx) {
                 continue;
             }

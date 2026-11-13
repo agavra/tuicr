@@ -16,6 +16,8 @@
 - GitHub-style continuous diff in the terminal. Scroll through every changed file in one stream.
 - PR-style comments at the line, range, file, and review level. 
 - Review tracking at file or hunk granularity, persisted across sessions.
+- Generated files (`linguist-generated` or `gitlab-generated` in `.gitattributes`) start collapsed, one
+  `Space` away from their diff.
 - Three export targets: push a real review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit, copy
   structured markdown to your clipboard, or pipe to stdout.
 - Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
@@ -351,7 +353,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `r` | Toggle file reviewed (on the PR description: mark it reviewed and collapse it to one row) |
 | `R` | Toggle hunk reviewed |
 | `e` | Open focused file in `$EDITOR` (in PR review: the PR's revision, as a read-only copy when the checkout differs) |
-| `Space` | Expand / collapse a generated file |
+| `Space` | Expand / collapse the current file (generated files start collapsed) |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:submit` | Push review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit |

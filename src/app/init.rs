@@ -672,7 +672,7 @@ impl App {
             saved_inline_selection: None,
             path_filter: path_filter.map(|s| s.to_string()),
             export: ExportConfig::default(),
-            collapse_generated: false,
+            collapse_generated: true,
             count_generated: true,
             generated_files: HashSet::new(),
             collapse_override: HashMap::new(),

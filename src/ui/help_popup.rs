@@ -960,7 +960,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :set generated!",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  Toggle generated file collapse"),
+            Span::raw("  Toggle generated file collapse (alias :generated)"),
         ]),
         Line::from(vec![
             Span::styled(

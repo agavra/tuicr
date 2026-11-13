@@ -1140,6 +1140,17 @@ pub enum CommentVimPending {
     Cancel,
 }
 
+/// A file's `Space` collapse state, pinned to the content it was set on.
+///
+/// The hash is what retires the override: once a reload or a different
+/// commit selection changes the file's diff, the override stops applying, so
+/// new changes are never left hidden behind an old manual collapse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollapseOverride {
+    pub collapsed: bool,
+    pub content_hash: u64,
+}
+
 pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
@@ -1388,9 +1399,10 @@ pub struct App {
     /// focused file in the diff panel instead of the continuous-scroll
     /// concatenation. Toggled via `:focus` or `<leader>f`.
     pub is_single_file_view: bool,
-    /// A reviewed file whose body is temporarily expanded after opening a
-    /// comment from the summary view. The persisted reviewed marker is left
-    /// untouched; this is only a presentation override for continuous view.
+    /// A collapsed file (reviewed, generated, or collapsed with `Space`) whose
+    /// body is temporarily expanded after opening a comment from the summary
+    /// view. The persisted reviewed marker is left untouched; this is only a
+    /// presentation override for continuous view.
     pub revealed_reviewed_file: Option<PathBuf>,
     /// A reviewed hunk whose body is temporarily expanded after opening a
     /// comment from the summary view. The persisted reviewed marker is left
@@ -1511,7 +1523,7 @@ pub struct App {
     pub export: ExportConfig,
     /// Whether files `.gitattributes` marks as code-generated have their diff
     /// body hidden. Seeded from `[generated] collapse`, flipped at runtime by
-    /// `:set generated!`. Off by default, so tuicr ships behaving as before.
+    /// `:set generated!`. On by default.
     pub collapse_generated: bool,
     /// Whether generated files count toward review progress. Seeded from
     /// `[generated] count`, which defaults to true. Independent of
@@ -1530,7 +1542,7 @@ pub struct App {
     /// the reviewed/generated defaults `should_collapse_file` would otherwise
     /// derive. Keyed by path rather than index so it survives the reloads
     /// and commit-selection changes that replace `diff_files` wholesale.
-    pub collapse_override: HashMap<PathBuf, bool>,
+    pub collapse_override: HashMap<PathBuf, CollapseOverride>,
     /// Display paths already looked up in `.gitattributes`.
     ///
     /// Doubles as the staleness test for detection: a diff file set with no

@@ -781,7 +781,7 @@ impl App {
         // effect, so discard the probe memo and re-detect eagerly — the height
         // math below runs before `rebuild_annotations` would have done it.
         // `collapse_override` survives: it is the user's override, not
-        // detected state.
+        // detected state, and it retires itself once a file's content changes.
         self.invalidate_generated_detection();
         self.detect_generated_files();
 

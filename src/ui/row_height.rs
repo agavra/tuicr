@@ -257,7 +257,7 @@ fn full_row_text(app: &App, idx: usize, annotation: &AnnotatedLine) -> String {
         AnnotatedLine::FileHeader { file_idx } => match app.diff_files.get(*file_idx) {
             Some(file) => format!(
                 "{indicator_spaced}{}{}",
-                diff_view::file_header_prefix_text(app, file),
+                diff_view::file_header_prefix_text(app, *file_idx, file),
                 diff_view::HEADER_RULE
             ),
             None => indicator_spaced.to_string(),

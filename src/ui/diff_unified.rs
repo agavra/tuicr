@@ -326,7 +326,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         // the wide bar of `═` characters confuses horizontal scrolling.
         if !app.is_single_file_view {
             let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
-            let header_text = crate::ui::diff_view::file_header_prefix_text(app, file);
+            let header_text = crate::ui::diff_view::file_header_prefix_text(app, file_idx, file);
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
                 Span::styled(header_text, styles::file_header_style(&app.theme)),

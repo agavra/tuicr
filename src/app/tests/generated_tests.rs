@@ -135,16 +135,33 @@ fn collapsed(app: &App, path: &str) -> bool {
     app.should_collapse_file(idx)
 }
 
-#[test]
-fn default_config_never_reads_gitattributes() {
-    // Both features default off, so detection must not run at all — not even
-    // to open the repository. An empty probe set is the observable proof.
-    let dir = repo();
-    let app = app_in(&dir, &["api.pb.go", "src/main.rs"]);
+fn opted_out_app(dir: &TempDir, paths: &[&str]) -> App {
+    let mut app = app_in(dir, paths);
+    app.apply_generated_config(&GeneratedConfig {
+        collapse: Some(false),
+        count: None,
+    });
+    app
+}
 
-    assert!(app.generated_probed.is_empty());
-    assert!(app.generated_files.is_empty());
+#[test]
+fn default_config_collapses_generated_files() {
+    let dir = repo();
+    let mut app = app_in(&dir, &["api.pb.go", "src/main.rs"]);
+    app.apply_generated_config(&GeneratedConfig::default());
+
+    assert!(collapsed(&app, "api.pb.go"));
+    assert!(!collapsed(&app, "src/main.rs"));
+}
+
+#[test]
+fn opting_out_shows_generated_files_undecorated() {
+    let dir = repo();
+    let app = opted_out_app(&dir, &["api.pb.go", "src/main.rs"]);
+
     assert!(!collapsed(&app, "api.pb.go"));
+    assert!(!app.is_generated_file(Path::new("api.pb.go")));
+    assert_eq!(app.generated_file_count(), 0);
 }
 
 #[test]
@@ -203,10 +220,10 @@ fn turning_collapse_off_stops_collapsing_already_detected_files() {
 fn toggling_collapse_off_returns_to_the_starting_appearance() {
     // The detected set is kept when the feature is switched off so that
     // re-enabling is free, which means the decoration must not be keyed off
-    // it: `:generated` twice from a default start has to land back exactly
+    // it: `:generated` twice from an opted-out start has to land back exactly
     // where it began, labels and counter included.
     let dir = repo();
-    let mut app = app_in(&dir, &["api.pb.go", "src/main.rs"]);
+    let mut app = opted_out_app(&dir, &["api.pb.go", "src/main.rs"]);
 
     let initial = (
         app.is_generated_file(Path::new("api.pb.go")),
@@ -250,7 +267,7 @@ fn count_exclusion_alone_still_labels_without_being_collapsed() {
     let dir = repo();
     let mut app = app_in(&dir, &["api.pb.go", "src/main.rs"]);
     app.apply_generated_config(&GeneratedConfig {
-        collapse: None,
+        collapse: Some(false),
         count: Some(false),
     });
     app.diff_state.current_file_idx = app
@@ -311,7 +328,7 @@ fn detection_runs_for_count_exclusion_without_collapse() {
     let dir = repo();
     let mut app = app_in(&dir, &["api.pb.go", "src/main.rs"]);
     app.apply_generated_config(&GeneratedConfig {
-        collapse: None,
+        collapse: Some(false),
         count: Some(false),
     });
 
@@ -336,7 +353,7 @@ fn reviewing_an_excluded_generated_file_cannot_overrun_the_total() {
     let dir = repo();
     let mut app = app_in(&dir, &["api.pb.go", "src/main.rs"]);
     app.apply_generated_config(&GeneratedConfig {
-        collapse: None,
+        collapse: Some(false),
         count: Some(false),
     });
 
@@ -420,4 +437,279 @@ fn detection_is_skipped_when_there_is_no_local_repository_root() {
 
     assert!(app.generated_files.is_empty());
     assert!(!collapsed(&app, "api.pb.go"));
+}
+
+#[test]
+fn gitlab_generated_files_collapse_like_linguist_generated_ones() {
+    let dir = repo();
+    fs::write(
+        dir.path().join(".gitattributes"),
+        "github.ts linguist-generated=true\ngitlab.ts gitlab-generated\n",
+    )
+    .expect("write .gitattributes");
+    let app = collapsing_app(&dir, &["github.ts", "gitlab.ts", "src/main.rs"]);
+
+    assert!(collapsed(&app, "github.ts"));
+    assert!(collapsed(&app, "gitlab.ts"));
+    assert!(!collapsed(&app, "src/main.rs"));
+}
+
+#[test]
+fn space_expands_a_collapsed_gitlab_generated_file() {
+    let dir = repo();
+    fs::write(
+        dir.path().join(".gitattributes"),
+        "gitlab.ts gitlab-generated\n",
+    )
+    .expect("write .gitattributes");
+    let mut app = collapsing_app(&dir, &["gitlab.ts"]);
+    app.focused_panel = FocusedPanel::Diff;
+    app.diff_state.current_file_idx = 0;
+    assert!(collapsed(&app, "gitlab.ts"));
+
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::ToggleExpand);
+    assert!(!collapsed(&app, "gitlab.ts"));
+
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::ToggleExpand);
+    assert!(collapsed(&app, "gitlab.ts"));
+}
+
+#[test]
+fn reviewing_a_space_expanded_file_collapses_it_again() {
+    // `r` restates how a file should look, so an earlier `Space` override must
+    // not keep a freshly reviewed file open.
+    let dir = repo();
+    let mut app = collapsing_app(&dir, &["api.pb.go"]);
+    app.diff_state.current_file_idx = 0;
+    assert!(app.toggle_file_collapse());
+    assert!(!collapsed(&app, "api.pb.go"));
+
+    app.toggle_reviewed_for_file_idx(0, false);
+    assert!(collapsed(&app, "api.pb.go"));
+
+    // Un-reviewing falls back to the generated default, which still collapses.
+    app.toggle_reviewed_for_file_idx(0, false);
+    assert!(collapsed(&app, "api.pb.go"));
+}
+
+#[test]
+fn space_is_inert_in_single_file_view() {
+    // Single-file view never collapses, so an override would claim a change
+    // that never reaches the screen.
+    let dir = repo();
+    let mut app = collapsing_app(&dir, &["api.pb.go"]);
+    app.diff_state.current_file_idx = 0;
+    app.is_single_file_view = true;
+
+    assert!(!app.toggle_file_collapse());
+    assert!(app.collapse_override.is_empty());
+}
+
+#[test]
+fn summary_jump_reveals_a_collapsed_generated_file() {
+    let dir = repo();
+    let mut app = collapsing_app(&dir, &["api.pb.go", "src/main.rs"]);
+    let path = PathBuf::from("api.pb.go");
+    let comment = crate::model::Comment::new(
+        "check this".to_string(),
+        crate::model::CommentType::from_id("note"),
+        None,
+    );
+    let comment_id = comment.id.clone();
+    app.session
+        .files
+        .get_mut(&path)
+        .expect("registered review file")
+        .file_comments
+        .push(comment);
+    app.rebuild_annotations();
+    assert!(collapsed(&app, "api.pb.go"));
+
+    assert!(app.jump_to_summary_comment(SummaryCommentTarget::File {
+        path: path.clone(),
+        comment_id,
+    }));
+
+    assert!(!collapsed(&app, "api.pb.go"));
+    assert!(matches!(
+        app.line_annotations.get(app.diff_state.cursor_line),
+        Some(AnnotatedLine::FileComment { .. })
+    ));
+}
+
+fn note(text: &str) -> crate::model::Comment {
+    crate::model::Comment::new(
+        text.to_string(),
+        crate::model::CommentType::from_id("note"),
+        None,
+    )
+}
+
+/// `file(path)` with one line edited, so its content hash differs.
+fn edited_file(path: &str) -> DiffFile {
+    let mut edited = file(path);
+    edited.hunks[0].lines[0].content = "edited".to_string();
+    edited.content_hash = DiffFile::compute_content_hash(&edited.hunks);
+    edited
+}
+
+#[test]
+fn space_after_a_summary_jump_collapses_the_revealed_file() {
+    let dir = repo();
+    let mut app = collapsing_app(&dir, &["api.pb.go"]);
+    let path = PathBuf::from("api.pb.go");
+    let comment = note("check this");
+    let comment_id = comment.id.clone();
+    app.session
+        .files
+        .get_mut(&path)
+        .expect("registered review file")
+        .file_comments
+        .push(comment);
+    app.rebuild_annotations();
+    assert!(app.jump_to_summary_comment(SummaryCommentTarget::File { path, comment_id }));
+    assert!(!collapsed(&app, "api.pb.go"));
+
+    assert!(app.toggle_file_collapse());
+    assert!(collapsed(&app, "api.pb.go"));
+}
+
+#[test]
+fn space_above_the_first_file_does_not_toggle_file_zero() {
+    let dir = repo();
+    let mut app = collapsing_app(&dir, &["api.pb.go"]);
+    app.session.review_comments.push(note("overall"));
+    app.rebuild_annotations();
+    app.diff_state.cursor_line = 0;
+    app.diff_state.current_file_idx = 0;
+    assert!(app.is_cursor_in_overview());
+
+    assert!(!app.toggle_file_collapse());
+    assert!(app.collapse_override.is_empty());
+    assert!(collapsed(&app, "api.pb.go"));
+}
+
+#[test]
+fn start_line_reaches_a_line_in_a_collapsed_generated_file() {
+    let dir = repo();
+    let mut app = collapsing_app(&dir, &["api.pb.go"]);
+    app.diff_state.current_file_idx = 0;
+    app.diff_state.viewport_height = 20;
+    app.pending_start_line = Some(2);
+
+    assert!(app.apply_pending_start_line());
+
+    assert!(!collapsed(&app, "api.pb.go"));
+    assert!(matches!(
+        app.line_annotations.get(app.diff_state.cursor_line),
+        Some(AnnotatedLine::DiffLine {
+            new_lineno: Some(2),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_comment_started_on_a_collapsed_header_opens_the_file() {
+    let dir = repo();
+    let mut app = collapsing_app(&dir, &["api.pb.go"]);
+    app.diff_state.cursor_line = 0;
+    assert!(matches!(
+        app.line_annotations.first(),
+        Some(AnnotatedLine::FileHeader { file_idx: 0 })
+    ));
+
+    app.enter_comment_mode(true, None);
+    assert!(!collapsed(&app, "api.pb.go"));
+
+    app.comment_buffer = "generated, but wrong".to_string();
+    app.save_comment();
+    assert!(
+        app.line_annotations
+            .iter()
+            .any(|annotation| matches!(annotation, AnnotatedLine::FileComment { file_idx: 0, .. }))
+    );
+}
+
+#[test]
+fn collapsed_header_counts_hidden_comments() {
+    let dir = repo();
+    let mut app = collapsing_app(&dir, &["api.pb.go", "src/main.rs"]);
+    let review = app
+        .session
+        .files
+        .get_mut(&PathBuf::from("api.pb.go"))
+        .expect("registered review file");
+    review.file_comments.push(note("file"));
+    review
+        .line_comments
+        .entry(2)
+        .or_default()
+        .push(note("line"));
+    app.rebuild_annotations();
+
+    let idx = |app: &App, path: &str| {
+        app.diff_files
+            .iter()
+            .position(|f| f.display_path() == Path::new(path))
+            .expect("file in diff set")
+    };
+    assert_eq!(app.collapsed_file_comment_count(idx(&app, "api.pb.go")), 2);
+    assert_eq!(
+        app.collapsed_file_comment_count(idx(&app, "src/main.rs")),
+        0
+    );
+
+    // Expanded, the comments render inline and the header stops counting.
+    app.diff_state.current_file_idx = idx(&app, "api.pb.go");
+    app.diff_state.cursor_line = app.calculate_file_scroll_offset(app.diff_state.current_file_idx);
+    assert!(app.toggle_file_collapse());
+    assert_eq!(app.collapsed_file_comment_count(idx(&app, "api.pb.go")), 0);
+}
+
+#[test]
+fn opting_out_in_config_rebuilds_annotations_built_with_the_defaults() {
+    let dir = repo();
+    let mut app = app_in(&dir, &["api.pb.go"]);
+    let has_body = |app: &App| {
+        app.line_annotations
+            .iter()
+            .any(|annotation| matches!(annotation, AnnotatedLine::HunkHeader { file_idx: 0, .. }))
+    };
+    assert!(!has_body(&app), "built with collapse on by default");
+
+    app.apply_generated_config(&GeneratedConfig {
+        collapse: Some(false),
+        count: None,
+    });
+
+    assert!(has_body(&app));
+}
+
+#[test]
+fn an_override_stops_applying_once_the_file_changes() {
+    let dir = repo();
+    let mut app = collapsing_app(&dir, &["src/main.rs"]);
+    app.diff_state.current_file_idx = 0;
+    assert!(app.toggle_file_collapse());
+    assert!(collapsed(&app, "src/main.rs"));
+
+    app.diff_files = vec![edited_file("src/main.rs")];
+    app.rebuild_annotations();
+
+    assert!(!collapsed(&app, "src/main.rs"));
+}
+
+#[test]
+fn clear_drops_space_overrides() {
+    let dir = repo();
+    let mut app = collapsing_app(&dir, &["api.pb.go"]);
+    app.diff_state.current_file_idx = 0;
+    assert!(app.toggle_file_collapse());
+    assert!(!collapsed(&app, "api.pb.go"));
+
+    app.clear_comments(crate::model::ClearScope::CommentsAndReviewed);
+
+    assert!(app.collapse_override.is_empty());
+    assert!(collapsed(&app, "api.pb.go"));
 }

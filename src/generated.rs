@@ -21,7 +21,10 @@ pub fn detect_generated(repo_root: &Path, paths: &[PathBuf]) -> HashSet<PathBuf>
     if paths.is_empty() {
         return generated;
     }
-    let Ok(repo) = Repository::discover(repo_root) else {
+    // `open`, not `discover`: `repo_root` is already the repository root, and
+    // walking upward from a mercurial or non-colocated jujutsu root could
+    // land in an unrelated enclosing git repository and read its attributes.
+    let Ok(repo) = Repository::open(repo_root) else {
         return generated;
     };
     for path in paths {
@@ -110,6 +113,48 @@ mod tests {
         let generated = detect(&dir, &["dash.pb.go", "value.pb.go", "bang.pb.go"]);
 
         assert!(generated.is_empty(), "unexpected: {generated:?}");
+    }
+
+    #[test]
+    fn detects_gitlab_generated_with_an_explicit_true_value() {
+        let dir = repo_with_attributes("api.ts gitlab-generated=true\n");
+
+        assert_eq!(
+            detect(&dir, &["api.ts"]),
+            HashSet::from([PathBuf::from("api.ts")])
+        );
+    }
+
+    #[test]
+    fn treats_gitlab_generated_opt_out_forms_as_not_generated() {
+        let dir = repo_with_attributes(
+            "dash.ts -gitlab-generated\nvalue.ts gitlab-generated=false\nbang.ts !gitlab-generated\n",
+        );
+
+        let generated = detect(&dir, &["dash.ts", "value.ts", "bang.ts"]);
+
+        assert!(generated.is_empty(), "unexpected: {generated:?}");
+    }
+
+    #[test]
+    fn per_file_opt_out_excepts_a_directory_wide_gitlab_rule() {
+        let dir = repo_with_attributes("gen/** gitlab-generated\ngen/keep.ts -gitlab-generated\n");
+
+        let generated = detect(&dir, &["gen/api.ts", "gen/keep.ts"]);
+
+        assert_eq!(generated, HashSet::from([PathBuf::from("gen/api.ts")]));
+    }
+
+    #[test]
+    fn does_not_read_attributes_from_an_enclosing_repository() {
+        // A mercurial or non-colocated jujutsu root nested inside an unrelated
+        // git checkout must not pick up that checkout's attributes.
+        let outer = repo_with_attributes("*.pb.go linguist-generated=true\n");
+        let inner = outer.path().join("inner");
+        fs::create_dir(&inner).expect("failed to create inner dir");
+        let paths = vec![PathBuf::from("api.pb.go")];
+
+        assert!(detect_generated(&inner, &paths).is_empty());
     }
 
     #[test]
