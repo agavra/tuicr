@@ -664,11 +664,12 @@ pub fn parse_bitbucket_remote_url(remote_url: &str) -> Option<ForgeRepository> {
     bitbucket_repository_from_path(BITBUCKET_CLOUD_HOST, path)
 }
 
-/// True only for Bitbucket Cloud. `altssh.bitbucket.org` is the SSH-over-443
-/// transport host used on networks that block port 22; it maps back to the
-/// same Cloud instance.
+/// True only for Bitbucket Cloud. `ssh.bitbucket.org` serves SSH on port 22;
+/// `altssh.bitbucket.org` serves SSH on port 443. Both map to the same Cloud
+/// instance.
 fn is_bitbucket_cloud_host(host: &str) -> bool {
     host.eq_ignore_ascii_case(BITBUCKET_CLOUD_HOST)
+        || host.eq_ignore_ascii_case("ssh.bitbucket.org")
         || host.eq_ignore_ascii_case("altssh.bitbucket.org")
         || host.eq_ignore_ascii_case("api.bitbucket.org")
 }
