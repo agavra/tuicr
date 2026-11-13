@@ -409,7 +409,11 @@ fn handle_copy_pr_url(app: &mut App) {
     };
     let url = pr.url.clone();
 
-    match copy_text_to_clipboard_with(&url, app.clipboard_override.as_deref()) {
+    match copy_text_to_clipboard_with(
+        &url,
+        app.clipboard_override.as_deref(),
+        app.clipboard_command.as_deref(),
+    ) {
         Ok(true) => app.set_message("PR URL copied to clipboard (via terminal)"),
         Ok(false) => app.set_message("PR URL copied to clipboard"),
         Err(e) => app.set_warning(format!("Failed to copy PR URL: {e}")),
@@ -444,6 +448,7 @@ fn handle_export(app: &mut App) {
             &app.forge_review_threads,
             slug.as_deref(),
             app.clipboard_override.as_deref(),
+            app.clipboard_command.as_deref(),
         ) {
             Ok(msg) => app.set_message(msg),
             Err(e) => app.set_warning(format!("{e}")),
@@ -467,7 +472,11 @@ fn handle_copy_comment_at_cursor(app: &mut App) {
         }
         return;
     };
-    match copy_text_to_clipboard_with(&content, app.clipboard_override.as_deref()) {
+    match copy_text_to_clipboard_with(
+        &content,
+        app.clipboard_override.as_deref(),
+        app.clipboard_command.as_deref(),
+    ) {
         Ok(true) => app.set_message("Comment copied to clipboard (via terminal)"),
         Ok(false) => app.set_message("Comment copied to clipboard"),
         Err(e) => app.set_warning(format!("{e}")),
@@ -1300,6 +1309,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.forge_review_threads,
                         slug.as_deref(),
                         app.clipboard_override.as_deref(),
+                        app.clipboard_command.as_deref(),
                     ) {
                         Ok(msg) => app.set_message(msg),
                         Err(e) => app.set_warning(format!("{e}")),

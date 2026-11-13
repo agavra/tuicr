@@ -184,12 +184,14 @@ pub fn export_to_clipboard(
         remote_threads,
         session_slug,
         None,
+        None,
     )
 }
 
 /// Like [`export_to_clipboard`], but honors a user-configured ordered
 /// override (the `clipboard` config key). `None` uses automatic detection,
 /// so the default export path is unchanged.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn export_to_clipboard_with(
     session: &ReviewSession,
     diff_source: &DiffSource,
@@ -198,6 +200,7 @@ pub(crate) fn export_to_clipboard_with(
     remote_threads: &[RemoteReviewThread],
     session_slug: Option<&str>,
     clipboard_override: Option<&[CopyMethod]>,
+    clipboard_command: Option<&str>,
 ) -> Result<String> {
     let content = generate_export_content(
         session,
@@ -207,7 +210,8 @@ pub(crate) fn export_to_clipboard_with(
         remote_threads,
         session_slug,
     )?;
-    let via_terminal = copy_text_to_clipboard_with(&content, clipboard_override)?;
+    let via_terminal =
+        copy_text_to_clipboard_with(&content, clipboard_override, clipboard_command)?;
     Ok(if via_terminal {
         "Review copied to clipboard (via terminal)".to_string()
     } else {
@@ -219,7 +223,7 @@ pub(crate) fn export_to_clipboard_with(
 /// detection. Returns `Ok(true)` if the terminal relay (tmux / OSC 52) was
 /// used, `Ok(false)` if a direct system clipboard handled it.
 pub fn copy_text_to_clipboard(text: &str) -> Result<bool> {
-    copy_text_to_clipboard_with(text, None)
+    copy_text_to_clipboard_with(text, None, None)
 }
 
 /// Like [`copy_text_to_clipboard`], but honors a user-configured ordered
@@ -228,7 +232,13 @@ pub fn copy_text_to_clipboard(text: &str) -> Result<bool> {
 pub(crate) fn copy_text_to_clipboard_with(
     text: &str,
     clipboard_override: Option<&[CopyMethod]>,
+    clipboard_command: Option<&str>,
 ) -> Result<bool> {
+    if let Some(command) = clipboard_command
+        && try_clipboard_command(command, text)
+    {
+        return Ok(false);
+    }
     for method in copy_method_order(&ClipboardEnv::detect(), clipboard_override) {
         match method {
             CopyMethod::Pbcopy if try_clipboard_cmd("pbcopy", &[], text) => return Ok(false),
@@ -249,6 +259,15 @@ pub(crate) fn copy_text_to_clipboard_with(
     }
     // Breaks loudly if a future branch forgets to add it
     unreachable!("copy_method_order must end with TerminalRelay")
+}
+
+/// Run the user's `clipboard_command` through the shell with the text on stdin.
+fn try_clipboard_command(command: &str, text: &str) -> bool {
+    if cfg!(windows) {
+        try_clipboard_cmd("cmd", &["/C", command], text)
+    } else {
+        try_clipboard_cmd("sh", &["-c", command], text)
+    }
 }
 
 /// Try xclip (X11) then wl-copy (Wayland). Returns true if either succeeds.
@@ -2178,6 +2197,23 @@ mod tests {
             copy_method_order(&env, None),
             vec![CopyMethod::TerminalRelay]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_command_receives_text_on_stdin() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.txt");
+        let command = format!("cat > '{}'", out.display());
+        assert!(try_clipboard_command(&command, "hello\nworld"));
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "hello\nworld");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failing_clipboard_command_lets_the_normal_order_run() {
+        assert!(!try_clipboard_command("exit 1", "hello"));
+        assert!(!try_clipboard_command("no-such-tuicr-command", "hello"));
     }
 
     #[test]

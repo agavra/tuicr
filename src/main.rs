@@ -397,6 +397,7 @@ fn main() -> anyhow::Result<()> {
         }
         app.export = cfg.resolved_export();
         startup_warnings.extend(app.apply_clipboard_config(cfg.clipboard.as_deref()));
+        app.clipboard_command = cfg.clipboard_command.clone();
         if cfg.cursor_line == Some(false) {
             app.cursor_line_highlight = false;
         }

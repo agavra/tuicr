@@ -1201,6 +1201,8 @@ pub struct App {
     /// Ordered clipboard-mechanism override from the `clipboard` config key
     /// (`None` = automatic detection). Set by [`App::apply_clipboard_config`].
     pub(crate) clipboard_override: Option<Vec<crate::output::markdown::CopyMethod>>,
+    /// `clipboard_command` config key, tried before any other method.
+    pub clipboard_command: Option<String>,
 
     pub file_list_state: FileListState,
     pub comment_navigator_state: CommentNavigatorState,
