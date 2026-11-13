@@ -21,10 +21,11 @@ use crate::forge::remote_comments::{
 };
 use crate::forge::traits::{
     ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestReviewRecord,
-    PullRequestSummary, commit_message_body,
+    PullRequestSummary,
 };
 use crate::model::FileStatus;
 use crate::vcs::git::raw::FileMetadata;
+use crate::vcs::split_commit_message;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct BbDiffStatFile {
@@ -320,18 +321,13 @@ impl BbCommitAuthor {
 impl BbCommit {
     pub fn into_pull_request_commit(self) -> PullRequestCommit {
         let short_oid: String = self.hash.chars().take(7).collect();
-        let summary = self
-            .message
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        let (subject, body) = split_commit_message(&self.message);
+        let summary = subject.trim().to_string();
         PullRequestCommit {
             oid: self.hash,
             short_oid,
             summary,
-            body: commit_message_body(&self.message),
+            body,
             author: self.author.map(|author| author.label()).unwrap_or_default(),
             timestamp: self.date,
         }

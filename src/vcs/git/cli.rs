@@ -24,6 +24,7 @@ use crate::vcs::{
     container_file_paths, enhance_with_full_file_highlight, slice_context_lines, tabify,
 };
 
+use super::repository::summary_and_body;
 use super::{
     GitRepoMode, RevisionExpression, git_bool_config_enabled, git_command_error,
     git_fsmonitor_config_enabled, run_git_command,
@@ -1158,7 +1159,7 @@ fn parse_commit_record(
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or_default();
     let full_message = fields.next().unwrap_or("(no message)");
-    let (summary, body) = parse_commit_message(full_message);
+    let (summary, body) = summary_and_body(full_message);
     let branch_name = branch_tip_names
         .get(&id)
         .and_then(|names| names.first().cloned());
@@ -1176,21 +1177,6 @@ fn parse_commit_record(
         author,
         time,
     })
-}
-
-fn parse_commit_message(message: &str) -> (String, Option<String>) {
-    let mut lines = message.lines();
-    let summary = lines.next().unwrap_or("(no message)").to_string();
-    let body_text: String = lines
-        .skip_while(|l| l.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let body = if body_text.trim().is_empty() {
-        None
-    } else {
-        Some(body_text)
-    };
-    (summary, body)
 }
 
 fn empty_tree_oid(workdir: &Path) -> Result<String> {

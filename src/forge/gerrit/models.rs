@@ -19,8 +19,9 @@ use crate::forge::remote_comments::{
     RemoteReviewThread,
 };
 use crate::forge::traits::{
-    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary, commit_message_body,
+    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
 };
+use crate::vcs::split_commit_message;
 
 /// Gerrit's timestamp format: UTC, space-separated, nanosecond precision.
 const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.f";
@@ -188,7 +189,7 @@ impl GerritChange {
                 // A Gerrit change is one commit, so its body is the commit
                 // message minus the subject line.
                 let body = commit
-                    .and_then(|c| commit_message_body(&c.message))
+                    .and_then(|c| split_commit_message(&c.message).1)
                     .unwrap_or_default();
                 (sha.clone(), base, body)
             }
@@ -230,7 +231,7 @@ impl GerritChange {
                 body: revision
                     .commit
                     .as_ref()
-                    .and_then(|commit| commit_message_body(&commit.message)),
+                    .and_then(|commit| split_commit_message(&commit.message).1),
                 author,
                 timestamp,
             }],

@@ -27,6 +27,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::{Map, Value, json};
 
 use crate::error::{Result, TuicrError};
+use crate::forge::local_git::{commit_present, read_blob};
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::submit::{GhSide, InlineComment, SubmitEvent};
 use crate::forge::traits::{
@@ -410,7 +411,7 @@ impl GerritBackend {
     /// patch-set ref when they don't. Gerrit changes live under
     /// `refs/changes/*`, which a normal clone does not carry.
     fn ensure_revision_local(&self, root: &Path, pr: &PullRequestDetails) -> bool {
-        if sha_present(root, &pr.base_sha) && sha_present(root, &pr.head_sha) {
+        if commit_present(root, &pr.base_sha) && commit_present(root, &pr.head_sha) {
             return true;
         }
         let Some(remote) = remote_for_repository(root, &pr.repository) else {
@@ -429,7 +430,7 @@ impl GerritBackend {
             Some(root),
             ["fetch", "--quiet", remote.as_str(), ref_name.as_str()],
         );
-        sha_present(root, &pr.base_sha) && sha_present(root, &pr.head_sha)
+        commit_present(root, &pr.base_sha) && commit_present(root, &pr.head_sha)
     }
 
     /// File content at the request's revision: local blob first, REST fallback.
@@ -848,23 +849,6 @@ fn comment_input(comment: &InlineComment) -> Map<String, Value> {
         );
     }
     input
-}
-
-// ---------- Local git helpers (mirror az) ----------
-
-fn sha_present(root: &Path, sha: &str) -> bool {
-    if sha.is_empty() {
-        return false;
-    }
-    let spec = format!("{sha}^{{commit}}");
-    run_command_output("git", Some(root), ["cat-file", "-e", spec.as_str()]).is_ok()
-}
-
-/// Read a git blob via `git show <sha>:<path>`. `None` on any failure so
-/// callers fall back to the REST API.
-fn read_blob(root: &Path, sha: &str, path: &Path) -> Option<String> {
-    let spec = format!("{}:{}", sha, path.to_string_lossy());
-    run_command_output("git", Some(root), ["show", spec.as_str()]).ok()
 }
 
 /// Name of the remote in `root` that points at `repo`, preferring `origin`.

@@ -19,22 +19,17 @@ use crate::vcs::traits::{
 use crate::vcs::whitespace::{WhitespaceComparison, materialize_diff};
 use crate::vcs::{
     BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files, slice_context_lines,
+    split_commit_message,
 };
 
-/// Parse an hg description into (summary, optional body).
-fn parse_hg_description(desc: &str) -> (String, Option<String>) {
-    let mut lines = desc.lines();
-    let summary = lines.next().unwrap_or("(no message)").to_string();
-    let body_text: String = lines
-        .skip_while(|l| l.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let body = if body_text.trim().is_empty() {
-        None
-    } else {
-        Some(body_text)
-    };
-    (summary, body)
+/// Split an hg description into (summary, optional body). Only a description
+/// with no first line at all gets the placeholder.
+fn summary_and_body(desc: &str) -> (String, Option<String>) {
+    if desc.is_empty() {
+        return ("(no message)".to_string(), None);
+    }
+    let (subject, body) = split_commit_message(desc);
+    (subject.to_string(), body)
 }
 
 /// Mercurial backend implementation using hg CLI commands
@@ -384,7 +379,7 @@ impl VcsBackend for HgBackend {
 
             let id = parts[0].to_string();
             let short_id = parts[1].to_string();
-            let (summary, body) = parse_hg_description(parts[2]);
+            let (summary, body) = summary_and_body(parts[2]);
             let author = parts[3].to_string();
 
             // hgdate format is "unix_timestamp timezone_offset"
@@ -506,7 +501,7 @@ impl VcsBackend for HgBackend {
             }
             let id = parts[0].to_string();
             let short_id = parts[1].to_string();
-            let (summary, body) = parse_hg_description(parts[2]);
+            let (summary, body) = summary_and_body(parts[2]);
             let author = parts[3].to_string();
             let time = parts[4]
                 .split_whitespace()
@@ -655,6 +650,17 @@ mod tests {
     use crate::model::LineOrigin;
     use crate::vcs::RevisionDiffTarget;
     use std::fs;
+
+    #[test]
+    fn should_use_the_placeholder_only_when_there_is_no_first_line() {
+        // given / when / then
+        assert_eq!(summary_and_body(""), ("(no message)".to_string(), None));
+        assert_eq!(summary_and_body("  \n"), ("  ".to_string(), None));
+        assert_eq!(
+            summary_and_body("\nBody"),
+            (String::new(), Some("Body".to_string()))
+        );
+    }
 
     /// Check if hg command is available
     fn hg_available() -> bool {
