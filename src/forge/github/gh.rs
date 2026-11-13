@@ -268,9 +268,15 @@ where
             "--json".to_string(),
             PR_LIST_JSON_FIELDS.to_string(),
         ];
-        if query.scope == PullRequestListScope::ReviewRequested {
+        let search = match query.scope {
+            PullRequestListScope::Open => None,
+            PullRequestListScope::ReviewRequested => Some("review-requested:@me"),
+            // Leaves out PRs that reach the user only through a team request.
+            PullRequestListScope::PersonallyRequested => Some("user-review-requested:@me"),
+        };
+        if let Some(search) = search {
             args.push("--search".to_string());
-            args.push("review-requested:@me".to_string());
+            args.push(search.to_string());
         }
         let output = self.run_gh(args, &query.repository.host)?;
         let rows: Vec<GhPullRequestSummary> = serde_json::from_str(&output)?;
@@ -1889,6 +1895,38 @@ Match host github-work
                 PR_LIST_JSON_FIELDS,
                 "--search",
                 "review-requested:@me",
+            ]
+        );
+    }
+
+    #[test]
+    fn list_pull_requests_can_filter_to_personally_requested() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        backend
+            .list_pull_requests(PullRequestListQuery::first_page_with_scope(
+                repo(),
+                1,
+                PullRequestListScope::PersonallyRequested,
+            ))
+            .unwrap();
+
+        let calls = backend.runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            vec![
+                "pr",
+                "list",
+                "--repo",
+                "agavra/tuicr",
+                "--state",
+                "open",
+                "--limit",
+                "2",
+                "--json",
+                PR_LIST_JSON_FIELDS,
+                "--search",
+                "user-review-requested:@me",
             ]
         );
     }

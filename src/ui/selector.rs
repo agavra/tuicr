@@ -198,6 +198,7 @@ fn pr_scope_prefix(scope: PullRequestListScope) -> &'static str {
     match scope {
         PullRequestListScope::Open => "",
         PullRequestListScope::ReviewRequested => "requested · ",
+        PullRequestListScope::PersonallyRequested => "requested (me) · ",
     }
 }
 
@@ -620,9 +621,16 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
                     .to_string()
             }
             TargetTab::PullRequests => {
-                let scope_hint = match app.pr_tab.scope() {
-                    PullRequestListScope::Open => "r requested",
-                    PullRequestListScope::ReviewRequested => "r all PRs",
+                // Name the scope `r` switches to next, which depends on
+                // the scopes the forge supports.
+                let next_scope = app
+                    .pr_tab
+                    .repository()
+                    .map(|repo| app.pr_tab.scope().next_for(repo.kind))
+                    .unwrap_or(PullRequestListScope::ReviewRequested);
+                let scope_hint = match next_scope {
+                    PullRequestListScope::Open => "r all PRs".to_string(),
+                    other => format!("r {}", other.label()),
                 };
                 format!("   j/k navigate · ↵ open · {scope_hint} · / filter · esc back")
             }
@@ -1202,7 +1210,7 @@ mod selector_render_snapshot_tests {
         );
         let footer = row_text(&buffer, buffer.area.height - 1);
         assert!(
-            footer.contains("r all PRs"),
+            footer.contains("r requested (me)"),
             "expected footer toggle hint, got: {footer:?}"
         );
     }

@@ -335,7 +335,11 @@ where
             "--per-page".to_string(),
             requested.min(100).to_string(),
         ];
-        if query.scope == PullRequestListScope::ReviewRequested {
+        // `PersonallyRequested` is not in GitLab's scope cycle.
+        if matches!(
+            query.scope,
+            PullRequestListScope::ReviewRequested | PullRequestListScope::PersonallyRequested
+        ) {
             args.push("--reviewer=@me".to_string());
         }
         // GitLab caps per_page at 100, so larger picker windows need multiple

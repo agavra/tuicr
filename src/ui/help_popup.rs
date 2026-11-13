@@ -408,7 +408,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  r         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle PRs requesting your review"),
+            Span::raw("Cycle PR scope: all / requested / requested (me) on GitHub"),
         ]),
         Line::from(vec![
             Span::styled(
