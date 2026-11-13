@@ -4,7 +4,7 @@ use ratatui::{
     widgets::Block,
 };
 
-use crate::app::{App, ConfirmAction, InputMode};
+use crate::app::{App, ConfirmAction, FileListPosition, InputMode};
 use crate::ui::comment_navigator::render_comment_navigator;
 use crate::ui::diff_view::render_diff_view;
 use crate::ui::file_list::render_file_list;
@@ -143,43 +143,54 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     if app.show_file_list {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(20), // File list
-                Constraint::Percentage(80), // Diff view
-            ])
-            .split(content_area);
+        const SIDEBAR: Constraint = Constraint::Percentage(20);
+        const DIFF: Constraint = Constraint::Percentage(80);
+        let (sidebar_area, diff_area) = match app.file_list_position {
+            FileListPosition::Left => {
+                let chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([SIDEBAR, DIFF])
+                    .split(content_area);
+                (chunks[0], chunks[1])
+            }
+            FileListPosition::Right => {
+                let chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([DIFF, SIDEBAR])
+                    .split(content_area);
+                (chunks[1], chunks[0])
+            }
+        };
 
         let comment_items = app.build_comment_navigator_items();
         if !comment_items.is_empty()
-            && chunks[0].height >= FILE_LIST_MIN_HEIGHT + COMMENT_NAVIGATOR_MIN_HEIGHT
+            && sidebar_area.height >= FILE_LIST_MIN_HEIGHT + COMMENT_NAVIGATOR_MIN_HEIGHT
         {
-            let available_comment_height = chunks[0].height.saturating_sub(FILE_LIST_MIN_HEIGHT);
+            let available_comment_height = sidebar_area.height.saturating_sub(FILE_LIST_MIN_HEIGHT);
             let max_comment_height = COMMENT_NAVIGATOR_MAX_HEIGHT.min(available_comment_height);
             let desired_comment_height = comment_items.len() as u16 + 2;
             let comment_height = desired_comment_height
                 .min(max_comment_height)
                 .max(COMMENT_NAVIGATOR_MIN_HEIGHT);
-            let left_chunks = Layout::default()
+            let sidebar_chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Min(FILE_LIST_MIN_HEIGHT),
                     Constraint::Length(comment_height),
                 ])
-                .split(chunks[0]);
+                .split(sidebar_area);
 
-            app.file_list_area = Some(left_chunks[0]);
-            app.comment_navigator_area = Some(left_chunks[1]);
-            render_file_list(frame, app, left_chunks[0]);
-            render_comment_navigator(frame, app, left_chunks[1], &comment_items);
+            app.file_list_area = Some(sidebar_chunks[0]);
+            app.comment_navigator_area = Some(sidebar_chunks[1]);
+            render_file_list(frame, app, sidebar_chunks[0]);
+            render_comment_navigator(frame, app, sidebar_chunks[1], &comment_items);
         } else {
-            app.file_list_area = Some(chunks[0]);
+            app.file_list_area = Some(sidebar_area);
             app.comment_navigator_area = None;
             app.comment_navigator_inner_area = None;
-            render_file_list(frame, app, chunks[0]);
+            render_file_list(frame, app, sidebar_area);
         }
-        render_content_view(frame, app, chunks[1]);
+        render_content_view(frame, app, diff_area);
     } else {
         app.file_list_area = None;
         app.comment_navigator_area = None;
@@ -204,4 +215,218 @@ fn active_confirm(app: &App) -> Option<ConfirmAction> {
     (app.input_mode == InputMode::Confirm)
         .then_some(app.pending_confirm)
         .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    //! Layout checks for `file_list_position`: the sidebar renders on the
+    //! configured side, and mouse hit-testing follows it.
+    use crate::app::{App, DiffSource, DiffViewMode, FileListPosition, FocusedPanel, InputMode};
+    use crate::handler::handle_mouse_event;
+    use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
+    use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use std::path::PathBuf;
+
+    struct StubVcs(VcsInfo);
+    impl VcsBackend for StubVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.0
+        }
+        fn get_working_tree_diff(
+            &self,
+            _hl: &crate::syntax::SyntaxHighlighter,
+        ) -> crate::error::Result<Vec<DiffFile>> {
+            Ok(Vec::new())
+        }
+        fn fetch_context_lines(
+            &self,
+            _path: &std::path::Path,
+            _status: FileStatus,
+            _ref_commit: Option<&str>,
+            _start: u32,
+            _end: u32,
+        ) -> crate::error::Result<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+        fn file_line_count(
+            &self,
+            _path: &std::path::Path,
+            _status: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> crate::error::Result<u32> {
+            Ok(0)
+        }
+    }
+
+    fn file(path: &str) -> DiffFile {
+        DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from(path)),
+            status: FileStatus::Modified,
+            hunks: vec![],
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash: 0,
+        }
+    }
+
+    fn app_with(position: FileListPosition) -> App {
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "head".into(),
+            branch_name: Some("main".into()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+        let mut app = App::build(
+            Box::new(StubVcs(vcs_info.clone())),
+            vcs_info,
+            crate::theme::Theme::dark(),
+            None,
+            false,
+            ["a.rs", "b.rs", "c.rs"].iter().map(|p| file(p)).collect(),
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("build app");
+        app.show_file_list = true;
+        app.file_list_position = position;
+        app.focused_panel = FocusedPanel::Diff;
+        app
+    }
+
+    fn draw(app: &mut App) -> Buffer {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, app))
+            .expect("draw frame");
+        terminal.backend().buffer().clone()
+    }
+
+    fn column_of(buffer: &Buffer, needle: &str) -> u16 {
+        for y in 0..buffer.area.height {
+            let row: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect();
+            if let Some(byte) = row.find(needle) {
+                return row[..byte].chars().count() as u16;
+            }
+        }
+        panic!("{needle:?} not rendered");
+    }
+
+    fn mouse(app: &mut App, kind: MouseEventKind, x: u16, y: u16) {
+        handle_mouse_event(
+            app,
+            MouseEvent {
+                kind,
+                column: x,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+    }
+
+    #[test]
+    fn file_list_renders_left_of_the_diff_by_default() {
+        let mut app = app_with(FileListPosition::default());
+        let buffer = draw(&mut app);
+
+        let files = app.file_list_area.expect("file list drawn");
+        let diff = app.diff_area.expect("diff drawn");
+        assert_eq!(files.x, 0);
+        assert_eq!(files.right(), diff.x);
+        assert_eq!(diff.right(), 100);
+        assert!(column_of(&buffer, "Files") < diff.x);
+    }
+
+    #[test]
+    fn file_list_renders_right_of_the_diff_when_configured() {
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            let mut app = app_with(FileListPosition::Right);
+            app.diff_view_mode = mode;
+            let buffer = draw(&mut app);
+
+            let files = app.file_list_area.expect("file list drawn");
+            let diff = app.diff_area.expect("diff drawn");
+            assert_eq!(diff.x, 0, "{mode:?}");
+            assert_eq!(diff.right(), files.x, "{mode:?}");
+            assert_eq!(files.right(), 100, "{mode:?}");
+            // Same 20/80 split as the left layout, just mirrored.
+            assert_eq!(files.width, 20, "{mode:?}");
+            assert!(column_of(&buffer, "Files") >= files.x, "{mode:?}");
+            let inner = app.diff_inner_area.expect("diff inner drawn");
+            assert!(inner.right() <= files.x, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn hidden_file_list_gives_the_diff_full_width_on_either_side() {
+        for position in [FileListPosition::Left, FileListPosition::Right] {
+            let mut app = app_with(position);
+            app.show_file_list = false;
+            draw(&mut app);
+
+            assert_eq!(app.file_list_area, None, "{position:?}");
+            assert_eq!(
+                app.diff_area,
+                Some(Rect::new(0, 1, 100, 22)),
+                "{position:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mouse_targets_follow_the_file_list_on_the_right() {
+        let mut app = app_with(FileListPosition::Right);
+        draw(&mut app);
+        let files = app.file_list_area.expect("file list drawn");
+        let diff = app.diff_area.expect("diff drawn");
+
+        // A press on the right-hand sidebar's border focuses the file list ...
+        let mid = files.y + files.height / 2;
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            files.x,
+            mid,
+        );
+        assert_eq!(app.focused_panel, FocusedPanel::FileList);
+
+        // ... and one on the left-hand diff's border focuses the diff.
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            diff.x,
+            mid,
+        );
+        assert_eq!(app.focused_panel, FocusedPanel::Diff);
+
+        // Clicking a file row in the right-hand tree selects that row.
+        let inner = app.file_list_inner_area.expect("file list inner drawn");
+        assert!(inner.x >= files.x);
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            inner.x + 1,
+            inner.y + 1,
+        );
+        assert_eq!(app.file_list_state.selected(), 1);
+    }
 }

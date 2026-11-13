@@ -143,8 +143,8 @@ considers files that pass the active filters.
 | Key | Action |
 |-----|--------|
 | `Tab` / `Shift-Tab` | Cycle focus forward / backward between file list, comment navigator, diff, and commit selector |
-| `<leader>h` | Move focus one panel left (side-by-side: new side → old side → file list) |
-| `<leader>l` | Move focus one panel right (side-by-side: file list → diff → old side → new side) |
+| `<leader>h` | Move focus one panel left (side-by-side: new side → old side → file list; mirrored when `file_list_position = "right"`) |
+| `<leader>l` | Move focus one panel right (side-by-side: file list → diff → old side → new side; mirrored when `file_list_position = "right"`) |
 | `<leader>k` | Move focus up (comments to files, or diff/files to commit selector when visible) |
 | `<leader>j` | Move focus down (files to comments when visible, otherwise diff) |
 | `<leader>e` | Toggle file list visibility |

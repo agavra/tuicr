@@ -1038,6 +1038,16 @@ pub enum DiffViewMode {
     SideBySide,
 }
 
+/// Which side of the diff the sidebar (file tree + comment navigator) sits on.
+/// Set from the `file_list_position` config key; `<leader>h` / `<leader>l`
+/// follow it so `h` always moves focus toward the left-hand pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileListPosition {
+    #[default]
+    Left,
+    Right,
+}
+
 /// Where wrapped unified diff rows continue: `Flow` wraps the whole row from
 /// the left edge, `Gutter` keeps wrapped content after the line-number gutter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1365,6 +1375,7 @@ pub struct App {
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,
+    pub file_list_position: FileListPosition,
     pub compact_folders: bool,
     /// `true` when the session was opened via `--all-files`. Drives the
     /// `PRISTINE · N files` chip in the status bar and prevents that chip

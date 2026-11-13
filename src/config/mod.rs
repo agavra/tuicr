@@ -165,6 +165,9 @@ pub struct AppConfig {
     pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
+    /// Which side of the diff the file list sits on: `"left"` (the default)
+    /// or `"right"`.
+    pub file_list_position: Option<String>,
     /// Join single-child directory chains in the file tree. Defaults to false.
     pub compact_folders: Option<bool>,
     /// Whether pull-request CI checks are fetched and shown.
@@ -269,6 +272,7 @@ const KNOWN_KEYS: &[&str] = &[
     "backend",
     "comment_types",
     "show_file_list",
+    "file_list_position",
     "compact_folders",
     "show_pr_checks",
     "show_pr_comments",
@@ -618,6 +622,12 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .get("comment_types")
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
+        file_list_position: read_enum(
+            table,
+            "file_list_position",
+            &["left", "right"],
+            &mut warnings,
+        ),
         compact_folders: read_bool(table, "compact_folders", &mut warnings),
         show_pr_checks: read_bool(table, "show_pr_checks", &mut warnings),
         show_pr_comments: read_bool(table, "show_pr_comments", &mut warnings),
@@ -1149,6 +1159,47 @@ mod tests {
             None
         );
         assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    // file_list_position
+
+    fn file_list_position(outcome: &ConfigLoadOutcome) -> Option<&str> {
+        outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.file_list_position.as_deref())
+    }
+
+    #[test]
+    fn should_parse_file_list_position_left() {
+        let outcome = parse_config("file_list_position = \"left\"\n");
+        assert_eq!(file_list_position(&outcome), Some("left"));
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_file_list_position_right() {
+        let outcome = parse_config("file_list_position = \"right\"\n");
+        assert_eq!(file_list_position(&outcome), Some("right"));
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_leave_file_list_position_unset_by_default() {
+        let outcome = parse_config("wrap = true\n");
+        assert_eq!(file_list_position(&outcome), None);
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_file_list_position_with_invalid_value() {
+        let outcome = parse_config("file_list_position = \"top\"\n");
+        assert_eq!(file_list_position(&outcome), None);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'file_list_position' must be \"left\" or \"right\"; got \"top\", ignoring"
+        );
     }
 
     // show_pr_checks
