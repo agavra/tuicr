@@ -381,6 +381,19 @@ pub fn detect_vcs(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn read_workdir_file_does_not_follow_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("real.txt"), "x\n").unwrap();
+        std::os::unix::fs::symlink("real.txt", dir.path().join("link.txt")).unwrap();
+        assert_eq!(
+            read_workdir_file(dir.path(), Path::new("real.txt")).as_deref(),
+            Some("x\n")
+        );
+        assert!(read_workdir_file(dir.path(), Path::new("link.txt")).is_none());
+    }
+
     use super::*;
     use crate::vcs::traits::VcsType;
     use std::path::PathBuf;

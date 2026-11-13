@@ -353,6 +353,15 @@ mod tests {
     }
 
     #[test]
+    fn parses_combined_conflict_record_without_patch_boundary() {
+        let files =
+            parse_raw_patch_output(b"::100644 100644 100644 aaa bbb ccc UU\0f.txt\0").unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].new_path.as_deref(), Some(Path::new("f.txt")));
+        assert!(parse_raw_patch_output(b":100644 100644 aaa bbb M\0f.txt").is_err());
+    }
+
+    #[test]
     fn maps_added_deleted_modified_and_copied_records() {
         let output = b":000000 100644 0000000 aaaaaaa A\0added\0:100644 000000 aaaaaaa 0000000 D\0deleted\0:100644 100644 aaaaaaa bbbbbbb M\0modified\0:100644 100644 aaaaaaa bbbbbbb C75\0source\0copy\0\0diff --git a/ignored b/ignored\nnew file mode 100644\ndiff --git a/ignored b/ignored\ndeleted file mode 100644\ndiff --git a/ignored b/ignored\nindex a..b\ndiff --git a/ignored b/ignored\nsimilarity index 75%\n";
         let files = parse_raw_patch_output(output).unwrap();

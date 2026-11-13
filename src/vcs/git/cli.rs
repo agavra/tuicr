@@ -193,7 +193,10 @@ impl GitCliBackend {
                 TuicrError::VcsCommand("failed to read deleted file from HEAD".into())
             })
         } else {
-            Ok(fs::read_to_string(self.root_path.join(file_path))?)
+            // Never follow an untracked symlink out of the repository.
+            crate::vcs::read_workdir_file(&self.root_path, file_path).ok_or_else(|| {
+                TuicrError::VcsCommand(format!("failed to read {path_str} from the working tree"))
+            })
         }
     }
 }
@@ -2031,6 +2034,9 @@ mod tests {
         assert_eq!(files.len(), 1);
         let raw = crate::vcs::git::raw::run_git_diff(workdir, &[]).unwrap();
         assert_eq!(raw.len(), 1);
+        let parsed = diff_parser::parse_file_patches(raw, &SyntaxHighlighter::default()).unwrap();
+        // suppressBlankEmpty would drop the blank context line's leading space.
+        assert_eq!(parsed[0].hunks[0].lines.len(), 4);
     }
 
     fn make_conflict(workdir: &Path) {
@@ -2122,5 +2128,47 @@ mod tests {
         };
         assert_eq!(line("dangling"), "nonexistent-target");
         assert!(!line("link").contains("SECRET"));
+
+        let backend = cli(workdir);
+        let link = Path::new("link");
+        assert!(
+            backend
+                .file_line_count(link, FileStatus::Added, None)
+                .is_err()
+        );
+        assert!(
+            backend
+                .fetch_context_lines(link, FileStatus::Added, None, 1, 1)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn untracked_diff_skips_special_files() {
+        let hl = SyntaxHighlighter::default();
+        let dev_null = Path::new("/dev/null");
+        assert!(build_untracked_diff_file(Path::new("null"), dev_null, &hl).is_none());
+    }
+
+    #[test]
+    fn whitespace_filtered_patches_keep_patchless_conflict_records() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workdir = temp_dir.path();
+        make_conflict(workdir);
+        let args: Vec<String> = ["diff", "--raw", "-z", "--patch", "--ignore-all-space"]
+            .map(String::from)
+            .into();
+        let out = Command::new("git")
+            .current_dir(workdir)
+            .args(&args)
+            .output()
+            .unwrap()
+            .stdout;
+        let files = parse_whitespace_filtered_patches(workdir, &args, &out).unwrap();
+        let conflict = files
+            .iter()
+            .find(|f| f.new_path.as_deref() == Some(Path::new("conflict.txt")))
+            .unwrap();
+        assert_eq!(conflict.status, FileStatus::Modified);
     }
 }
