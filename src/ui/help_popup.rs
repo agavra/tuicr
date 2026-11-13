@@ -1019,6 +1019,11 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         })
         .collect();
 
+    // A resize can grow the viewport past the old offset; clamp so the
+    // popup doesn't end in a blank tail.
+    let max_offset = total_lines.saturating_sub(viewport_height);
+    app.help_state.scroll_offset = app.help_state.scroll_offset.min(max_offset);
+
     // Calculate if we can scroll
     let can_scroll_up = app.help_state.scroll_offset > 0;
     let can_scroll_down = app.help_state.scroll_offset + viewport_height < total_lines;
@@ -1162,5 +1167,86 @@ mod tests {
             .collect();
 
         assert!(description_columns.iter().all(|&column| column == 31));
+    }
+
+    #[test]
+    fn should_clamp_scroll_offset_when_a_resize_grows_the_viewport() {
+        use crate::app::{DiffSource, InputMode};
+        use crate::error::{Result, TuicrError};
+        use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
+        use crate::syntax::SyntaxHighlighter;
+        use crate::vcs::traits::{VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
+        use ratatui::{Terminal, backend::TestBackend};
+        use std::path::{Path, PathBuf};
+
+        struct Stub(VcsInfo);
+        impl VcsBackend for Stub {
+            fn info(&self) -> &VcsInfo {
+                &self.0
+            }
+            fn get_working_tree_diff(&self, _h: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+                Err(TuicrError::NoChanges)
+            }
+            fn fetch_context_lines(
+                &self,
+                _p: &Path,
+                _s: FileStatus,
+                _r: Option<&str>,
+                _a: u32,
+                _b: u32,
+            ) -> Result<Vec<DiffLine>> {
+                Ok(Vec::new())
+            }
+            fn get_change_status(&self) -> Result<VcsChangeStatus> {
+                Ok(VcsChangeStatus {
+                    staged: false,
+                    unstaged: false,
+                })
+            }
+            fn file_line_count(&self, _p: &Path, _s: FileStatus, _r: Option<&str>) -> Result<u32> {
+                Ok(0)
+            }
+        }
+
+        // given a help popup scrolled to the bottom of a short terminal
+        let info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "abcdef0123".to_string(),
+            branch_name: Some("main".to_string()),
+            vcs_type: VcsType::File,
+        };
+        let session = ReviewSession::new(
+            info.root_path.clone(),
+            info.head_commit.clone(),
+            info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+        let mut app = App::build(
+            Box::new(Stub(info.clone())),
+            info,
+            crate::theme::Theme::dark(),
+            None,
+            false,
+            Vec::new(),
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Help,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("build app");
+        let mut small = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        small.draw(|f| render_help(f, &mut app)).unwrap();
+        app.help_state.scroll_offset = usize::MAX / 2;
+        small.draw(|f| render_help(f, &mut app)).unwrap();
+
+        // when the terminal grows
+        let mut tall = Terminal::new(TestBackend::new(120, 60)).unwrap();
+        tall.draw(|f| render_help(f, &mut app)).unwrap();
+
+        // then the offset is at most the new maximum
+        let max = app.help_state.total_lines - app.help_state.viewport_height;
+        assert_eq!(app.help_state.scroll_offset, max);
     }
 }
