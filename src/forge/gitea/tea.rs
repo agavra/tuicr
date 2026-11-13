@@ -567,6 +567,17 @@ where
         repo: &ForgeRepository,
         endpoint: &str,
     ) -> Result<Vec<T>> {
+        self.get_pages_until(repo, endpoint, usize::MAX)
+    }
+
+    /// Like [`Self::get_all_pages`], but stops once at least `want` rows have
+    /// been collected, so a picker window does not drain the whole collection.
+    fn get_pages_until<T: DeserializeOwned>(
+        &self,
+        repo: &ForgeRepository,
+        endpoint: &str,
+        want: usize,
+    ) -> Result<Vec<T>> {
         let separator = if endpoint.contains('?') { '&' } else { '?' };
         let mut collected: Vec<T> = Vec::new();
         let mut page_size: Option<usize> = None;
@@ -578,7 +589,7 @@ where
             let received = rows.len();
             collected.extend(rows);
 
-            if received == 0 {
+            if received == 0 || collected.len() >= want {
                 break;
             }
             if let Some(total) = response.total_count
@@ -591,6 +602,13 @@ where
             let effective = *page_size.get_or_insert(received);
             if received < effective {
                 break;
+            }
+            if page == MAX_PAGES {
+                // No stop condition fired: more rows may remain, so a prefix
+                // must not pass for the whole collection (or a look-ahead).
+                return Err(TuicrError::ForgeLimit(format!(
+                    "Gitea collection exceeds {MAX_PAGES} pages; refusing to use a partial list"
+                )));
             }
         }
 
@@ -663,6 +681,15 @@ where
         )
     }
 
+    /// Keep an optional fetch best-effort, except that hitting the page bound
+    /// is surfaced: a partial list must not pass as a complete one.
+    fn best_effort<T: Default>(result: Result<T>) -> Result<T> {
+        match result {
+            Err(e @ TuicrError::ForgeLimit(_)) => Err(e),
+            other => Ok(other.unwrap_or_default()),
+        }
+    }
+
     fn reviews(&self, pr: &PullRequestDetails) -> Result<Vec<GiteaPullReview>> {
         self.get_all_pages(
             &pr.repository,
@@ -681,25 +708,21 @@ where
     fn list_open_pull_requests(&self, query: &PullRequestListQuery) -> Result<PagedPullRequests> {
         let page_size = query.page_size.max(1);
         let repo = &query.repository;
-        // `already_loaded` only ever advances by whole pages, so it maps
-        // cleanly onto Gitea's 1-based page numbers.
-        let page = query.already_loaded / page_size + 1;
-        let endpoint = format!(
-            "/repos/{}/{}/pulls?state=open&page={}&limit={}",
-            repo.owner, repo.name, page, page_size
-        );
-        let response = self.api(repo, "GET", &endpoint, None)?;
-        let rows: Vec<GiteaPullRequest> = serde_json::from_str(&response.body)?;
-        let received = rows.len();
+        // Gitea clamps `limit` to the instance's MaxResponseItems, so the
+        // server page size is unknown and `already_loaded / page_size` is not
+        // a page number. Collect from page 1 up to one row past the requested
+        // window (which also answers `has_more`), then slice locally.
+        let endpoint = format!("/repos/{}/{}/pulls?state=open", repo.owner, repo.name);
+        let rows: Vec<GiteaPullRequest> =
+            self.get_pages_until(repo, &endpoint, query.already_loaded + page_size + 1)?;
+        let has_more = rows.len() > query.already_loaded + page_size;
         let pull_requests = rows
             .into_iter()
+            .skip(query.already_loaded)
+            .take(page_size)
             .map(|row| into_summary(row, repo))
             .collect::<Vec<_>>();
         let total_loaded = query.already_loaded + pull_requests.len();
-        let has_more = match response.total_count {
-            Some(total) => total_loaded < total,
-            None => received == page_size,
-        };
         Ok(PagedPullRequests {
             pull_requests,
             has_more,
@@ -793,7 +816,7 @@ where
         // own unsubmitted drafts and review-requests are not responses, so
         // neither belongs in the summary row.
         let mut latest: BTreeMap<String, PullRequestReviewStatus> = BTreeMap::new();
-        for review in self.reviews(&details).unwrap_or_default() {
+        for review in Self::best_effort(self.reviews(&details))? {
             let state = match review.state.to_ascii_uppercase().as_str() {
                 "APPROVED" => "APPROVED",
                 "REQUEST_CHANGES" => "CHANGES_REQUESTED",
@@ -873,14 +896,13 @@ where
         };
 
         let issue_comments = if self.show_comments {
-            self.get_all_pages::<GiteaIssueComment>(
+            Self::best_effort(self.get_all_pages::<GiteaIssueComment>(
                 &repository,
                 &format!(
                     "/repos/{}/{}/issues/{}/comments",
                     repository.owner, repository.name, details.number
                 ),
-            )
-            .unwrap_or_default()
+            ))?
             .into_iter()
             .map(|comment| PullRequestIssueComment {
                 author: GiteaUser::login(comment.user),
@@ -1880,8 +1902,9 @@ mod tests {
 
     #[test]
     fn should_list_open_pull_requests_with_paging_from_total_count() {
+        // The window plus a look-ahead row needs two one-row pages.
         let runner = FakeTeaRunner::default().route_counted(
-            "/pulls?state=open&page=1",
+            "/pulls?state=open&page=",
             &format!("[{PR_JSON}]"),
             5,
         );
@@ -1895,6 +1918,88 @@ mod tests {
         assert_eq!(page.total_loaded, 1);
         assert!(page.has_more, "5 total with 1 loaded means more remain");
         assert!(backend.runner.endpoints()[0].contains("state=open"));
+    }
+
+    #[test]
+    fn should_load_more_open_pull_requests_when_the_server_caps_the_page() {
+        // Server cap of 1 row/page while the picker asks for 2: the second
+        // window must start at row 2, not refetch page 1.
+        let pr = |n: u64| PR_JSON.replace("\"number\": 42", &format!("\"number\": {n}"));
+        let runner = FakeTeaRunner::default()
+            .route("page=1&", &format!("[{}]", pr(1)))
+            .route("page=2&", &format!("[{}]", pr(2)))
+            .route("page=3&", &format!("[{}]", pr(3)))
+            .route("page=4&", "[]");
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let mut query = PullRequestListQuery::first_page(repo(), 2);
+        query.already_loaded = 2;
+        let page = backend.list_pull_requests(query).expect("page");
+
+        let numbers: Vec<u64> = page.pull_requests.iter().map(|p| p.number).collect();
+        assert_eq!(numbers, vec![3]);
+        assert_eq!(page.total_loaded, 3);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn should_not_report_more_when_the_window_ends_exactly_at_the_last_row() {
+        let pr = |n: u64| PR_JSON.replace("\"number\": 42", &format!("\"number\": {n}"));
+        let runner = FakeTeaRunner::default()
+            .route("page=1&", &format!("[{}]", pr(1)))
+            .route("page=2&", &format!("[{}]", pr(2)))
+            .route("page=3&", "[]");
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let page = backend
+            .list_pull_requests(PullRequestListQuery::first_page(repo(), 2))
+            .expect("page");
+
+        assert_eq!(page.pull_requests.len(), 2);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn should_report_more_and_stop_fetching_once_the_window_and_lookahead_are_read() {
+        let pr = |n: u64| PR_JSON.replace("\"number\": 42", &format!("\"number\": {n}"));
+        let runner = FakeTeaRunner::default()
+            .route("page=1&", &format!("[{}]", pr(1)))
+            .route("page=2&", &format!("[{}]", pr(2)))
+            .route("page=3&", &format!("[{}]", pr(3)))
+            .route("page=4&", &format!("[{}]", pr(4)));
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let page = backend
+            .list_pull_requests(PullRequestListQuery::first_page(repo(), 2))
+            .expect("page");
+
+        let numbers: Vec<u64> = page.pull_requests.iter().map(|p| p.number).collect();
+        assert_eq!(numbers, vec![1, 2]);
+        assert!(page.has_more, "row 3 exists");
+        assert_eq!(
+            backend.runner.endpoints().len(),
+            3,
+            "window + one look-ahead"
+        );
+    }
+
+    #[test]
+    fn should_error_instead_of_dropping_the_lookahead_row_at_the_page_bound() {
+        // 1 row/page, window ends at row 200, look-ahead row 201 is beyond
+        // MAX_PAGES: has_more must not silently become false.
+        for header in [true, false] {
+            let body = format!("[{PR_JSON}]");
+            let runner = if header {
+                FakeTeaRunner::default().route_counted("/pulls?state=open", &body, 201)
+            } else {
+                FakeTeaRunner::default().route("/pulls?state=open", &body)
+            };
+            let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+            let mut query = PullRequestListQuery::first_page(repo(), 2);
+            query.already_loaded = 198;
+            let result = backend.list_pull_requests(query);
+            assert!(
+                matches!(result, Err(TuicrError::ForgeLimit(_))),
+                "header={header}: {result:?}"
+            );
+        }
     }
 
     #[test]
@@ -2312,6 +2417,49 @@ mod tests {
         assert!(threads[0].is_resolved);
         // Gitea exposes no invalidation flag, so nothing can be called outdated.
         assert!(!threads[0].is_outdated);
+    }
+
+    const ONE_REVIEW: &str = r#"[{"id":1,"state":"APPROVED","body":"","user":{"login":"a"},"comments_count":0,"commit_id":"","html_url":"u"}]"#;
+    const ONE_ISSUE_COMMENT: &str = r#"[{"id":1,"body":"hi","user":{"login":"a"},"html_url":"u","created_at":"2026-08-20T10:00:00Z"}]"#;
+
+    #[test]
+    fn should_surface_the_page_bound_from_reviews_in_pull_request_info() {
+        // 1 row/page and a total past MAX_PAGES: the reviews list is partial.
+        let runner = FakeTeaRunner::default()
+            .route("/pulls/42", PR_JSON)
+            .route_counted("/pulls/42/reviews", ONE_REVIEW, 201)
+            .route("/issues/42/comments", "[]");
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let result = backend.get_pull_request_info(PullRequestTarget::number(42, "42"));
+        assert!(
+            matches!(result, Err(TuicrError::ForgeLimit(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn should_surface_the_page_bound_from_issue_comments_in_pull_request_info() {
+        let runner = FakeTeaRunner::default()
+            .route("/pulls/42", PR_JSON)
+            .route("/pulls/42/reviews", "[]")
+            .route_counted("/issues/42/comments", ONE_ISSUE_COMMENT, 201);
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let result = backend.get_pull_request_info(PullRequestTarget::number(42, "42"));
+        assert!(
+            matches!(result, Err(TuicrError::ForgeLimit(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn should_keep_pull_request_info_best_effort_for_other_fetch_errors() {
+        // No reviews/comments routes: 404s degrade to empty lists.
+        let runner = FakeTeaRunner::default().route("/pulls/42", PR_JSON);
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let info = backend
+            .get_pull_request_info(PullRequestTarget::number(42, "42"))
+            .expect("info");
+        assert!(info.issue_comments.is_empty());
     }
 
     #[test]

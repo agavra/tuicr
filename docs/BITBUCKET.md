@@ -114,6 +114,8 @@ parsers, and the pull request tab reports no supported remote.
 
 ## Limitations and troubleshooting
 
+- Collections (commits, comments, diffstat) are read up to 100 pages; beyond that the PR fails to open with an explicit error rather than showing a partial list.
+
 **Reviewer names, not usernames.** Bitbucket Cloud returns an empty `username`
 for every account, so tuicr displays `display_name` (for example, "Example User")
 where GitHub would show a handle (`@example-user`). Identity comparisons — "is this PR

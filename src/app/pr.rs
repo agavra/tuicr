@@ -1492,16 +1492,34 @@ impl App {
         // Sync thread + summary fetch — tests assert on
         // `app.forge_review_threads`/`forge_review_summaries` immediately
         // after this returns.
-        let threads = backend
-            .list_review_threads(&opened.details)
-            .unwrap_or_default();
-        let summaries = backend
-            .list_review_summaries(&opened.details)
-            .unwrap_or_default();
+        let threads = backend.list_review_threads(&opened.details);
+        let summaries = backend.list_review_summaries(&opened.details);
         self.enter_pr_diff_mode(backend, opened)?;
-        self.forge_review_threads = crate::forge::remote_comments::dedupe_threads(threads);
-        self.forge_review_summaries = summaries;
-        self.prune_locked_comments();
+        // Match the async path: a failed fetch leaves the remote lists empty
+        // and must not prune locked comments, whose remote copies were not
+        // loaded.
+        let mut fetched = true;
+        match threads {
+            Ok(t) => self.forge_review_threads = crate::forge::remote_comments::dedupe_threads(t),
+            Err(e) => {
+                self.forge_review_threads = Vec::new();
+                self.set_warning(format!("Failed to load remote comments: {e}"));
+                fetched = false;
+            }
+        }
+        match summaries {
+            Ok(s) => self.forge_review_summaries = s,
+            Err(e) => {
+                self.forge_review_summaries = Vec::new();
+                if fetched {
+                    self.set_warning(format!("Failed to load remote reviews: {e}"));
+                }
+                fetched = false;
+            }
+        }
+        if fetched {
+            self.prune_locked_comments();
+        }
         self.rebuild_annotations();
         Ok(())
     }

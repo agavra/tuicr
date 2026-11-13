@@ -31,6 +31,9 @@ use crate::forge::traits::{CreateReviewRequest, SubmitReceipts};
 
 const DEFAULT_GITLAB_HOST: &str = "gitlab.com";
 
+/// Pages of 100 walked for merge request commits before giving up.
+const MAX_COMMIT_PAGES: usize = 100;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GlabCommandError {
     MissingGlab,
@@ -496,7 +499,9 @@ where
     fn list_pull_request_commits(&self, pr: &PullRequestDetails) -> Result<Vec<PullRequestCommit>> {
         let project = self.api_project(&pr.repository);
         let mut commits: Vec<PullRequestCommit> = Vec::new();
-        for page in 1..=10 {
+        // One look-ahead page past the cap tells a full final page from a
+        // truncated list.
+        for page in 1..=MAX_COMMIT_PAGES + 1 {
             let endpoint = format!(
                 "projects/{}/merge_requests/{}/commits?per_page=100&page={}",
                 project, pr.number, page,
@@ -507,6 +512,12 @@ where
             let output = self.run_glab(args, &pr.repository.host)?;
             let rows: Vec<GlabCommit> = serde_json::from_str(&output)?;
             let received = rows.len();
+            if page > MAX_COMMIT_PAGES && received > 0 {
+                return Err(TuicrError::ForgeLimit(format!(
+                    "merge request has more than {} commits; refusing to use a partial list",
+                    MAX_COMMIT_PAGES * 100
+                )));
+            }
             commits.extend(rows.into_iter().map(GlabCommit::into_pull_request_commit));
             if received < 100 {
                 break;
@@ -2783,6 +2794,49 @@ mod tests {
         let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
         let backend = GitLabGlabBackend::with_runner(Some(repo), PagedDraftRunner { total: 200 });
         assert_eq!(backend.list_review_summaries(&pr).unwrap().len(), 200);
+    }
+
+    /// Serves `/commits` in pages of 100 for a merge request with `total` commits.
+    struct PagedCommitRunner {
+        total: usize,
+    }
+
+    impl GlabCommandRunner for PagedCommitRunner {
+        fn run(&self, args: &[String]) -> GlabCommandResult<String> {
+            let endpoint = args.iter().find(|a| a.starts_with("projects/")).unwrap();
+            let page: usize = endpoint.rsplit("page=").next().unwrap().parse().unwrap();
+            let rows: Vec<_> = ((page - 1) * 100..(page * 100).min(self.total))
+                .map(|i| serde_json::json!({"id": format!("{i:040x}"), "title": format!("c{i}")}))
+                .collect();
+            Ok(serde_json::to_string(&rows).unwrap())
+        }
+
+        fn run_with_stdin(&self, _args: &[String], _stdin: &str) -> GlabCommandResult<String> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn should_read_commits_past_ten_pages_and_error_beyond_the_ceiling() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        // Past the old 10-page cap, and exactly at the new ceiling.
+        for total in [1100, MAX_COMMIT_PAGES * 100] {
+            let backend =
+                GitLabGlabBackend::with_runner(Some(repo.clone()), PagedCommitRunner { total });
+            assert_eq!(backend.list_pull_request_commits(&pr).unwrap().len(), total);
+        }
+        // One commit over the ceiling must not return a silent prefix.
+        let backend = GitLabGlabBackend::with_runner(
+            Some(repo),
+            PagedCommitRunner {
+                total: MAX_COMMIT_PAGES * 100 + 1,
+            },
+        );
+        assert!(matches!(
+            backend.list_pull_request_commits(&pr),
+            Err(TuicrError::ForgeLimit(_))
+        ));
     }
 
     #[test]

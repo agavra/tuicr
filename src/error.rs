@@ -41,6 +41,11 @@ pub enum TuicrError {
         receipts: crate::forge::traits::SubmitReceipts,
     },
 
+    /// A collection exceeded tuicr's finite pagination bound. Unlike other
+    /// best-effort failures this is shown to the user, never swallowed.
+    #[error("{0}")]
+    ForgeLimit(String),
+
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
 
