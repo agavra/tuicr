@@ -792,29 +792,24 @@ impl App {
                         new_lineno: diff_line.new_lineno,
                     });
 
-                    for (line_no, side) in [
-                        (diff_line.old_lineno, LineSide::Old),
-                        (diff_line.new_lineno, LineSide::New),
-                    ] {
-                        Self::push_comments(
+                    Self::push_comments(
+                        annotations,
+                        file_idx,
+                        diff_line.new_lineno,
+                        line_comments,
+                        LineSide::New,
+                        viewport_width,
+                        commit_set,
+                    );
+                    if let Some(new_ln) = diff_line.new_lineno {
+                        Self::push_remote_threads(
                             annotations,
-                            file_idx,
-                            line_no,
-                            line_comments,
-                            side,
-                            viewport_width,
-                            commit_set,
+                            remote_threads,
+                            remote_index,
+                            path,
+                            new_ln,
+                            LineSide::New,
                         );
-                        if let Some(ln) = line_no {
-                            Self::push_remote_threads(
-                                annotations,
-                                remote_threads,
-                                remote_index,
-                                path,
-                                ln,
-                                side,
-                            );
-                        }
                     }
 
                     i += 1;

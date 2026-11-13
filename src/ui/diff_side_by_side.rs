@@ -1826,21 +1826,22 @@ fn render_standalone_addition_side_by_side(
 
     // Add comments if any
     let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
-    // A context row exists on both sides, so comments anchored to either
-    // line number render beneath it (Old first, matching unified mode).
-    for (line_no, side) in [
-        (diff_line.old_lineno, LineSide::Old),
-        (diff_line.new_lineno, LineSide::New),
-    ] {
-        let Some(line_no) = line_no else { continue };
-        let (next_idx, cursor_info) =
-            add_comments_to_line(line_no, line_comments, side, ctx, file_idx, line_idx, lines);
-        line_idx = next_idx;
-        cursor_info_out = cursor_info_out.or(cursor_info);
+    if let Some(new_ln) = diff_line.new_lineno {
+        let (new_line_idx, cursor_info) = add_comments_to_line(
+            new_ln,
+            line_comments,
+            LineSide::New,
+            ctx,
+            file_idx,
+            line_idx,
+            lines,
+        );
+        line_idx = new_line_idx;
+        cursor_info_out = cursor_info;
         if let Some(file) = ctx.app.diff_files.get(file_idx) {
             line_idx = add_remote_threads_to_line(
-                line_no,
-                side,
+                new_ln,
+                LineSide::New,
                 ctx,
                 file.display_path(),
                 line_idx,
@@ -1885,21 +1886,22 @@ fn render_commit_message_line_side_by_side(
     line_idx += 1;
 
     let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
-    // A context row exists on both sides, so comments anchored to either
-    // line number render beneath it (Old first, matching unified mode).
-    for (line_no, side) in [
-        (diff_line.old_lineno, LineSide::Old),
-        (diff_line.new_lineno, LineSide::New),
-    ] {
-        let Some(line_no) = line_no else { continue };
-        let (next_idx, cursor_info) =
-            add_comments_to_line(line_no, line_comments, side, ctx, file_idx, line_idx, lines);
-        line_idx = next_idx;
-        cursor_info_out = cursor_info_out.or(cursor_info);
+    if let Some(new_ln) = diff_line.new_lineno {
+        let (new_line_idx, cursor_info) = add_comments_to_line(
+            new_ln,
+            line_comments,
+            LineSide::New,
+            ctx,
+            file_idx,
+            line_idx,
+            lines,
+        );
+        line_idx = new_line_idx;
+        cursor_info_out = cursor_info;
         if let Some(file) = ctx.app.diff_files.get(file_idx) {
             line_idx = add_remote_threads_to_line(
-                line_no,
-                side,
+                new_ln,
+                LineSide::New,
                 ctx,
                 file.display_path(),
                 line_idx,
@@ -2520,15 +2522,8 @@ mod remote_comments_side_by_side_snapshot_tests {
         );
     }
 
-    /// An Old-side comment on a context row (reachable via `<leader>h`) must
-    /// render in side-by-side mode, with annotations and height model agreeing.
-    #[test]
-    fn should_render_old_side_comment_on_context_row() {
-        use crate::app::AnnotatedLine;
-        use crate::model::{Comment, CommentType};
-
-        const NEEDLE: &str = "old-side-context-note";
-
+    /// One context row (old 3 / new 4) in a PR app, side-by-side.
+    fn context_row_app() -> (App, PathBuf) {
         let hunks = vec![DiffHunk {
             header: "@@ -3,1 +4,1 @@".to_string(),
             lines: vec![DiffLine {
@@ -2556,20 +2551,30 @@ mod remote_comments_side_by_side_snapshot_tests {
             is_commit_message: false,
             content_hash,
         };
+        (make_pr_app_with(vec![file]), path)
+    }
 
-        let mut app = make_pr_app_with(vec![file]);
+    fn add_local_comment(app: &mut App, path: &PathBuf, line: u32, side: LineSide, text: &str) {
+        use crate::model::{Comment, CommentType};
         app.session
-            .get_file_mut(&path)
+            .get_file_mut(path)
             .expect("file registered in session")
             .add_line_comment(
-                3,
-                Comment::new(
-                    NEEDLE.to_string(),
-                    CommentType::from_id("note"),
-                    Some(LineSide::Old),
-                ),
+                line,
+                Comment::new(text.to_string(), CommentType::from_id("note"), Some(side)),
             );
         app.rebuild_annotations();
+    }
+
+    /// An Old-side comment on a context row (reachable via `<leader>h`) must
+    /// render in side-by-side mode, with annotations and height model agreeing.
+    #[test]
+    fn should_render_old_side_comment_on_context_row() {
+        use crate::app::AnnotatedLine;
+
+        const NEEDLE: &str = "old-side-context-note";
+        let (mut app, path) = context_row_app();
+        add_local_comment(&mut app, &path, 3, LineSide::Old, NEEDLE);
 
         assert!(
             app.line_annotations
@@ -2579,6 +2584,41 @@ mod remote_comments_side_by_side_snapshot_tests {
         );
         let body = body_text(&draw(&mut app));
         assert!(body.contains(NEEDLE), "old-side comment missing:\n{body}");
+    }
+
+    /// The height model must count Old-side local comments on context rows,
+    /// or scroll bounds disagree with the annotations the renderer emits.
+    #[test]
+    fn should_measure_old_side_local_comment_on_context_row() {
+        for (line, side) in [(3, LineSide::Old), (4, LineSide::New)] {
+            let (mut app, path) = context_row_app();
+            add_local_comment(&mut app, &path, line, side, "measured-note");
+            let _ = draw(&mut app);
+            assert_eq!(
+                app.total_lines(),
+                app.line_annotations.len(),
+                "height model disagrees with annotations for {side:?}"
+            );
+        }
+    }
+
+    /// Typing a new Old-side comment on a context row must show the input box
+    /// and place the terminal cursor in it (the New-side pass must not clobber
+    /// the cursor reported by the Old-side pass).
+    #[test]
+    fn should_show_input_and_cursor_for_old_side_comment_on_context_row() {
+        let (mut app, _path) = context_row_app();
+        app.diff_state.cursor_line = 1;
+        app.enter_comment_mode(false, Some((3, LineSide::Old)));
+        app.comment_buffer = "TYPED".to_string();
+        app.comment_cursor = app.comment_buffer.len();
+
+        let buf = draw(&mut app);
+        assert!(body_text(&buf).contains("TYPED"), "input box missing");
+        let (x, y) = app
+            .comment_cursor_screen_pos
+            .expect("cursor reported for Old-side input on context row");
+        assert_eq!(buf[(x - 1, y)].symbol(), "D");
     }
 
     #[test]
