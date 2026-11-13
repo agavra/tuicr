@@ -695,3 +695,30 @@ fn should_not_hide_a_file_whose_hunks_are_merely_all_hunk_reviewed() {
 
     assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs"]);
 }
+
+#[test]
+fn should_keep_routing_keys_to_the_open_prompt_after_focus_moves_to_the_diff() {
+    use crate::handler::handle_normal_action;
+    let mut app = app_with(&["src/main.rs", "README.md"]);
+    app.focused_panel = FocusedPanel::FileList;
+    app.begin_file_tree_prompt(FileTreePrompt::Include);
+    // A mouse click on the diff (or a tree file row) moves focus off the tree.
+    app.focused_panel = FocusedPanel::Diff;
+
+    handle_normal_action(&mut app, Action::InsertChar('x'));
+    handle_normal_action(&mut app, Action::ExitMode);
+
+    // Esc cancelled the prompt rather than hiding the sidebar.
+    assert!(!app.file_tree_prompt_editing());
+    assert!(app.show_file_list);
+}
+
+#[test]
+fn should_paste_into_the_open_file_tree_prompt() {
+    let mut app = app_with(&["src/main.rs"]);
+    app.begin_file_tree_prompt(FileTreePrompt::Include);
+
+    crate::handler::handle_paste(&mut app, "ma\nin".into());
+
+    assert_eq!(app.file_tree_draft().unwrap().buffer, "main");
+}

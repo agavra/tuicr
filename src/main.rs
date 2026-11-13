@@ -14,10 +14,9 @@ use tuicr::cli::parse_cli_args;
 use tuicr::config::IgnoreWhitespaceConfig;
 use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, EditorTarget};
 use tuicr::handler::{
-    handle_command_action, handle_comment_action, handle_comment_navigator_action,
-    handle_commit_select_action, handle_commit_selector_action, handle_confirm_action,
-    handle_diff_action, handle_file_list_action, handle_file_picker_action, handle_help_action,
-    handle_mouse_event, handle_search_action, handle_submit_action_picker_action,
+    handle_command_action, handle_comment_action, handle_commit_select_action,
+    handle_confirm_action, handle_file_picker_action, handle_help_action, handle_mouse_event,
+    handle_normal_action, handle_paste, handle_search_action, handle_submit_action_picker_action,
     handle_submit_confirm_action, handle_submit_resolver_action, handle_summary_action,
     handle_theme_picker_action, handle_visual_action,
 };
@@ -926,16 +925,7 @@ fn main() -> anyhow::Result<()> {
                         app.comment_vim_feed_paste(text);
                         continue;
                     }
-                    let action = Action::Paste(text);
-                    match app.input_mode {
-                        InputMode::Comment => handle_comment_action(&mut app, action),
-                        InputMode::Command => handle_command_action(&mut app, action),
-                        InputMode::Search => handle_search_action(&mut app, action),
-                        InputMode::CommitSelect if app.pr_filter_editing() => {
-                            handle_commit_select_action(&mut app, action)
-                        }
-                        _ => {}
-                    }
+                    handle_paste(&mut app, text);
                 }
                 _ => {}
             }
@@ -987,12 +977,7 @@ fn dispatch_action(app: &mut App, action: Action) {
         InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
         InputMode::ThemePicker => handle_theme_picker_action(app, action),
         InputMode::FilePicker => handle_file_picker_action(app, action),
-        InputMode::Normal => match app.focused_panel {
-            FocusedPanel::FileList => handle_file_list_action(app, action),
-            FocusedPanel::Comments => handle_comment_navigator_action(app, action),
-            FocusedPanel::Diff => handle_diff_action(app, action),
-            FocusedPanel::CommitSelector => handle_commit_selector_action(app, action),
-        },
+        InputMode::Normal => handle_normal_action(app, action),
     }
 }
 

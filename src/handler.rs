@@ -1533,6 +1533,43 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
     clear_visual_if_cursor_offscreen(app);
 }
 
+/// Route an action in `InputMode::Normal`. An open file-tree prompt owns
+/// input regardless of which panel has focus (a mouse click can move focus
+/// off the tree while the prompt is still open); otherwise focus decides.
+pub fn handle_normal_action(app: &mut App, action: Action) {
+    if app.file_tree_prompt_editing() {
+        return handle_file_list_action(app, action);
+    }
+    match app.focused_panel {
+        FocusedPanel::FileList => handle_file_list_action(app, action),
+        FocusedPanel::Comments => handle_comment_navigator_action(app, action),
+        FocusedPanel::Diff => handle_diff_action(app, action),
+        FocusedPanel::CommitSelector => handle_commit_selector_action(app, action),
+    }
+}
+
+/// Route a bracketed-paste payload to whichever input is accepting text.
+/// Everything else ignores it, so pasted text never drives normal-mode keys.
+pub fn handle_paste(app: &mut App, text: String) {
+    let action = Action::Paste(text);
+    match app.input_mode {
+        InputMode::Comment => handle_comment_action(app, action),
+        InputMode::Command => handle_command_action(app, action),
+        InputMode::Search => handle_search_action(app, action),
+        InputMode::CommitSelect if app.pr_filter_editing() => {
+            handle_commit_select_action(app, action)
+        }
+        InputMode::Normal if app.file_tree_prompt_editing() => handle_file_list_action(app, action),
+        InputMode::ThemePicker if app.theme_picker_filtering() => {
+            handle_theme_picker_action(app, action)
+        }
+        InputMode::FilePicker if app.file_picker_filtering() => {
+            handle_file_picker_action(app, action)
+        }
+        _ => {}
+    }
+}
+
 /// Handle actions when file list panel is focused
 pub fn handle_file_list_action(app: &mut App, action: Action) {
     // An open `i`/`e`/`/` prompt owns keyboard input until it is submitted or
@@ -1605,6 +1642,10 @@ pub fn handle_file_picker_action(app: &mut App, action: Action) {
     if app.file_picker_filtering() {
         match action {
             Action::InsertChar(c) => app.file_picker_filter_insert_char(c),
+            Action::Paste(text) => text
+                .chars()
+                .filter(|c| !matches!(c, '\n' | '\r'))
+                .for_each(|c| app.file_picker_filter_insert_char(c)),
             Action::DeleteChar => app.file_picker_filter_delete_char(),
             Action::ClearLine => app.file_picker_filter_clear_line(),
             Action::CursorDown(n) => app.move_file_picker_selection(n as isize),
@@ -1650,6 +1691,10 @@ pub fn handle_theme_picker_action(app: &mut App, action: Action) {
 fn handle_theme_picker_filter_action(app: &mut App, action: Action) {
     match action {
         Action::InsertChar(c) => app.theme_picker_filter_insert_char(c),
+        Action::Paste(text) => text
+            .chars()
+            .filter(|c| !matches!(c, '\n' | '\r'))
+            .for_each(|c| app.theme_picker_filter_insert_char(c)),
         Action::DeleteChar => app.theme_picker_filter_delete_char(),
         Action::ClearLine => app.theme_picker_filter_clear_line(),
         Action::SubmitInput => app.commit_theme_picker_filter(),
