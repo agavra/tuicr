@@ -223,6 +223,24 @@ impl App {
         }
     }
 
+    /// True when the gap's controls are not on screen: its file is collapsed
+    /// as reviewed, or a reviewed hunk beside it is. Jumping must not reveal
+    /// context there.
+    pub(in crate::app) fn gap_is_hidden(&self, gap_id: &GapId) -> bool {
+        if self.should_collapse_file(gap_id.file_idx) {
+            return true;
+        }
+        let Some(file) = self.diff_files.get(gap_id.file_idx) else {
+            return true;
+        };
+        if gap_id.hunk_idx >= file.hunks.len() {
+            // EOF gap: hidden along with the last hunk.
+            return gap_id.hunk_idx > 0
+                && self.should_collapse_hunk(gap_id.file_idx, gap_id.hunk_idx - 1);
+        }
+        !self.should_render_gap_before_hunk(gap_id.file_idx, gap_id.hunk_idx)
+    }
+
     /// Expand a gap in the given direction.
     /// If `limit` is Some(n), expand up to n lines. If None, expand all remaining.
     pub fn expand_gap(
@@ -231,6 +249,9 @@ impl App {
         direction: ExpandDirection,
         limit: Option<usize>,
     ) -> Result<()> {
+        if limit == Some(0) {
+            return Ok(());
+        }
         // Ensure file line count is cached for EOF gaps
         self.ensure_file_line_count_cached(gap_id.file_idx);
 
@@ -287,8 +308,10 @@ impl App {
 
         match direction {
             ExpandDirection::Down => {
-                let n = limit.unwrap_or(usize::MAX) as u32;
-                let fetch_end = inner_start.saturating_add(n - 1).min(inner_end);
+                let n = limit.map_or(u32::MAX, |l| u32::try_from(l).unwrap_or(u32::MAX));
+                let fetch_end = inner_start
+                    .saturating_add(n.saturating_sub(1))
+                    .min(inner_end);
                 let new_lines = fetch(inner_start, fetch_end)?;
                 self.expanded_top
                     .entry(gap_id.clone())
@@ -296,8 +319,10 @@ impl App {
                     .extend(new_lines);
             }
             ExpandDirection::Up => {
-                let n = limit.unwrap_or(usize::MAX) as u32;
-                let fetch_start = inner_end.saturating_sub(n - 1).max(inner_start);
+                let n = limit.map_or(u32::MAX, |l| u32::try_from(l).unwrap_or(u32::MAX));
+                let fetch_start = inner_end
+                    .saturating_sub(n.saturating_sub(1))
+                    .max(inner_start);
                 let new_lines = fetch(fetch_start, inner_end)?;
                 // Prepend: new lines go before existing bottom lines
                 let existing = self.expanded_bottom.remove(&gap_id).unwrap_or_default();

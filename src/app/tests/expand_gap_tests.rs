@@ -656,6 +656,53 @@ fn should_expand_up_from_first_hunk() {
 }
 
 #[test]
+fn should_not_expand_gap_for_zero_limit() {
+    // given: file with 50-line gap before first hunk
+    let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+    let mut app = build_app_with_files(vec![file], 100);
+    let gap_id = GapId {
+        file_idx: 0,
+        hunk_idx: 0,
+    };
+
+    // when: expanding zero lines in each direction
+    for dir in [ExpandDirection::Down, ExpandDirection::Up] {
+        app.expand_gap(gap_id.clone(), dir, Some(0)).unwrap();
+    }
+
+    // then: nothing is revealed (a zero limit must not fetch one line)
+    assert!(app.expanded_top.get(&gap_id).is_none_or(|v| v.is_empty()));
+    assert!(
+        app.expanded_bottom
+            .get(&gap_id)
+            .is_none_or(|v| v.is_empty())
+    );
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn should_expand_whole_gap_for_oversized_up_limit() {
+    // given: 50-line gap; limit wraps to 1 if truncated with `as u32`
+    let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+    let mut app = build_app_with_files(vec![file], 100);
+    let gap_id = GapId {
+        file_idx: 0,
+        hunk_idx: 0,
+    };
+
+    // when
+    app.expand_gap(
+        gap_id.clone(),
+        ExpandDirection::Up,
+        Some(u32::MAX as usize + 2),
+    )
+    .unwrap();
+
+    // then: the entire gap is revealed
+    assert_eq!(app.expanded_bottom.get(&gap_id).unwrap().len(), 50);
+}
+
+#[test]
 fn should_expand_all_lines_with_both_direction() {
     // given: file with 50-line gap before first hunk
     let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
@@ -1926,4 +1973,133 @@ fn should_render_old_side_thread_on_context_line_once_in_each_view() {
         assert_eq!(rows[0] < hunk_header, under_header, "{mode:?}");
         assert_eq!(app.total_lines(), app.line_annotations.len(), "{mode:?}");
     }
+}
+
+#[test]
+fn should_not_panic_jumping_into_hidden_gap_of_collapsed_reviewed_file() {
+    // The gap's top half is already expanded, so reaching line 10 needs zero
+    // further lines; the reviewed file hides that expansion from the cursor.
+    let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+    let mut app = build_app_with_files(vec![file], 100);
+    let gap_id = GapId {
+        file_idx: 0,
+        hunk_idx: 0,
+    };
+    app.expand_gap(gap_id.clone(), ExpandDirection::Down, Some(20))
+        .unwrap();
+    app.toggle_reviewed();
+    let before = app.expanded_top.get(&gap_id).map_or(0, |v| v.len());
+
+    app.go_to_source_line(10, LineSide::New);
+
+    assert_eq!(app.expanded_top.get(&gap_id).map_or(0, |v| v.len()), before);
+    assert!(!app.expanded_bottom.contains_key(&gap_id));
+}
+
+fn collapsed_hunk_app(file_count: usize) -> App {
+    let files = (0..file_count)
+        .map(|i| {
+            make_file_with_hunks(
+                &format!("f{i}.rs"),
+                vec![make_hunk(1, 5), make_hunk(50, 5), make_hunk(90, 5)],
+            )
+        })
+        .collect();
+    build_app_with_files(files, 200)
+}
+
+fn expanded_len(app: &App, hunk_idx: usize) -> usize {
+    let gap = GapId {
+        file_idx: 0,
+        hunk_idx,
+    };
+    app.expanded_top.get(&gap).map_or(0, |v| v.len())
+        + app.expanded_bottom.get(&gap).map_or(0, |v| v.len())
+}
+
+fn mark_hunk_reviewed(app: &mut App, hunk_idx: usize) {
+    app.diff_state.cursor_line = app
+        .line_annotations
+        .iter()
+        .position(|l| {
+            matches!(l, AnnotatedLine::HunkHeader { file_idx: 0, hunk_idx: h } if *h == hunk_idx)
+        })
+        .unwrap();
+    app.toggle_hunk_reviewed();
+    assert!(app.should_collapse_hunk(0, hunk_idx));
+    app.diff_state.cursor_line = 0;
+    app.diff_state.current_file_idx = 0;
+}
+
+#[test]
+fn goto_line_skips_gap_in_collapsed_reviewed_file() {
+    let mut app = collapsed_hunk_app(1);
+    app.toggle_reviewed();
+    assert!(app.should_collapse_file(0));
+    app.go_to_source_line(20, LineSide::New);
+    assert_eq!(expanded_len(&app, 1), 0);
+}
+
+#[test]
+fn goto_line_skips_gap_before_a_reviewed_hunk() {
+    let mut app = collapsed_hunk_app(1);
+    mark_hunk_reviewed(&mut app, 1);
+    app.go_to_source_line(20, LineSide::New); // gap 1: before reviewed hunk 1
+    assert_eq!(expanded_len(&app, 1), 0);
+}
+
+#[test]
+fn goto_line_skips_gap_after_a_reviewed_hunk() {
+    let mut app = collapsed_hunk_app(1);
+    mark_hunk_reviewed(&mut app, 1);
+    app.go_to_source_line(70, LineSide::New); // gap 2: after reviewed hunk 1
+    assert_eq!(expanded_len(&app, 2), 0);
+}
+
+#[test]
+fn goto_line_skips_eof_gap_after_a_reviewed_last_hunk() {
+    let mut app = collapsed_hunk_app(1);
+    mark_hunk_reviewed(&mut app, 2);
+    app.go_to_source_line(150, LineSide::New); // EOF gap of 200-line file
+    assert_eq!(expanded_len(&app, 3), 0);
+}
+
+#[test]
+fn goto_line_still_expands_gap_beside_unreviewed_hunks() {
+    let mut app = collapsed_hunk_app(1);
+    mark_hunk_reviewed(&mut app, 0);
+    app.go_to_source_line(70, LineSide::New);
+    assert!(expanded_len(&app, 2) > 0);
+}
+
+#[test]
+fn expand_gap_down_and_up_reveal_exactly_the_requested_count() {
+    let mut app = collapsed_hunk_app(1);
+    let gap = GapId {
+        file_idx: 0,
+        hunk_idx: 1,
+    };
+    app.expand_gap(gap.clone(), ExpandDirection::Down, Some(3))
+        .unwrap();
+    assert_eq!(app.expanded_top[&gap].len(), 3);
+    app.expand_gap(gap.clone(), ExpandDirection::Up, Some(4))
+        .unwrap();
+    assert_eq!(app.expanded_bottom[&gap].len(), 4);
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn expand_gap_count_beyond_u32_expands_whole_gap_without_panicking() {
+    let mut app = collapsed_hunk_app(1);
+    let gap = GapId {
+        file_idx: 0,
+        hunk_idx: 1,
+    };
+    app.expand_gap(
+        gap.clone(),
+        ExpandDirection::Down,
+        Some(u32::MAX as usize + 1),
+    )
+    .unwrap();
+    assert_eq!(app.expanded_top[&gap].len(), 44);
 }
