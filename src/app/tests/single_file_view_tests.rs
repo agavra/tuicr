@@ -373,6 +373,30 @@ fn pr_editor_target_prefers_a_worktree_copy_of_the_pr_revision() {
     assert_eq!(target.label, "main.rs");
 }
 
+/// A file the PR deletes only exists at the base, so its snapshot must live in
+/// the directory named for the base SHA, not the head SHA.
+#[test]
+fn pr_editor_target_snapshots_a_deleted_file_under_the_base_sha() {
+    let base = tempfile::tempdir().expect("tempdir");
+    crate::app::editor_target::TEST_BASE.with(|b| *b.borrow_mut() = Some(base.path().join("s")));
+    let mut deleted = file("gone.rs", vec![hunk(1, 1)]);
+    deleted.status = FileStatus::Deleted;
+    deleted.old_path = deleted.new_path.take();
+    let (mut app, head_sha, base_sha) = pr_app(FakeForgeBackend::serving(None), vec![deleted]);
+
+    app.queue_editor_for_focused_item();
+    crate::app::editor_target::TEST_BASE.with(|b| *b.borrow_mut() = None);
+
+    let target = app.take_pending_editor_target().expect("editor target");
+    let path = target.path.display().to_string();
+    assert!(path.contains(&base_sha), "{path}");
+    assert!(!path.contains(&head_sha), "{path}");
+    assert_eq!(
+        fs::read_to_string(&target.path).unwrap(),
+        revision_content(&base_sha)
+    );
+}
+
 #[test]
 fn pr_editor_target_warns_when_a_binary_file_is_not_in_the_checkout() {
     let mut binary = file("logo.png", vec![hunk(1, 1)]);
