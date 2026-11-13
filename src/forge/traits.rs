@@ -558,7 +558,10 @@ pub struct PullRequestReviewRecord {
     pub commit_oid: Option<String>,
 }
 
-/// A reviewer's latest response on a pull request.
+/// A reviewer's effective response on a pull request: normally the latest
+/// response, but a later comment-only review does not replace an earlier
+/// decisive vote (approval or change request), and dismissed votes are ignored
+/// (Gitea). `submitted_at` is the time of the effective row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestReviewStatus {
     pub author: Option<String>,
