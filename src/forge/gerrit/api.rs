@@ -2065,7 +2065,9 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = crate::forge::GIT_SSH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         unsafe {
             std::env::set_var("GIT_SSH_COMMAND", &stub);
             std::env::set_var("GIT_SSH_VARIANT", "ssh");
