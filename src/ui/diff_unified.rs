@@ -1359,12 +1359,15 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         |_idx, line| unified_line_bg_style(line, &app.theme),
     );
 
+    // Widths of the rows actually drawn (post-wrap, post-scroll): the overlays
+    // fill the space after the real content, so they must not guess it.
+    let row_widths: Vec<usize> = visible_lines.iter().map(Line::width).collect();
+
     let overlay_ctx = crate::ui::diff_view::DiffOverlayPaint {
         inner,
         visible_lines_unscrolled: &visible_lines_unscrolled_for_bg,
-        line_widths: &line_widths,
+        row_widths: &row_widths,
         row_heights: &row_heights,
-        wrap_lines: app.diff_state.wrap_lines,
         viewport_width: inner.width as usize,
         scroll_x,
         scroll_offset: app.diff_state.scroll_offset,
@@ -1999,6 +2002,23 @@ mod remote_comments_snapshot_tests {
             assert_eq!(
                 crate::ui::row_height::annotation_row_height(&app, annotation_idx),
                 2
+            );
+        }
+    }
+
+    #[test]
+    fn should_not_overwrite_wrapped_file_header_text_with_fill() {
+        // Word wrapping breaks at the space, so how much of the last row is
+        // text depends on the path length; sweep the boundary.
+        for len in 80..110 {
+            let path = format!("{} tail.rs", "x".repeat(len));
+            let mut app = make_revision_app(vec![header_only_diff_file_at(&path)]);
+            app.set_diff_wrap(true);
+            let body = body_text(&draw_unified_diff(&mut app));
+
+            assert!(
+                body.contains("tail.rs") && body.contains("[M]"),
+                "len {len}:\n{body}"
             );
         }
     }
