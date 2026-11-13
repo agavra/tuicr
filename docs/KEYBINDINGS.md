@@ -304,10 +304,10 @@ Not every forge supports every event:
 |---|---|---|---|---|---|---|
 | `comment` | yes | yes | yes | yes | yes | yes |
 | `approve` | yes | yes | yes | yes | yes (vote +10) | yes (vote +2) |
-| `request-changes` | yes | yes | yes | no | yes (vote -10) | yes (vote -1) |
-| `draft` | yes | yes | yes | no | yes (plain comment) | yes |
+| `request-changes` | yes | yes | yes | yes | yes (vote -10) | yes (vote -1) |
+| `draft` | yes | yes | yes | yes | yes (plain comment) | yes |
 
-Bitbucket rejects `request-changes` and `draft` up front rather than silently downgrading them.
+Bitbucket `draft` posts pending comments that the author publishes from Bitbucket's own UI.
 Azure DevOps has no pending-review primitive, so `draft` posts as a plain comment with no vote.
 Gitea requires a review summary for `request-changes` and `draft`, and for `comment` when there
 are no inline comments; inline comments alone do not satisfy it. GitLab `draft` creates draft
