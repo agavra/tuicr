@@ -734,7 +734,10 @@ impl App {
             let id = config.id;
             let label = config.label.unwrap_or_else(|| id.clone());
             let definition = config.definition;
-            let color = config.color.as_deref().and_then(Self::parse_config_color);
+            let color = config
+                .color
+                .as_deref()
+                .and_then(crate::theme::parse_color_value);
             resolved.push(CommentTypeDefinition {
                 id,
                 label,
@@ -768,43 +771,6 @@ impl App {
 
     pub(in crate::app) fn default_comment_type(&self) -> CommentType {
         Self::first_comment_type(&self.comment_types)
-    }
-
-    fn parse_config_color(value: &str) -> Option<Color> {
-        let normalized = value.trim().to_ascii_lowercase();
-        if normalized.is_empty() {
-            return None;
-        }
-
-        if let Some(hex) = normalized.strip_prefix('#')
-            && hex.len() == 6
-            && let Ok(rgb) = u32::from_str_radix(hex, 16)
-        {
-            let r = ((rgb >> 16) & 0xff) as u8;
-            let g = ((rgb >> 8) & 0xff) as u8;
-            let b = (rgb & 0xff) as u8;
-            return Some(Color::Rgb(r, g, b));
-        }
-
-        match normalized.as_str() {
-            "black" => Some(Color::Black),
-            "red" => Some(Color::Red),
-            "green" => Some(Color::Green),
-            "yellow" => Some(Color::Yellow),
-            "blue" => Some(Color::Blue),
-            "magenta" => Some(Color::Magenta),
-            "cyan" => Some(Color::Cyan),
-            "gray" | "grey" => Some(Color::Gray),
-            "darkgray" | "dark_gray" | "darkgrey" | "dark_grey" => Some(Color::DarkGray),
-            "lightred" | "light_red" => Some(Color::LightRed),
-            "lightgreen" | "light_green" => Some(Color::LightGreen),
-            "lightyellow" | "light_yellow" => Some(Color::LightYellow),
-            "lightblue" | "light_blue" => Some(Color::LightBlue),
-            "lightmagenta" | "light_magenta" => Some(Color::LightMagenta),
-            "lightcyan" | "light_cyan" => Some(Color::LightCyan),
-            "white" => Some(Color::White),
-            _ => None,
-        }
     }
 
     /// Human-facing label for a comment type, e.g. `SUGGESTION`. Returns an

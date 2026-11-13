@@ -882,7 +882,7 @@ fn parse_comment_types(
                             "Warning: Config key 'comment_types[{index}].color' cannot be empty; ignoring value"
                         ));
                         None
-                    } else if !is_supported_color_value(trimmed) {
+                    } else if crate::theme::parse_color_value(trimmed).is_none() {
                         warnings.push(format!(
                             "Warning: Config key 'comment_types[{index}].color' must be a named color or #RRGGBB; ignoring value"
                         ));
@@ -947,47 +947,6 @@ fn parse_optional_nonempty_string(
             None
         }
     }
-}
-
-fn is_supported_color_value(value: &str) -> bool {
-    let normalized = value.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return false;
-    }
-
-    if let Some(hex) = normalized.strip_prefix('#') {
-        return hex.len() == 6 && hex.chars().all(|ch| ch.is_ascii_hexdigit());
-    }
-
-    matches!(
-        normalized.as_str(),
-        "black"
-            | "red"
-            | "green"
-            | "yellow"
-            | "blue"
-            | "magenta"
-            | "cyan"
-            | "gray"
-            | "grey"
-            | "darkgray"
-            | "dark_gray"
-            | "darkgrey"
-            | "dark_grey"
-            | "lightred"
-            | "light_red"
-            | "lightgreen"
-            | "light_green"
-            | "lightyellow"
-            | "light_yellow"
-            | "lightblue"
-            | "light_blue"
-            | "lightmagenta"
-            | "light_magenta"
-            | "lightcyan"
-            | "light_cyan"
-            | "white"
-    )
 }
 
 #[cfg(test)]

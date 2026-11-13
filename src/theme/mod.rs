@@ -2051,50 +2051,13 @@ fn fallback_embedded_theme_for_panel_bg(panel_bg: Color) -> EmbeddedThemeName {
     }
 }
 
-fn is_supported_color_value(value: &str) -> bool {
-    let normalized = value.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return false;
-    }
-
-    if let Some(hex) = normalized.strip_prefix('#') {
-        return hex.len() == 6 && hex.chars().all(|ch| ch.is_ascii_hexdigit());
-    }
-
-    matches!(
-        normalized.as_str(),
-        "black"
-            | "red"
-            | "green"
-            | "yellow"
-            | "blue"
-            | "magenta"
-            | "cyan"
-            | "gray"
-            | "grey"
-            | "darkgray"
-            | "dark_gray"
-            | "darkgrey"
-            | "dark_grey"
-            | "lightred"
-            | "light_red"
-            | "lightgreen"
-            | "light_green"
-            | "lightyellow"
-            | "light_yellow"
-            | "lightblue"
-            | "light_blue"
-            | "lightmagenta"
-            | "light_magenta"
-            | "lightcyan"
-            | "light_cyan"
-            | "white"
-    )
-}
-
-fn parse_color_value(value: &str) -> Option<Color> {
+/// Parse a named color or `#RRGGBB`; `None` for anything else.
+pub(crate) fn parse_color_value(value: &str) -> Option<Color> {
     let normalized = value.trim().to_ascii_lowercase();
     if let Some(hex) = normalized.strip_prefix('#') {
+        if hex.len() != 6 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return None;
+        }
         let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
         let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
         let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
@@ -2129,12 +2092,8 @@ fn require_local_theme_color(table: &toml::Table, key: &str) -> Result<Color, St
     let raw = value
         .as_str()
         .ok_or_else(|| format!("Theme key '{key}' must be a string"))?;
-    if !is_supported_color_value(raw) {
-        return Err(format!(
-            "Theme key '{key}' must be a named color or #RRGGBB"
-        ));
-    }
-    parse_color_value(raw).ok_or_else(|| format!("Theme key '{key}' could not be parsed"))
+    parse_color_value(raw)
+        .ok_or_else(|| format!("Theme key '{key}' must be a named color or #RRGGBB"))
 }
 
 fn parse_optional_local_theme_string(
@@ -2594,6 +2553,15 @@ fn shift_lightness(c: Color, amount: i32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_parse_only_named_colors_and_strict_hex() {
+        assert_eq!(parse_color_value(" #0A1b2C "), Some(Color::Rgb(10, 27, 44)));
+        assert_eq!(parse_color_value("Light_Blue"), Some(Color::LightBlue));
+        for bad in ["", "#", "#12345", "#1234567", "#+12345", "#1é123", "nope"] {
+            assert_eq!(parse_color_value(bad), None, "{bad:?}");
+        }
+    }
     use std::{
         collections::HashSet,
         fs,
