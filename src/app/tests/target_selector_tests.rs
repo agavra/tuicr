@@ -4367,3 +4367,97 @@ fn should_clear_in_flight_reloads_when_entering_another_pr() {
     assert!(app.pr_reload_state.is_none() && app.pr_reload_rx.is_none());
     assert!(app.pr_range_reload_state.is_none() && app.pr_range_reload_rx.is_none());
 }
+
+fn app_in_pr_mode_from_checkout() -> (App, tempfile::TempDir, TestReviewsDir) {
+    let reviews = TestReviewsDir::new();
+    let dir = tempfile::tempdir().expect("failed to create test repo dir");
+    let commits = vec![
+        CommitInfo {
+            id: "c2".to_string(),
+            short_id: "c2".to_string(),
+            branch_name: None,
+            summary: "second".to_string(),
+            body: None,
+            author: "a".to_string(),
+            time: chrono::Utc::now(),
+        },
+        CommitInfo {
+            id: "c1".to_string(),
+            short_id: "c1".to_string(),
+            branch_name: None,
+            summary: "first".to_string(),
+            body: None,
+            author: "a".to_string(),
+            time: chrono::Utc::now(),
+        },
+    ];
+    let mut app = build_app_rooted(dir.path().to_path_buf(), commits, None);
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "first"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    ));
+    app.open_pr_with_backend(&sample_pr(42, "first"), backend, None)
+        .unwrap();
+    (app, dir, reviews)
+}
+
+/// Entering PR mode swaps in `PrNoopVcs`, which has no commits or working
+/// tree, so the Local tab used to be empty for the rest of the run.
+#[test]
+fn should_list_local_commits_after_entering_pr_mode() {
+    // given a checkout app that has opened a PR
+    let (mut app, dir, _reviews) = app_in_pr_mode_from_checkout();
+    assert!(
+        app.vcs_info
+            .root_path
+            .to_string_lossy()
+            .starts_with("forge:")
+    );
+
+    // when the Local tab is opened
+    app.enter_target_selector(TargetTab::Local).unwrap();
+
+    // then the checkout's commits are listed
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+    assert_eq!(app.commit_list.len(), 2);
+    // and the PR stays active behind the selector
+    assert!(
+        app.vcs_info
+            .root_path
+            .to_string_lossy()
+            .starts_with("forge:")
+    );
+    assert!(matches!(app.diff_source, DiffSource::PullRequest(_)));
+    // and local sessions are scoped by the checkout, not the PR identity
+    // (the reload runs with the PR backend active, so it must not read its root)
+    app.enter_target_selector(TargetTab::Sessions).unwrap();
+    app.sessions_tab_toggle_show_empty();
+    assert_eq!(
+        app.sessions_tab.scope(),
+        dir.path().file_name().unwrap().to_string_lossy()
+    );
+}
+
+/// A local load that finds nothing leaves the PR on screen with its own
+/// backend; one that succeeds leaves PR mode with the checkout's backend.
+#[test]
+fn should_keep_the_pr_backend_when_a_local_load_finds_nothing() {
+    let (mut app, dir, _reviews) = app_in_pr_mode_from_checkout();
+
+    let loaded = app
+        .with_local_vcs(|app| app.load_working_tree_selection())
+        .unwrap();
+
+    assert!(!loaded);
+    assert!(matches!(app.diff_source, DiffSource::PullRequest(_)));
+    assert!(
+        app.vcs_info
+            .root_path
+            .to_string_lossy()
+            .starts_with("forge:")
+    );
+    // and the checkout is still reachable afterwards
+    app.enter_target_selector(TargetTab::Local).unwrap();
+    assert_eq!(app.commit_list.len(), 2);
+    drop(dir);
+}

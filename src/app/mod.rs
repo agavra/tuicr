@@ -1146,6 +1146,11 @@ pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
     pub vcs_info: VcsInfo,
+    /// The backend that is *not* active while a PR is open: the checkout's own
+    /// while in PR mode (the active one is `PrNoopVcs`), so local targets stay
+    /// reachable. `None` until needed when tuicr started on `tuicr pr`; see
+    /// `activate_local_vcs`.
+    parked_vcs: Option<(Box<dyn VcsBackend>, VcsInfo)>,
     /// The on-disk repo root tuicr was launched in, when there is one.
     ///
     /// Entering PR mode replaces `vcs_info.root_path` with the synthetic

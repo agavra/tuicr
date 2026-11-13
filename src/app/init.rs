@@ -463,6 +463,7 @@ impl App {
             theme,
             vcs,
             vcs_info,
+            parked_vcs: None,
             local_repo_root,
             session,
             persisted_session_snapshot,
