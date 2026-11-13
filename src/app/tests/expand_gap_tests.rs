@@ -656,6 +656,53 @@ fn should_expand_up_from_first_hunk() {
 }
 
 #[test]
+fn should_not_expand_gap_for_zero_limit() {
+    // given: file with 50-line gap before first hunk
+    let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+    let mut app = build_app_with_files(vec![file], 100);
+    let gap_id = GapId {
+        file_idx: 0,
+        hunk_idx: 0,
+    };
+
+    // when: expanding zero lines in each direction
+    for dir in [ExpandDirection::Down, ExpandDirection::Up] {
+        app.expand_gap(gap_id.clone(), dir, Some(0)).unwrap();
+    }
+
+    // then: nothing is revealed (a zero limit must not fetch one line)
+    assert!(app.expanded_top.get(&gap_id).is_none_or(|v| v.is_empty()));
+    assert!(
+        app.expanded_bottom
+            .get(&gap_id)
+            .is_none_or(|v| v.is_empty())
+    );
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn should_expand_whole_gap_for_oversized_up_limit() {
+    // given: 50-line gap; limit wraps to 1 if truncated with `as u32`
+    let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+    let mut app = build_app_with_files(vec![file], 100);
+    let gap_id = GapId {
+        file_idx: 0,
+        hunk_idx: 0,
+    };
+
+    // when
+    app.expand_gap(
+        gap_id.clone(),
+        ExpandDirection::Up,
+        Some(u32::MAX as usize + 2),
+    )
+    .unwrap();
+
+    // then: the entire gap is revealed
+    assert_eq!(app.expanded_bottom.get(&gap_id).unwrap().len(), 50);
+}
+
+#[test]
 fn should_expand_all_lines_with_both_direction() {
     // given: file with 50-line gap before first hunk
     let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);

@@ -209,6 +209,8 @@ from the checkout, never copied.
 | `s` | Start an editable suggestion prefilled with the selected code lines |
 | `Esc` / `v` / `V` | Cancel selection |
 
+Range comments must stay within one file: if the selection spans files, `c` / `Enter` warns "Invalid selection" and cancels visual mode without creating a comment.
+
 Suggestions replace whole lines on the new side of a single diff hunk. Selections
 across gaps (including deleted-only rows) or expanded context are rejected.
 Unchanged context between added code blocks is included in the suggestion.
