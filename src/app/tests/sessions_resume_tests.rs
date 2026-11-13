@@ -263,9 +263,14 @@ fn should_resume_working_tree_session_through_the_working_tree_loader() {
 
     // the working-tree diff loaded, not the unstaged one
     let calls = calls.lock().unwrap();
+    // The stage marks also read the unstaged diff, so check what loaded.
     assert_eq!(calls.working_tree, 1, "expected the working-tree diff");
-    assert_eq!(calls.unstaged, 0, "unstaged-only diff is the wrong source");
     assert_eq!(app.diff_files.len(), 1);
+    assert_eq!(
+        app.diff_files[0].display_path(),
+        &PathBuf::from("worktree.py"),
+        "unstaged-only diff is the wrong source"
+    );
     assert!(
         matches!(app.session.diff_source, SessionDiffSource::WorkingTree),
         "session source must survive resume or a different session is written"

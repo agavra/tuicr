@@ -42,6 +42,7 @@ fn line(origin: LineOrigin, content: &str, old: Option<u32>, new: Option<u32>) -
         new_lineno: new,
         raw_content: None,
         highlighted_spans: None,
+        stage: None,
     }
 }
 

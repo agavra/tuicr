@@ -18,6 +18,7 @@ mod hg;
 mod jj;
 pub mod pr_noop;
 pub mod pristine;
+pub(crate) mod stage_marks;
 pub(crate) mod traits;
 pub(crate) mod whitespace;
 
@@ -116,6 +117,7 @@ pub(crate) fn slice_context_lines(content: &str, start_line: u32, end_line: u32)
             new_lineno: Some(line_num),
             raw_content: lines[idx].contains('\t').then(|| lines[idx].to_string()),
             highlighted_spans: None,
+            stage: None,
         });
     }
     result
@@ -524,6 +526,7 @@ mod tests {
                     new_lineno: None,
                     raw_content: None,
                     highlighted_spans: None,
+                    stage: None,
                 },
                 DiffLine {
                     origin: LineOrigin::Addition,
@@ -532,6 +535,7 @@ mod tests {
                     new_lineno: Some(target_line),
                     raw_content: None,
                     highlighted_spans: None,
+                    stage: None,
                 },
             ],
             old_start: target_line,

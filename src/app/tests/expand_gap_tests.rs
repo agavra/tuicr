@@ -34,6 +34,7 @@ impl VcsBackend for MockVcs {
                 new_lineno: Some(line_num),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             });
         }
         Ok(result)
@@ -59,6 +60,7 @@ fn make_hunk(new_start: u32, new_count: u32) -> DiffHunk {
             new_lineno: Some(new_start + i),
             raw_content: None,
             highlighted_spans: None,
+            stage: None,
         });
     }
     DiffHunk {
@@ -192,6 +194,7 @@ fn hunk_navigation_counts_paired_changes_and_wrapped_comments() {
                 new_lineno: None,
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             },
             DiffLine {
                 origin: LineOrigin::Addition,
@@ -200,6 +203,7 @@ fn hunk_navigation_counts_paired_changes_and_wrapped_comments() {
                 new_lineno: Some(1),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             },
             DiffLine {
                 origin: LineOrigin::Context,
@@ -208,6 +212,7 @@ fn hunk_navigation_counts_paired_changes_and_wrapped_comments() {
                 new_lineno: Some(2),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             },
         ];
         let file = make_file_with_hunks("test.rs", vec![first, make_hunk(50, 5)]);
@@ -1738,6 +1743,7 @@ fn make_shifted_hunk(new_start: u32, count: u32, shift: u32) -> DiffHunk {
             new_lineno: Some(new_start + i),
             raw_content: None,
             highlighted_spans: None,
+            stage: None,
         })
         .collect();
     DiffHunk {

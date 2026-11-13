@@ -845,6 +845,7 @@ fn build_untracked_diff_file(
             old_lineno: None,
             new_lineno: Some((idx + 1) as u32),
             highlighted_spans: None,
+            stage: None,
         })
         .collect();
 

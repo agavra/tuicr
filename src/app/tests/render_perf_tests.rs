@@ -67,6 +67,7 @@ fn line(idx: usize) -> DiffLine {
         new_lineno: Some(idx as u32 + 1),
         raw_content: None,
         highlighted_spans: Some(spans),
+        stage: None,
     }
 }
 

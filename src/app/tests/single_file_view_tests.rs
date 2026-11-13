@@ -44,6 +44,7 @@ fn hunk(start: u32, count: u32) -> DiffHunk {
             new_lineno: Some(start + i),
             raw_content: None,
             highlighted_spans: None,
+            stage: None,
         })
         .collect();
     DiffHunk {
