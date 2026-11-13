@@ -76,7 +76,7 @@ impl ReviewStore {
         session_ref: &SessionRef,
         request: AddCommentRequest,
     ) -> Result<Comment> {
-        let reviews_dir = self.reviews_dir()?;
+        let reviews_dir = self.reviews_dir_for_session(session_ref)?;
         let (_session, comment) =
             storage::update_session_in_dir(session_ref.path(), &reviews_dir, |session| {
                 add_comment_to_session(session, request)
@@ -86,7 +86,7 @@ impl ReviewStore {
 
     /// Delete one comment by id from a persisted session.
     pub fn delete_comment(&self, session_ref: &SessionRef, comment_id: &str) -> Result<bool> {
-        let reviews_dir = self.reviews_dir()?;
+        let reviews_dir = self.reviews_dir_for_session(session_ref)?;
         let (_session, removed) =
             storage::update_session_in_dir(session_ref.path(), &reviews_dir, |session| {
                 let Some(location) = session.find_comment_by_id(comment_id) else {
@@ -114,7 +114,7 @@ impl ReviewStore {
         session_ref: &SessionRef,
         scope: ClearScope,
     ) -> Result<(usize, usize)> {
-        let reviews_dir = self.reviews_dir()?;
+        let reviews_dir = self.reviews_dir_for_session(session_ref)?;
         let (_session, counts) =
             storage::update_session_in_dir(session_ref.path(), &reviews_dir, |session| {
                 Ok(session.clear_comments(scope))
@@ -130,7 +130,7 @@ impl ReviewStore {
     /// Unlike quit-time cleanup this also discards sessions that carry
     /// comments, so callers are expected to confirm first.
     pub fn delete_review(&self, session_ref: &SessionRef) -> Result<DeleteOutcome> {
-        let reviews_dir = self.reviews_dir()?;
+        let reviews_dir = self.reviews_dir_for_session(session_ref)?;
         storage::delete_inactive_session_in_dir(session_ref.path(), &reviews_dir)
     }
 
@@ -145,6 +145,15 @@ impl ReviewStore {
             Some(path) => Ok(path.clone()),
             None => storage::get_reviews_dir(),
         }
+    }
+
+    /// The storage root a resolved session lives under, derived from its
+    /// path so a session resolved from one root is never re-saved or pruned
+    /// against the other. Falls back to this store's configured root when
+    /// the layout doesn't match.
+    fn reviews_dir_for_session(&self, session_ref: &SessionRef) -> Result<PathBuf> {
+        storage::reviews_dir_from_session_path(session_ref.path())
+            .map_or_else(|| self.reviews_dir(), Ok)
     }
 }
 

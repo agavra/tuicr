@@ -54,6 +54,7 @@ no_update_check = false
 review_watch_interval_ms = 1000
 single_file_view = false
 username = "user"
+local_storage = false
 diff_watch_interval_ms = 0
 
 backend = "libgit2"
@@ -122,6 +123,7 @@ session_header = true
 | `review_watch_interval_ms` | `1000`       | Poll interval for persisted review-session changes. Set to `0` to disable automatic local-session reloads.                                                 |
 | `single_file_view`         | `false`      | Start in single-file view for supported review targets. Pristine `--all-files` mode always starts in single-file view.                                     |
 | `username`                 | `"user"`     | Display name stamped on local comments and used as the viewer identity for local comment coloring.                                                         |
+| `local_storage`            | `false`      | Persist local review sessions in `<repo>/.tuicr/reviews` instead of the platform data directory, keeping review state beside the checkout. Each checkout keeps its own sessions (its own `index.json`, `active_sessions.json`, lock); nothing is migrated and no other root is read while it is on, so turning it off resurfaces the old platform-dir sessions. PR and `--file` / `--all-files` sessions always use the platform data directory. Override per run with `--local-storage` (the flag can only enable it; a config `local_storage = true` applies to every run). Gitignoring `.tuicr/` is recommended; tuicr never writes a `.gitignore` for you. |
 | `diff_watch_interval_ms`   | `0`          | Poll interval for re-reading the local diff so uncommitted changes show without `:e`. The same tick refreshes the commit pane, including the "Staged changes" and "Unstaged changes" rows. A commit-range review, from `-r` or picked in the commit selector, keeps its range in the pane. With `-w` it refreshes only those two rows. Without it the pane never gains them. `0` (default) disables it. Ignored for PR and `--all-files` reviews. |
 | `backend`                  | `libgit2`    | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`.                                                                                |
 | `comment_types`            | (none)       | Comment categories. Untyped by default. See [Comment types](#comment-types).                                                                               |

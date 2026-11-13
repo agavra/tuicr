@@ -239,6 +239,10 @@ pub struct AppConfig {
     /// used as the "viewer" identity for per-author coloring in the comment
     /// pane. Defaults to `"user"` when unset.
     pub username: Option<String>,
+    /// Persist local review sessions in `<repo>/.tuicr/reviews` instead of
+    /// the platform data directory. Overridable at runtime with
+    /// `--local-storage`.
+    pub local_storage: Option<bool>,
     /// `[forge]` section settings. Always present; `None` means "no override"
     /// and downstream code should treat it as `ForgeConfig::default()`.
     pub forge: Option<ForgeConfig>,
@@ -304,6 +308,7 @@ const KNOWN_KEYS: &[&str] = &[
     "no_update_check",
     "single_file_view",
     "username",
+    "local_storage",
     "forge",
     "export",
 ];
@@ -679,6 +684,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         no_update_check: read_bool(table, "no_update_check", &mut warnings),
         single_file_view: read_bool(table, "single_file_view", &mut warnings),
         username: read_string(table, "username", &mut warnings),
+        local_storage: read_bool(table, "local_storage", &mut warnings),
         forge: table
             .get("forge")
             .and_then(|v| parse_forge(v, &mut warnings)),
@@ -2007,6 +2013,29 @@ mod tests {
             outcome.config.as_ref().and_then(|cfg| cfg.export_legend),
             None
         );
+    }
+
+    // local_storage
+
+    #[test]
+    fn should_parse_local_storage_true() {
+        let outcome = parse_config("local_storage = true\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.local_storage),
+            Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_local_storage_with_invalid_type() {
+        let outcome = parse_config("local_storage = \"yes\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.local_storage),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(outcome.warnings[0].contains('\''));
     }
 
     // scroll_offset

@@ -51,6 +51,7 @@ take the last one given and boolean flags stay on once set, so
 | `--all-files` | `-A` | | Review every tracked file in the current repo |
 | `--stdout` | | | Print the export to stdout instead of copying to the clipboard |
 | `--no-update-check` | | | Skip the startup update check (same as `no_update_check` in the config) |
+| `--local-storage` | | | Store local review sessions in `<repo>/.tuicr/reviews` (same as `local_storage = true` in the config). PR and `--file` / `--all-files` sessions stay in the platform data directory |
 | `--repo-url` | | `URL` | Override the forge repo for PR operations |
 | `--remote` | | `NAME` | Use a named VCS remote's fetch/pull URL for PR operations; conflicts with `--repo-url` |
 | `--version` | `-V` | | Print the version and exit |

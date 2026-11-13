@@ -574,7 +574,9 @@ fn should_refuse_to_delete_a_session_open_in_another_tuicr() {
     let summary = stage_session(&mut app, session.clone());
     assert!(!summary.active);
     let path = summary.session_ref.path().to_path_buf();
-    crate::persistence::storage::mark_session_active(&session, &path).expect("mark active");
+    let reviews_dir = crate::persistence::storage::get_reviews_dir().unwrap();
+    crate::persistence::storage::mark_session_active_in_dir(&session, &path, &reviews_dir)
+        .expect("mark active");
 
     // when
     app.sessions_tab_delete_selected();

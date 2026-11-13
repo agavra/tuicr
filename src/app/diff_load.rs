@@ -422,8 +422,7 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session =
-            Self::load_or_create_session(&self.vcs_info, SessionDiffSource::StagedAndUnstaged);
+        self.session = self.load_or_create_session_here(SessionDiffSource::StagedAndUnstaged)?;
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
@@ -463,7 +462,7 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::WorkingTree);
+        self.session = self.load_or_create_session_here(SessionDiffSource::WorkingTree)?;
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
@@ -498,7 +497,7 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Staged);
+        self.session = self.load_or_create_session_here(SessionDiffSource::Staged)?;
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
@@ -533,7 +532,7 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Unstaged);
+        self.session = self.load_or_create_session_here(SessionDiffSource::Unstaged)?;
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
@@ -946,8 +945,12 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session =
-            Self::load_or_create_staged_unstaged_and_commits_session(&self.vcs_info, &selected_ids);
+        let reviews_dir = self.reviews_root()?;
+        self.session = Self::load_or_create_staged_unstaged_and_commits_session(
+            &self.vcs_info,
+            &selected_ids,
+            &reviews_dir,
+        );
 
         for file in &diff_files {
             self.session.add_diff_file(file);
@@ -1899,6 +1902,7 @@ mod tests {
             commit_selection: CommitSelectionStart::All,
             pr_target: None,
             repo_url_override: None,
+            local_storage: false,
         };
         let captured = options.vcs_open_options();
         assert_eq!(captured.git_backend_preference, GitBackendPreference::Cli);

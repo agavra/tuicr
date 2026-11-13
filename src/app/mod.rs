@@ -17,7 +17,7 @@ use crate::model::{
     ClearScope, Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin,
     LineRange, LineSide, ReviewSession, SessionDiffSource,
 };
-use crate::persistence::load_latest_session_for_context;
+use crate::persistence::load_latest_session_for_context_in_dir;
 use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
 use crate::syntax::SyntaxHighlighter;
 use crate::theme::Theme;
@@ -1154,6 +1154,9 @@ pub struct App {
     pub(crate) persisted_session_snapshot: ReviewSession,
     pub(crate) session_path: Option<PathBuf>,
     pub(crate) session_file_state: Option<SessionFileState>,
+    /// Config `local_storage` / `--local-storage` opt-in: persist local
+    /// review sessions under `<repo>/.tuicr/reviews`; see [`App::reviews_root`].
+    pub(crate) local_storage: bool,
     pub review_watch_interval: Option<Duration>,
     pub next_review_watch_at: Instant,
     /// `None` by default: the diff watch is opt-in. A `0` interval in config
@@ -1980,6 +1983,10 @@ pub struct AppStartupOptions<'a> {
     /// `ForgeRepository`. When `Some`, the canonical resolver short-circuits
     /// the `gh api` parent lookup and uses this value directly.
     pub repo_url_override: Option<ForgeRepository>,
+    /// Config `local_storage` / `--local-storage` (flag beats config,
+    /// default off): persist local review sessions under
+    /// `<repo>/.tuicr/reviews`.
+    pub local_storage: bool,
 }
 
 impl AppStartupOptions<'_> {
