@@ -104,6 +104,8 @@ in `~/.ssh/config` are resolved the same way.
 
 ## Limitations and troubleshooting
 
+- Merge requests with more than 10,000 commits fail to open with an explicit error rather than showing a partial commit list.
+
 Reviewing a commit range within an MR requires a local checkout of the branch.
 A remote-only commit-range diff returns a "not yet supported" error.
 

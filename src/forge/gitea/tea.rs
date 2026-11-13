@@ -603,6 +603,13 @@ where
             if received < effective {
                 break;
             }
+            if page == MAX_PAGES {
+                // No stop condition fired: more rows may remain, so a prefix
+                // must not pass for the whole collection (or a look-ahead).
+                return Err(TuicrError::ForgeLimit(format!(
+                    "Gitea collection exceeds {MAX_PAGES} pages; refusing to use a partial list"
+                )));
+            }
         }
 
         Ok(collected)
@@ -1963,6 +1970,28 @@ mod tests {
             3,
             "window + one look-ahead"
         );
+    }
+
+    #[test]
+    fn should_error_instead_of_dropping_the_lookahead_row_at_the_page_bound() {
+        // 1 row/page, window ends at row 200, look-ahead row 201 is beyond
+        // MAX_PAGES: has_more must not silently become false.
+        for header in [true, false] {
+            let body = format!("[{PR_JSON}]");
+            let runner = if header {
+                FakeTeaRunner::default().route_counted("/pulls?state=open", &body, 201)
+            } else {
+                FakeTeaRunner::default().route("/pulls?state=open", &body)
+            };
+            let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+            let mut query = PullRequestListQuery::first_page(repo(), 2);
+            query.already_loaded = 198;
+            let result = backend.list_pull_requests(query);
+            assert!(
+                matches!(result, Err(TuicrError::ForgeLimit(_))),
+                "header={header}: {result:?}"
+            );
+        }
     }
 
     #[test]

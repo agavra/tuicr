@@ -133,9 +133,18 @@ fn fetch_pr_data_once(
         },
     );
     let patches = patches?;
-    let commits = commits.unwrap_or_default();
-    let review_metadata = review_metadata.unwrap_or_default();
+    // Best-effort lists degrade to empty, except a pagination-bound refusal:
+    // silently showing zero commits would misrepresent the PR.
+    let commits = best_effort(commits)?;
+    let review_metadata = best_effort(review_metadata)?;
     Ok((details, patches, commits, review_metadata, pr_info))
+}
+
+fn best_effort<T: Default>(result: Result<T>) -> Result<T> {
+    match result {
+        Err(error @ TuicrError::ForgeLimit(_)) => Err(error),
+        other => Ok(other.unwrap_or_default()),
+    }
 }
 
 /// CPU-only half of the PR open path: apply `.tuicrignore` to the raw
@@ -629,6 +638,7 @@ rename to new_name.rs
     struct SlowBackend {
         delay: std::time::Duration,
         fail: Vec<&'static str>,
+        limit: Vec<&'static str>,
         calls: Mutex<Vec<&'static str>>,
         in_flight: std::sync::atomic::AtomicUsize,
         peak_in_flight: std::sync::atomic::AtomicUsize,
@@ -639,6 +649,7 @@ rename to new_name.rs
             Self {
                 delay: std::time::Duration::from_millis(delay_ms),
                 fail: fail.to_vec(),
+                limit: Vec::new(),
                 calls: Mutex::new(Vec::new()),
                 in_flight: Default::default(),
                 peak_in_flight: Default::default(),
@@ -652,7 +663,9 @@ rename to new_name.rs
             self.peak_in_flight.fetch_max(now, SeqCst);
             std::thread::sleep(self.delay);
             self.in_flight.fetch_sub(1, SeqCst);
-            if self.fail.contains(&name) {
+            if self.limit.contains(&name) {
+                Err(TuicrError::ForgeLimit(format!("{name} hit the bound")))
+            } else if self.fail.contains(&name) {
                 Err(TuicrError::Forge(format!("{name} failed")))
             } else {
                 Ok(value())
@@ -769,6 +782,29 @@ rename to new_name.rs
 
     fn outcome(result: Result<PrFetchData>) -> std::result::Result<PrFetchData, String> {
         result.map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn should_surface_a_pagination_limit_instead_of_dropping_commits() {
+        for name in [
+            "list_pull_request_commits",
+            "list_pull_request_review_metadata",
+        ] {
+            let mut backend = SlowBackend::new(0, &[]);
+            backend.limit = vec![name];
+            let error = fetch_pr_data(&backend, target()).expect_err(name);
+            assert!(
+                matches!(error, TuicrError::ForgeLimit(_)),
+                "{name}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_still_degrade_ordinary_commit_failures_to_empty() {
+        let backend = SlowBackend::new(0, &["list_pull_request_commits"]);
+        let (_, _, commits, _, _) = fetch_pr_data(&backend, target()).unwrap();
+        assert!(commits.is_empty());
     }
 
     #[test]

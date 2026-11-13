@@ -250,7 +250,7 @@ where
             if fetched >= MAX_PAGES && next.is_some() {
                 // Returning a prefix would truncate comments or break the
                 // diffstat/patch pairing, so fail loudly instead.
-                return Err(TuicrError::Forge(format!(
+                return Err(TuicrError::ForgeLimit(format!(
                     "Bitbucket collection exceeds {MAX_PAGES} pages; refusing to use a partial list"
                 )));
             }
@@ -1334,7 +1334,7 @@ mod tests {
         assert_eq!(run(11).unwrap().len(), 11);
         assert_eq!(run(MAX_PAGES).unwrap().len(), MAX_PAGES);
         // one more page of `next` beyond the ceiling is an error, not a prefix
-        assert!(run(MAX_PAGES + 1).is_err());
+        assert!(matches!(run(MAX_PAGES + 1), Err(TuicrError::ForgeLimit(_))));
     }
 
     #[test]

@@ -513,7 +513,7 @@ where
             let rows: Vec<GlabCommit> = serde_json::from_str(&output)?;
             let received = rows.len();
             if page > MAX_COMMIT_PAGES && received > 0 {
-                return Err(TuicrError::Forge(format!(
+                return Err(TuicrError::ForgeLimit(format!(
                     "merge request has more than {} commits; refusing to use a partial list",
                     MAX_COMMIT_PAGES * 100
                 )));
@@ -2833,7 +2833,10 @@ mod tests {
                 total: MAX_COMMIT_PAGES * 100 + 1,
             },
         );
-        assert!(backend.list_pull_request_commits(&pr).is_err());
+        assert!(matches!(
+            backend.list_pull_request_commits(&pr),
+            Err(TuicrError::ForgeLimit(_))
+        ));
     }
 
     #[test]

@@ -102,6 +102,8 @@ surfaces Gitea's message rather than reporting success.
 
 ## Limitations
 
+- Gitea collections (PRs, files, reviews) are read up to 200 pages and beyond that the call fails with an explicit error rather than returning a partial list.
+
 **Multi-line comments collapse to a single line.** Gitea's review API takes one
 line number per comment and has no range form. A comment on a visual selection
 posts on the selection's last line, which is where GitHub renders its marker
