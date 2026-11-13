@@ -314,13 +314,20 @@ pub fn is_gitea_host(host: &str) -> bool {
 /// Parse a git remote URL into a Gitea repository, or `None` when the host is
 /// not a Gitea instance.
 pub fn parse_gitea_remote_url(remote_url: &str) -> Option<ForgeRepository> {
+    parse_gitea_remote_url_with(remote_url, resolve_ssh_hostname)
+}
+
+fn parse_gitea_remote_url_with(
+    remote_url: &str,
+    resolve: impl Fn(&str) -> String,
+) -> Option<ForgeRepository> {
     let trimmed = trim_url_suffix(remote_url.trim());
     if trimmed.is_empty() {
         return None;
     }
 
     if let Some((host, path)) = parse_scp_like_remote(trimmed) {
-        let resolved = resolve_ssh_hostname(host);
+        let resolved = resolve(host);
         let gitea_host = scp_gitea_host(host, &resolved)?;
         return gitea_repository_from_path(gitea_host, path);
     }
@@ -1514,6 +1521,15 @@ mod tests {
             super::scp_gitea_host("gitea-work", "bastion.example.com"),
             Some("gitea-work")
         );
+    }
+
+    #[test]
+    fn scp_remote_prefers_resolved_gitea_host_over_alias() {
+        let repo = super::parse_gitea_remote_url_with("git@gitea-work:o/r.git", |_| {
+            "code.gitea.example.com".to_string()
+        })
+        .unwrap();
+        assert_eq!(repo.host, "code.gitea.example.com");
     }
 
     use super::*;

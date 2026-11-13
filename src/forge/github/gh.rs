@@ -907,7 +907,7 @@ fn parse_url_target(target: &str) -> Option<PullRequestTarget> {
     let without_scheme = strip_scheme(target)?;
     let trimmed = trim_url_suffix(without_scheme);
     let mut parts = trimmed.split('/').filter(|part| !part.is_empty());
-    let host = parts.next()?;
+    let host = strip_port(strip_userinfo(parts.next()?));
     let owner = parts.next()?;
     let repo = parts.next()?;
     let segment = parts.next()?;
@@ -968,13 +968,12 @@ fn parse_repo_hash_target(target: &str) -> Option<PullRequestTarget> {
 /// Build a `ForgeRepository` from host/owner/repo, picking the forge kind
 /// based on the host name.
 fn forge_repo_from_host(host: &str, owner: &str, repo: &str) -> ForgeRepository {
-    if host.contains("gitlab") {
-        ForgeRepository::gitlab(host, owner, repo)
-    } else if crate::forge::gitea::tea::is_gitea_host(host) {
-        ForgeRepository::gitea(host, owner, repo)
-    } else {
-        ForgeRepository::github(host, owner, repo)
-    }
+    crate::forge::parse_any_remote_url(&format!("https://{host}/{owner}/{repo}"))
+        .unwrap_or_else(|| ForgeRepository::github(host, owner, repo))
+}
+
+fn strip_userinfo(host: &str) -> &str {
+    host.rsplit_once('@').map(|(_, h)| h).unwrap_or(host)
 }
 
 /// Resolve an SSH host alias to its real `HostName` via `~/.ssh/config`.
@@ -1666,6 +1665,23 @@ index 1111111..2222222 100644
             parse_github_remote_url("ssh://git@github.example.com:2222/agavra/tuicr.git").unwrap();
         assert_eq!(repository.host, "github.example.com");
         assert_eq!(repository.slug(), "agavra/tuicr");
+    }
+
+    #[test]
+    fn url_target_strips_port_and_userinfo() {
+        let t = parse_pull_request_target("https://github.com:443/agavra/tuicr/pull/125").unwrap();
+        assert_eq!(t.repository.unwrap().host, "github.com");
+        let t = parse_pull_request_target("https://u@github.com/agavra/tuicr/pull/125").unwrap();
+        assert_eq!(t.repository.unwrap().host, "github.com");
+    }
+
+    #[test]
+    fn repo_hash_target_matches_gitlab_host_case_insensitively() {
+        let t = parse_pull_request_target("GITLAB.example.com/agavra/tuicr#125").unwrap();
+        assert_eq!(
+            t.repository.unwrap().kind,
+            crate::forge::traits::ForgeKind::GitLab
+        );
     }
 
     #[test]
