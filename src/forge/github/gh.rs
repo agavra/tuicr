@@ -27,7 +27,7 @@ use super::models::{GhCompare, GhPrCommit, GhPullRequestFile, GhPullRequestSumma
 use super::review_summaries::{
     build_query as build_reviews_query, parse_graphql_page as parse_reviews_page,
 };
-use super::review_threads::{build_query, parse_graphql_page};
+use super::review_threads::{GhPageInfo, build_query, parse_graphql_page};
 use super::submit::build_review_payload;
 use crate::forge::traits::CreateReviewRequest;
 
@@ -228,9 +228,7 @@ where
                 pr.repository.owner, pr.repository.name, pr.number
             );
             let mut args = vec!["api".to_string()];
-            if pr.repository.host != DEFAULT_GITHUB_HOST {
-                args.extend(["--hostname".to_string(), pr.repository.host.clone()]);
-            }
+            push_hostname(&mut args, &pr.repository.host);
             args.push(endpoint);
             let output = self.run_gh(args, &pr.repository.host)?;
             let rows: Vec<GhPullRequestFile> = serde_json::from_str(&output)?;
@@ -381,10 +379,7 @@ where
                 pr.repository.owner, pr.repository.name, pr.number, page,
             );
             let mut args = vec!["api".to_string()];
-            if pr.repository.host != DEFAULT_GITHUB_HOST {
-                args.push("--hostname".to_string());
-                args.push(pr.repository.host.clone());
-            }
+            push_hostname(&mut args, &pr.repository.host);
             args.push(endpoint);
             let output = self.run_gh(args, &pr.repository.host)?;
             let rows: Vec<GhPrCommit> = serde_json::from_str(&output)?;
@@ -422,9 +417,7 @@ where
             pr.repository.owner, pr.repository.name, start_sha, end_sha,
         );
         let mut metadata_args = vec!["api".to_string()];
-        if pr.repository.host != DEFAULT_GITHUB_HOST {
-            metadata_args.extend(["--hostname".to_string(), pr.repository.host.clone()]);
-        }
+        push_hostname(&mut metadata_args, &pr.repository.host);
         metadata_args.push(endpoint.clone());
         let metadata_output = self.run_gh(metadata_args, &pr.repository.host)?;
         let compare: GhCompare = serde_json::from_str(&metadata_output)?;
@@ -439,10 +432,7 @@ where
             "-H".to_string(),
             "Accept: application/vnd.github.diff".to_string(),
         ];
-        if pr.repository.host != DEFAULT_GITHUB_HOST {
-            args.push("--hostname".to_string());
-            args.push(pr.repository.host.clone());
-        }
+        push_hostname(&mut args, &pr.repository.host);
         args.push(endpoint);
         let patch = self.run_gh(args, &pr.repository.host)?;
         pair_metadata_with_patch(metadata, patch.as_bytes())
@@ -466,10 +456,7 @@ where
             pr.repository.owner, pr.repository.name, pr.base_sha, pr.head_sha,
         );
         let mut args = vec!["api".to_string()];
-        if pr.repository.host != DEFAULT_GITHUB_HOST {
-            args.push("--hostname".to_string());
-            args.push(pr.repository.host.clone());
-        }
+        push_hostname(&mut args, &pr.repository.host);
         args.push(endpoint);
         let output = self.run_gh(args, &pr.repository.host).ok()?;
         let comparison: GhCompare = serde_json::from_str(&output).ok()?;
@@ -489,16 +476,10 @@ where
             let output = self.run_gh(args, &pr.repository.host)?;
             let parsed = parse_graphql_page(&output)?;
             all.extend(parsed.threads);
-            let Some(page_info) = parsed.page_info else {
-                break;
-            };
-            if !page_info.has_next_page {
+            cursor = next_cursor(parsed.page_info);
+            if cursor.is_none() {
                 break;
             }
-            let Some(end_cursor) = page_info.end_cursor else {
-                break;
-            };
-            cursor = Some(end_cursor);
         }
         Ok(all)
     }
@@ -511,16 +492,10 @@ where
             let output = self.run_gh(args, &pr.repository.host)?;
             let parsed = parse_reviews_page(&output)?;
             all.extend(parsed.summaries);
-            let Some(page_info) = parsed.page_info else {
-                break;
-            };
-            if !page_info.has_next_page {
+            cursor = next_cursor(parsed.page_info);
+            if cursor.is_none() {
                 break;
             }
-            let Some(end_cursor) = page_info.end_cursor else {
-                break;
-            };
-            cursor = Some(end_cursor);
         }
         Ok(all)
     }
@@ -539,16 +514,10 @@ where
                 all.viewer_login = parsed.metadata.viewer_login;
             }
             all.reviews.extend(parsed.metadata.reviews);
-            let Some(page_info) = parsed.page_info else {
-                break;
-            };
-            if !page_info.has_next_page {
+            cursor = next_cursor(parsed.page_info);
+            if cursor.is_none() {
                 break;
             }
-            let Some(end_cursor) = page_info.end_cursor else {
-                break;
-            };
-            cursor = Some(end_cursor);
         }
         Ok(all)
     }
@@ -646,10 +615,7 @@ where
             "--input".to_string(),
             "-".to_string(),
         ];
-        if pr.repository.host != DEFAULT_GITHUB_HOST {
-            args.push("--hostname".to_string());
-            args.push(pr.repository.host.clone());
-        }
+        push_hostname(&mut args, &pr.repository.host);
 
         let output = self
             .runner
@@ -699,23 +665,22 @@ where
             "graphql".to_string(),
             "-f".to_string(),
             format!("query={query}"),
-            "-F".to_string(),
+            // `-f` keeps string variables strings (a repo named "2024" or
+            // "true" must not be coerced); only `number` needs `-F`.
+            "-f".to_string(),
             format!("owner={}", pr.repository.owner),
-            "-F".to_string(),
+            "-f".to_string(),
             format!("name={}", pr.repository.name),
             "-F".to_string(),
             format!("number={}", pr.number),
         ];
         if let Some(c) = cursor {
-            args.push("-F".to_string());
+            args.push("-f".to_string());
             args.push(format!("after={c}"));
         }
         // Enterprise host routing — `gh api graphql --hostname` picks the
         // correct endpoint when the repo lives on a non-default host.
-        if pr.repository.host != "github.com" {
-            args.push("--hostname".to_string());
-            args.push(pr.repository.host.clone());
-        }
+        push_hostname(&mut args, &pr.repository.host);
         args
     }
 
@@ -753,10 +718,7 @@ where
             "-f".to_string(),
             format!("name={}", repository.name),
         ];
-        if repository.host != DEFAULT_GITHUB_HOST {
-            args.push("--hostname".to_string());
-            args.push(repository.host.clone());
-        }
+        push_hostname(&mut args, &repository.host);
         let output = self.run_gh(args, &repository.host)?;
         let value: serde_json::Value = serde_json::from_str(&output)?;
         let prs = &value["data"]["repository"];
@@ -808,10 +770,7 @@ where
             args.push("-f".to_string());
             args.push(format!("e{i}={spec}"));
         }
-        if repository.host != DEFAULT_GITHUB_HOST {
-            args.push("--hostname".to_string());
-            args.push(repository.host.clone());
-        }
+        push_hostname(&mut args, &repository.host);
         let output = self.run_gh(args, &repository.host)?;
         let value: serde_json::Value = serde_json::from_str(&output)?;
         let blobs = &value["data"]["repository"];
@@ -844,10 +803,7 @@ where
             "-H".to_string(),
             "Accept: application/vnd.github.raw".to_string(),
         ];
-        if request.repository.host != "github.com" {
-            args.push("--hostname".to_string());
-            args.push(request.repository.host.clone());
-        }
+        push_hostname(&mut args, &request.repository.host);
         args.push(endpoint);
         self.run_gh(args, &request.repository.host)
     }
@@ -1100,6 +1056,21 @@ fn strip_port(host: &str) -> &str {
 
 fn strip_git_suffix(value: &str) -> &str {
     value.strip_suffix(".git").unwrap_or(value)
+}
+
+/// Cursor of the next GraphQL page, or `None` when pagination is over.
+fn next_cursor(page_info: Option<GhPageInfo>) -> Option<String> {
+    page_info
+        .filter(|info| info.has_next_page)
+        .and_then(|info| info.end_cursor)
+}
+
+/// Route a `gh api` call to a GitHub Enterprise host; github.com is the default.
+fn push_hostname(args: &mut Vec<String>, host: &str) {
+    if host != DEFAULT_GITHUB_HOST {
+        args.push("--hostname".to_string());
+        args.push(host.to_string());
+    }
 }
 
 fn gh_repo_arg(repository: &ForgeRepository) -> String {
@@ -2721,6 +2692,159 @@ Match host github-work
         let (_, stdin) = &stdin_calls[0];
         let payload: serde_json::Value = serde_json::from_str(stdin).unwrap();
         assert!(payload.get("event").is_none());
+    }
+
+    #[test]
+    fn every_api_call_routes_to_the_enterprise_host() {
+        // given — every backend operation that shells out to `gh api`
+        let enterprise = ForgeRepository::github("github.example.com", "agavra", "tuicr");
+        let backend =
+            GitHubGhBackend::with_runner(Some(enterprise.clone()), FakeGhRunner::default());
+        let mut details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        details.repository = enterprise.clone();
+        let file_request = ForgeFileLinesRequest {
+            repository: enterprise.clone(),
+            base_sha: "0".repeat(40),
+            head_sha: "1".repeat(40),
+            path: PathBuf::from("a.rs"),
+            status: crate::model::FileStatus::Modified,
+            side: crate::forge::traits::ForgeFileSide::Head,
+            start_line: 0,
+            end_line: 0,
+        };
+        // when — results are irrelevant; only the recorded arguments matter
+        let _ = backend.pull_request_file_metadata(&details);
+        let _ = backend.list_pull_request_commits(&details);
+        let _ = backend.get_pull_request_commit_range_diff(&details, "baseaaa", "headbbb");
+        let _ = backend.resolve_diff_base_sha(&details);
+        let _ = backend.list_review_threads(&details);
+        let _ = backend.list_review_summaries(&details);
+        let _ = backend.list_pull_request_review_metadata(&details);
+        let _ = backend.fetch_file_via_api(&file_request);
+        let _ = backend.fetch_blob_texts(&enterprise, &["sha:a.rs"]);
+        let _ = backend.list_pull_requests(PullRequestListQuery::first_page(enterprise.clone(), 1));
+        let _ = backend.create_review(
+            &details,
+            CreateReviewRequest {
+                event: SubmitEvent::Comment,
+                commit_id: "sha",
+                body: "",
+                comments: &[],
+            },
+        );
+        // then
+        let calls = backend.runner.calls.lock().unwrap();
+        let api_calls: Vec<_> = calls
+            .iter()
+            .filter(|args| args.first().map(String::as_str) == Some("api"))
+            .collect();
+        assert!(api_calls.len() >= 11, "{} api calls", api_calls.len());
+        for args in api_calls {
+            assert!(
+                args.windows(2)
+                    .any(|w| w[0] == "--hostname" && w[1] == "github.example.com"),
+                "missing --hostname: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn next_cursor_requires_a_next_page_and_an_end_cursor() {
+        let page = |has_next_page, end_cursor: Option<&str>| {
+            Some(GhPageInfo {
+                has_next_page,
+                end_cursor: end_cursor.map(str::to_string),
+            })
+        };
+        assert_eq!(next_cursor(page(true, Some("c1"))), Some("c1".to_string()));
+        assert_eq!(next_cursor(page(false, Some("c1"))), None);
+        assert_eq!(next_cursor(page(true, None)), None);
+        assert_eq!(next_cursor(None), None);
+    }
+
+    /// Serves a first GraphQL page that advertises a next page, then the
+    /// plain fixtures (no next page).
+    #[derive(Default)]
+    struct PagingRunner {
+        inner: FakeGhRunner,
+        served: std::sync::atomic::AtomicBool,
+    }
+
+    impl GhCommandRunner for PagingRunner {
+        fn run(&self, args: &[String]) -> GhCommandResult<String> {
+            let out = self.inner.run(args)?;
+            let graphql = args.get(1).map(String::as_str) == Some("graphql");
+            if graphql && !self.served.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return Ok(out.replace(
+                    r#""hasNextPage": false, "endCursor": null"#,
+                    r#""hasNextPage": true, "endCursor": "c1""#,
+                ));
+            }
+            Ok(out)
+        }
+    }
+
+    #[test]
+    fn review_listings_follow_the_cursor_once_then_stop() {
+        type Listing = fn(&GitHubGhBackend<PagingRunner>, &PullRequestDetails);
+        let listings: [(&str, Listing); 3] = [
+            ("threads", |b, pr| {
+                b.list_review_threads(pr).unwrap();
+            }),
+            ("summaries", |b, pr| {
+                b.list_review_summaries(pr).unwrap();
+            }),
+            ("metadata", |b, pr| {
+                b.list_pull_request_review_metadata(pr).unwrap();
+            }),
+        ];
+        for (name, list) in listings {
+            // given
+            let backend = GitHubGhBackend::with_runner(Some(repo()), PagingRunner::default());
+            let details = backend
+                .get_pull_request(parse_pull_request_target("125").unwrap())
+                .unwrap();
+            // when
+            list(&backend, &details);
+            // then — exactly two pages; the second carries the cursor
+            let calls = backend.runner.inner.calls.lock().unwrap();
+            let graphql: Vec<_> = calls
+                .iter()
+                .filter(|a| a.get(1).map(String::as_str) == Some("graphql"))
+                .collect();
+            assert_eq!(graphql.len(), 2, "{name}");
+            assert!(
+                !graphql[0].iter().any(|a| a.starts_with("after=")),
+                "{name}"
+            );
+            assert!(graphql[1].iter().any(|a| a == "after=c1"), "{name}");
+        }
+    }
+
+    #[test]
+    fn graphql_string_variables_are_never_coerced() {
+        // given — a repository whose name looks like a number, and a numeric cursor
+        let repository = ForgeRepository::github("github.com", "101", "2024");
+        let backend =
+            GitHubGhBackend::with_runner(Some(repository.clone()), FakeGhRunner::default());
+        let mut details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        details.repository = repository;
+        // when
+        let args = backend.build_review_threads_args(&details, Some("123"));
+        // then — string variables use `-f`; only `number` uses `-F`
+        for (key, flag) in [
+            ("owner=101", "-f"),
+            ("name=2024", "-f"),
+            ("after=123", "-f"),
+            ("number=125", "-F"),
+        ] {
+            let i = args.iter().position(|a| a == key).unwrap();
+            assert_eq!(args[i - 1], flag, "{key}");
+        }
     }
 
     #[test]
