@@ -271,6 +271,35 @@ fn render_diff_view_once(frame: &mut Frame, app: &mut App, area: Rect) {
         DiffViewMode::Unified => render_unified_diff(frame, app, area),
         DiffViewMode::SideBySide => render_side_by_side_diff(frame, app, area),
     }
+    render_empty_review_placeholder(frame, app, area);
+}
+
+/// Draws the dimmed "No staged changes" line centred in an empty staged or
+/// unstaged review, after either renderer has drawn the (empty) pane. The
+/// message bar only holds its copy for a few seconds; this one stays for as
+/// long as the review is empty.
+fn render_empty_review_placeholder(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(text) = app.empty_review_placeholder() else {
+        return;
+    };
+    // Inside the pane's border, on its middle row.
+    if area.width <= 2 || area.height <= 2 {
+        return;
+    }
+    let row = Rect {
+        x: area.x + 1,
+        y: area.y + area.height / 2,
+        width: area.width - 2,
+        height: 1,
+    };
+    frame.render_widget(
+        ratatui::widgets::Paragraph::new(Line::from(Span::styled(
+            text,
+            styles::dim_style(&app.theme),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
+        row,
+    );
 }
 
 /// Build the diff view's left title: ` <path> ` when a file is in view, or

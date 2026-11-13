@@ -1344,10 +1344,30 @@ fn should_add_the_staged_row_when_a_file_is_staged_mid_review() {
     );
 }
 
-/// The mirror of the case above. Staging the last unstaged edit empties that
-/// side, and a row left behind opens an empty diff when selected.
+/// Delivers a tick that carries only `status`, as `git add` or `git commit`
+/// would produce while the review is open.
+fn deliver_status(app: &mut App, diff_source: DiffSource, status: VcsChangeStatus) -> bool {
+    let request = DiffWatchReloadRequest {
+        diff_source,
+        commit_selection_range: app.commit_selection_range,
+    };
+    deliver(
+        app,
+        request.clone(),
+        DiffWatchReloadEvent::Done {
+            request,
+            result: Ok(None),
+            commits: None,
+            change_status: Some(status),
+        },
+    )
+}
+
+/// The mirror of the case above. Git keeps both rows whatever the tree holds,
+/// so staging the last unstaged edit leaves the unstaged row in place.
+/// Picking it opens an empty review that says there is nothing unstaged.
 #[test]
-fn should_drop_the_unstaged_row_when_the_last_unstaged_change_is_staged() {
+fn should_keep_the_unstaged_row_on_git_when_the_last_unstaged_change_is_staged() {
     let mut app = build_app(vec![], DiffSource::WorkingTree);
     app.review_commits = vec![
         App::unstaged_commit_entry(),
@@ -1356,21 +1376,56 @@ fn should_drop_the_unstaged_row_when_the_last_unstaged_change_is_staged() {
     ];
     app.commit_list = app.review_commits.clone();
 
-    let request = DiffWatchReloadRequest {
-        diff_source: DiffSource::WorkingTree,
-        commit_selection_range: None,
-    };
-    deliver(
+    let redraw = deliver_status(
         &mut app,
-        request.clone(),
-        DiffWatchReloadEvent::Done {
-            request,
-            result: Ok(None),
-            commits: None,
-            change_status: Some(VcsChangeStatus {
-                staged: true,
-                unstaged: false,
-            }),
+        DiffSource::WorkingTree,
+        VcsChangeStatus {
+            staged: true,
+            unstaged: false,
+        },
+    );
+
+    assert!(
+        redraw,
+        "the emptied row is drawn dimmed, so it needs a redraw"
+    );
+    assert_eq!(
+        pane_summaries(&app),
+        ["Unstaged changes", "Staged changes", "commit c1"],
+        "the unstaged row must stay once that side is empty"
+    );
+    assert!(app.is_empty_worktree_row(&app.review_commits[0]));
+    assert!(!app.is_empty_worktree_row(&app.review_commits[1]));
+
+    let redraw = deliver_status(
+        &mut app,
+        DiffSource::WorkingTree,
+        VcsChangeStatus {
+            staged: true,
+            unstaged: false,
+        },
+    );
+    assert!(!redraw, "the same status again changes nothing");
+}
+
+/// Other backends still drop a row once its side is empty.
+#[test]
+fn should_drop_the_unstaged_row_off_git_when_the_last_unstaged_change_goes() {
+    let mut app = build_app(vec![], DiffSource::WorkingTree);
+    app.vcs_info.vcs_type = VcsType::Mercurial;
+    app.review_commits = vec![
+        App::unstaged_commit_entry(),
+        App::staged_commit_entry(),
+        watch_commit("c1"),
+    ];
+    app.commit_list = app.review_commits.clone();
+
+    deliver_status(
+        &mut app,
+        DiffSource::WorkingTree,
+        VcsChangeStatus {
+            staged: true,
+            unstaged: false,
         },
     );
 
@@ -1379,6 +1434,63 @@ fn should_drop_the_unstaged_row_when_the_last_unstaged_change_is_staged() {
         ["Staged changes", "commit c1"],
         "the unstaged row must go once that side is empty"
     );
+}
+
+/// A Git pane that lost a row before this rule (or was built without one)
+/// gains it back on the next tick, even on a clean tree.
+#[test]
+fn should_restore_a_missing_row_on_git_even_when_its_side_is_empty() {
+    let mut app = build_app(vec![], DiffSource::WorkingTree);
+    app.review_commits = vec![App::unstaged_commit_entry(), watch_commit("c1")];
+    app.commit_list = app.review_commits.clone();
+
+    deliver_status(
+        &mut app,
+        DiffSource::WorkingTree,
+        VcsChangeStatus::default(),
+    );
+
+    assert_eq!(
+        pane_summaries(&app),
+        ["Unstaged changes", "Staged changes", "commit c1"],
+    );
+}
+
+/// The selection and the cursor index rows, so a side emptying and filling
+/// again must leave both on the rows the user chose. Before Git kept both
+/// rows, the emptied row went away and the narrowing could no longer follow.
+#[test]
+fn should_keep_the_selection_and_cursor_on_git_while_a_side_empties_and_fills() {
+    let commit_ids = vec!["c1".to_string()];
+    let source = DiffSource::StagedUnstagedAndCommits(commit_ids);
+    let mut app = build_app(vec![], source.clone());
+    app.review_commits = vec![
+        App::unstaged_commit_entry(),
+        App::staged_commit_entry(),
+        watch_commit("c1"),
+    ];
+    app.commit_list = app.review_commits.clone();
+    // Narrowed to the staged row, cursor on it.
+    app.commit_selection_range = Some((1, 1));
+    app.commit_list_cursor = 1;
+
+    for staged in [false, true, false] {
+        deliver_status(
+            &mut app,
+            source.clone(),
+            VcsChangeStatus {
+                staged,
+                unstaged: true,
+            },
+        );
+        assert_eq!(
+            pane_summaries(&app),
+            ["Unstaged changes", "Staged changes", "commit c1"],
+            "staged={staged}: the rows must not move"
+        );
+        assert_eq!(app.commit_selection_range, Some((1, 1)), "staged={staged}");
+        assert_eq!(app.commit_list_cursor, 1, "staged={staged}");
+    }
 }
 
 /// The two startup paths disagree about which synthetic row comes first, so a

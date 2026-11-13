@@ -433,4 +433,165 @@ mod tests {
         );
         assert_eq!(app.file_list_state.selected(), 1);
     }
+
+    // ---- Empty staged/unstaged reviews and rows ----
+
+    fn row_text(buffer: &Buffer, y: u16) -> String {
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect()
+    }
+
+    /// The row holding `needle`, and the column it starts at.
+    fn find(buffer: &Buffer, needle: &str) -> Option<(u16, u16)> {
+        (0..buffer.area.height).find_map(|y| {
+            let row = row_text(buffer, y);
+            row.find(needle)
+                .map(|byte| (row[..byte].chars().count() as u16, y))
+        })
+    }
+
+    fn empty_review(source: DiffSource, mode: DiffViewMode) -> App {
+        let mut app = app_with(FileListPosition::Left);
+        app.diff_files.clear();
+        app.diff_source = source;
+        app.diff_view_mode = mode;
+        app.rebuild_annotations();
+        app
+    }
+
+    #[test]
+    fn empty_staged_review_shows_a_dimmed_placeholder_in_both_layouts() {
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            for (source, text) in [
+                (DiffSource::Staged, "No staged changes"),
+                (DiffSource::Unstaged, "No unstaged changes"),
+                (
+                    DiffSource::StagedAndUnstaged,
+                    "No staged or unstaged changes",
+                ),
+            ] {
+                let mut app = empty_review(source.clone(), mode);
+                let buffer = draw(&mut app);
+
+                let (x, y) = find(&buffer, text)
+                    .unwrap_or_else(|| panic!("{mode:?} {source:?}: {text:?} not drawn"));
+                let diff = app.diff_area.expect("diff drawn");
+                assert!(
+                    diff.x < x && x < diff.right(),
+                    "{mode:?}: inside the diff pane"
+                );
+                assert_eq!(y, diff.y + diff.height / 2, "{mode:?}: on the middle row");
+                assert_eq!(
+                    buffer[(x, y)].fg,
+                    app.theme.fg_dim,
+                    "{mode:?}: the placeholder is dimmed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn placeholder_is_not_drawn_when_the_review_has_files_or_another_source() {
+        let mut app = app_with(FileListPosition::Left);
+        app.diff_source = DiffSource::Staged;
+        let buffer = draw(&mut app);
+        assert!(find(&buffer, "No staged changes").is_none());
+
+        // An empty working-tree review has no placeholder; only the staged
+        // and unstaged rows can open empty.
+        let mut app = empty_review(DiffSource::WorkingTree, DiffViewMode::Unified);
+        let buffer = draw(&mut app);
+        assert!(find(&buffer, "changes").is_none());
+    }
+
+    fn worktree_row(id: &str, summary: &str) -> crate::vcs::CommitInfo {
+        crate::vcs::CommitInfo {
+            id: id.to_string(),
+            short_id: id.to_string(),
+            branch_name: None,
+            summary: summary.to_string(),
+            body: None,
+            author: String::new(),
+            time: chrono::Utc::now(),
+        }
+    }
+
+    fn pane_rows() -> Vec<crate::vcs::CommitInfo> {
+        vec![
+            worktree_row(crate::app::UNSTAGED_SELECTION_ID, "Unstaged changes"),
+            worktree_row(crate::app::STAGED_SELECTION_ID, "Staged changes"),
+            crate::vcs::CommitInfo {
+                author: "alice".into(),
+                ..worktree_row("abc1234", "add notes")
+            },
+        ]
+    }
+
+    /// Unstaged is empty, staged is not: only the unstaged row is dimmed and
+    /// hinted.
+    fn assert_only_unstaged_dimmed(app: &App, buffer: &Buffer) {
+        let (x, y) = find(buffer, "Unstaged changes").expect("unstaged row drawn");
+        assert!(
+            row_text(buffer, y).contains(crate::ui::commit_row::EMPTY_ROW_HINT.trim()),
+            "the empty row carries the hint"
+        );
+        assert_eq!(
+            buffer[(x, y)].fg,
+            app.theme.fg_dim,
+            "the empty row is dimmed"
+        );
+
+        let (x, y) = find(buffer, "Staged changes").expect("staged row drawn");
+        assert!(
+            !row_text(buffer, y).contains("no changes"),
+            "a row with changes has no hint"
+        );
+        assert_ne!(buffer[(x, y)].fg, app.theme.fg_dim);
+    }
+
+    fn status(staged: bool, unstaged: bool) -> Option<crate::vcs::traits::VcsChangeStatus> {
+        Some(crate::vcs::traits::VcsChangeStatus { staged, unstaged })
+    }
+
+    #[test]
+    fn target_selector_dims_and_hints_an_empty_worktree_row() {
+        let mut app = app_with(FileListPosition::Left);
+        app.commit_list = pane_rows();
+        app.commit_list_cursor = 2;
+        app.input_mode = InputMode::CommitSelect;
+        app.worktree_status = status(true, false);
+
+        let buffer = draw(&mut app);
+
+        assert_only_unstaged_dimmed(&app, &buffer);
+    }
+
+    #[test]
+    fn inline_commit_pane_dims_and_hints_an_empty_worktree_row() {
+        let mut app = app_with(FileListPosition::Left);
+        app.diff_source = DiffSource::StagedUnstagedAndCommits(vec!["abc1234".into()]);
+        app.review_commits = pane_rows();
+        app.commit_list = pane_rows();
+        app.commit_list_cursor = 2;
+        app.show_commit_selector = true;
+        app.worktree_status = status(true, false);
+
+        let buffer = draw(&mut app);
+
+        assert!(app.has_inline_commit_selector());
+        assert_only_unstaged_dimmed(&app, &buffer);
+    }
+
+    #[test]
+    fn worktree_rows_are_not_dimmed_without_a_status_read() {
+        let mut app = app_with(FileListPosition::Left);
+        app.commit_list = pane_rows();
+        app.input_mode = InputMode::CommitSelect;
+        app.worktree_status = None;
+
+        let buffer = draw(&mut app);
+
+        assert!(find(&buffer, "no changes").is_none());
+    }
 }

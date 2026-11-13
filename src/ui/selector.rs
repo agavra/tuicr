@@ -223,6 +223,7 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
                 is_cursor: i == app.commit_list_cursor,
                 is_selected: app.is_commit_selected(i),
                 is_reviewed: false,
+                is_empty: app.is_empty_worktree_row(commit),
                 theme: &app.theme,
             })
         })

@@ -1064,6 +1064,11 @@ fn reload_review(app: &mut App) {
                     app.set_message(format!("Reloaded {count} files{comment_suffix}"));
                 }
             }
+            // A staged or unstaged review can empty out under it, for example
+            // after a commit. That is an empty review, not a failed reload.
+            Err(crate::error::TuicrError::NoChanges) if app.reload_can_empty() => {
+                app.show_emptied_review();
+            }
             Err(e) => app.set_error(format!("Reload failed: {e}")),
         }
     }
