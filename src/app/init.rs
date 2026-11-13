@@ -494,6 +494,7 @@ impl App {
             help_state: HelpState::default(),
             summary_state: SummaryState::default(),
             file_filter: FileTreeFilter::default(),
+            transparent_background: false,
             theme_picker: ThemePickerState::default(),
             file_picker: FilePickerState::default(),
             command_buffer: String::new(),

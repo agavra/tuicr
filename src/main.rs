@@ -143,7 +143,7 @@ fn main() -> anyhow::Result<()> {
         .and_then(|cfg| cfg.transparent_background)
         .unwrap_or(true);
     if transparent {
-        theme.panel_bg = ratatui::style::Color::Reset;
+        theme = theme.with_transparent_background();
     }
 
     let no_update_check = cli_args.no_update_check
@@ -258,6 +258,7 @@ fn main() -> anyhow::Result<()> {
     }) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
+            app.transparent_background = transparent;
             startup_warnings.extend(app.vcs.startup_warnings());
             if let Some(cfg) = config_outcome.config.as_ref() {
                 if let Some(forge_cfg) = cfg.forge.clone() {
