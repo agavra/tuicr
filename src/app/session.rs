@@ -21,7 +21,19 @@ impl App {
         }
     }
 
+    /// Save the session about to be replaced by a local target switch, so its
+    /// unsaved marks and comments survive. A failure aborts the switch.
+    pub(in crate::app) fn save_outgoing_session(&mut self) -> Result<()> {
+        if self.dirty {
+            self.save_current_session_merging_external()?;
+        }
+        Ok(())
+    }
+
     pub(in crate::app) fn reset_persisted_session_tracking(&mut self) -> Result<()> {
+        // The session now tracked is the one on disk; the previous one's
+        // unsaved state must not make this one look dirty.
+        self.dirty = false;
         let path = crate::persistence::storage::session_path(&self.session).ok();
         let state = path
             .as_deref()
@@ -451,45 +463,31 @@ impl App {
         vcs_info: &VcsInfo,
         commit_ids: &[String],
     ) -> ReviewSession {
-        let newest_commit_id = commit_ids.last().unwrap().clone();
-        let loaded = load_latest_session_for_context(
-            &vcs_info.root_path,
-            vcs_info.branch_name.as_deref(),
-            &newest_commit_id,
-            SessionDiffSource::CommitRange,
-            Some(commit_ids),
-        )
-        .ok()
-        .and_then(|found| found.map(|(_path, session)| session));
-
-        let mut session = loaded.unwrap_or_else(|| {
-            let mut s = ReviewSession::new(
-                vcs_info.root_path.clone(),
-                newest_commit_id,
-                vcs_info.branch_name.clone(),
-                SessionDiffSource::CommitRange,
-            );
-            s.commit_range = Some(commit_ids.to_vec());
-            s
-        });
-
-        if session.commit_range.is_none() {
-            session.commit_range = Some(commit_ids.to_vec());
-            session.updated_at = chrono::Utc::now();
-        }
-        session
+        Self::load_or_create_range_session(vcs_info, commit_ids, SessionDiffSource::CommitRange)
     }
 
     pub(in crate::app) fn load_or_create_staged_unstaged_and_commits_session(
         vcs_info: &VcsInfo,
         commit_ids: &[String],
     ) -> ReviewSession {
+        Self::load_or_create_range_session(
+            vcs_info,
+            commit_ids,
+            SessionDiffSource::StagedUnstagedAndCommits,
+        )
+    }
+
+    fn load_or_create_range_session(
+        vcs_info: &VcsInfo,
+        commit_ids: &[String],
+        diff_source: SessionDiffSource,
+    ) -> ReviewSession {
         let newest_commit_id = commit_ids.last().unwrap().clone();
         let loaded = load_latest_session_for_context(
             &vcs_info.root_path,
             vcs_info.branch_name.as_deref(),
             &newest_commit_id,
-            SessionDiffSource::StagedUnstagedAndCommits,
+            diff_source,
             Some(commit_ids),
         )
         .ok()
@@ -500,7 +498,7 @@ impl App {
                 vcs_info.root_path.clone(),
                 newest_commit_id,
                 vcs_info.branch_name.clone(),
-                SessionDiffSource::StagedUnstagedAndCommits,
+                diff_source,
             );
             s.commit_range = Some(commit_ids.to_vec());
             s
