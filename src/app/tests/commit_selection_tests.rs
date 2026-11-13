@@ -856,3 +856,49 @@ fn mouse_wheel_moves_commit_picker_cursor_by_configured_lines() {
     wheel(&mut app, crossterm::event::MouseEventKind::ScrollUp);
     assert_eq!(app.commit_list_cursor, 3);
 }
+
+#[test]
+fn enter_in_inline_selector_selects_only_cursor_commit() {
+    use crate::handler::handle_commit_selector_action;
+    use crate::input::Action;
+
+    for (range, cursor) in [((0, 11), 4), ((2, 6), 4), ((2, 6), 9), ((4, 4), 4)] {
+        let mut app = inline_selector_app(CommitOrder::Descending);
+        app.focused_panel = FocusedPanel::CommitSelector;
+        app.commit_selection_range = Some(range);
+        app.commit_list_cursor = cursor;
+
+        handle_commit_selector_action(&mut app, Action::SelectFile);
+
+        assert_eq!(app.commit_selection_range, Some((cursor, cursor)));
+        assert_eq!(app.commit_list_cursor, cursor);
+    }
+}
+
+#[test]
+fn enter_in_inline_selector_selects_cursor_commit_when_none_selected() {
+    use crate::handler::handle_commit_selector_action;
+    use crate::input::Action;
+
+    let mut app = inline_selector_app(CommitOrder::Descending);
+    app.commit_selection_range = None;
+    app.commit_list_cursor = 3;
+
+    handle_commit_selector_action(&mut app, Action::SelectFile);
+
+    assert_eq!(app.commit_selection_range, Some((3, 3)));
+}
+
+#[test]
+fn space_in_inline_selector_still_toggles_commit_selection() {
+    use crate::handler::handle_commit_selector_action;
+    use crate::input::Action;
+
+    let mut app = inline_selector_app(CommitOrder::Descending);
+    app.commit_selection_range = Some((2, 6));
+    app.commit_list_cursor = 6;
+
+    handle_commit_selector_action(&mut app, Action::ToggleExpand);
+
+    assert_eq!(app.commit_selection_range, Some((2, 5)));
+}

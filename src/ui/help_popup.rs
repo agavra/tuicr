@@ -329,10 +329,17 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  Space/Enter",
+                "  Space     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  Toggle commit selection (updates diff)"),
+            Span::raw("Toggle commit selection (updates diff)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Enter     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Select only this commit (updates diff)"),
         ]),
         Line::from(vec![
             Span::styled(
