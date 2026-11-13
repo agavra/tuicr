@@ -3103,4 +3103,21 @@ mod line_count_tests {
             calls[0]
         );
     }
+
+    #[test]
+    fn should_keep_a_unix_backslash_in_batch_blob_specs() {
+        // given
+        let backend = GitHubGhBackend::with_runner(None, BlobRunner::default());
+        // when
+        backend.file_line_counts(vec![request("src/a\\b.rs")]);
+        // then
+        let calls = backend.runner.calls.lock().unwrap();
+        assert!(
+            calls[0]
+                .iter()
+                .any(|arg| arg == &format!("e0={HEAD}:src/a\\b.rs")),
+            "{:?}",
+            calls[0]
+        );
+    }
 }

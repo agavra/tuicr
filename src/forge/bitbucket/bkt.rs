@@ -2062,4 +2062,25 @@ mod tests {
         // then
         assert!(backend.runner.calls.borrow()[0][1].ends_with("/a%5Cb.rs"));
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_keep_a_unix_backslash_in_the_inline_anchor() {
+        // given
+        let backend = backend(vec![r#"{"id":1}"#]);
+        let mut comment = inline_comment(1, GhSide::Right, None);
+        comment.path = PathBuf::from("src/a\\b.rs");
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Comment,
+            commit_id: &"a".repeat(40),
+            body: "",
+            comments: &[comment],
+        };
+        // when
+        backend.create_review(&details(), request).unwrap();
+        // then
+        let calls = backend.runner.calls.borrow();
+        let inline: serde_json::Value = serde_json::from_str(&calls[0][5]).unwrap();
+        assert_eq!(inline["inline"]["path"], "src/a\\b.rs");
+    }
 }

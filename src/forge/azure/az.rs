@@ -1648,4 +1648,45 @@ mod tests {
             list.1
         );
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_keep_unix_backslashes_in_fetch_and_submit_paths() {
+        // given
+        let shared = SharedHttp::new(vec!["text".to_string(), r#"{"id": 1}"#.to_string()]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        let mut comment = inline(1, GhSide::Right);
+        comment.path = PathBuf::from("src/a\\b.rs");
+        let request = ForgeFileLinesRequest {
+            repository: azure_repo(),
+            base_sha: "base000".to_string(),
+            head_sha: "head111".to_string(),
+            path: PathBuf::from("src/a\\b.rs"),
+            status: crate::model::FileStatus::Modified,
+            side: crate::forge::traits::ForgeFileSide::Head,
+            start_line: 0,
+            end_line: 0,
+        };
+        // when
+        backend.fetch_file_content(request).unwrap();
+        backend
+            .create_review(
+                &pr_details(),
+                CreateReviewRequest {
+                    event: SubmitEvent::Comment,
+                    commit_id: "head111",
+                    body: "",
+                    comments: &[comment],
+                },
+            )
+            .unwrap();
+        // then
+        let calls = shared.0.calls.lock().unwrap();
+        assert!(calls[0].1.contains("a\\b.rs"), "fetch: {}", calls[0].1);
+        assert_eq!(
+            body_json(&calls[1])["threadContext"]["filePath"],
+            "/src/a\\b.rs"
+        );
+    }
 }
