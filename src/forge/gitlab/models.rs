@@ -246,15 +246,18 @@ pub struct GlabDiscussion {
 }
 
 impl GlabDiscussion {
-    pub fn into_review_thread(self) -> Option<RemoteReviewThread> {
+    pub fn into_review_thread(self, head_sha: &str) -> Option<RemoteReviewThread> {
         let root = self.notes.first()?;
 
-        if self.individual_note {
-            // General MR note (review summary), no diff position.
+        if self.individual_note || root.position.is_none() {
+            // General MR note (review summary), no diff position. Replying to
+            // an individual note turns it into a positionless discussion with
+            // `individual_note == false`, so key off the missing position.
             // Skip system events (e.g. "requested review from @X") and empty bodies.
             if root.system || root.body.is_empty() {
                 return None;
             }
+            let is_resolved = root.resolved;
             let comments = self
                 .notes
                 .into_iter()
@@ -275,7 +278,7 @@ impl GlabDiscussion {
                 path: String::new(),
                 line: None,
                 side: RemoteCommentSide::Right,
-                is_resolved: false,
+                is_resolved,
                 is_outdated: false,
                 comments,
             });
@@ -287,6 +290,12 @@ impl GlabDiscussion {
         let (path, line, side) = position.anchor()?;
 
         let is_resolved = root.resolved;
+        // GitLab leaves an outdated position at the revision it was made on.
+        let is_outdated = !head_sha.is_empty()
+            && position
+                .head_sha
+                .as_deref()
+                .is_some_and(|h| !h.is_empty() && h != head_sha);
         let comments = self
             .notes
             .into_iter()
@@ -305,7 +314,7 @@ impl GlabDiscussion {
             line,
             side,
             is_resolved,
-            is_outdated: false,
+            is_outdated,
             comments,
         })
     }
@@ -657,7 +666,7 @@ mod tests {
                 system: false,
             }],
         };
-        let thread = discussion.into_review_thread().unwrap();
+        let thread = discussion.into_review_thread("").unwrap();
         assert_eq!(thread.id, "disc-1");
         assert_eq!(thread.path, "src/lib.rs");
         assert_eq!(thread.line, Some(42));
@@ -667,24 +676,87 @@ mod tests {
         assert_eq!(thread.comments[0].author.as_deref(), Some("bob"));
     }
 
+    fn note(id: u64, body: &str, position: Option<GlabNotePosition>) -> GlabNote {
+        GlabNote {
+            id,
+            body: body.to_string(),
+            author: GlabNoteAuthor::default(),
+            created_at: None,
+            commit_id: None,
+            position,
+            resolved: false,
+            system: false,
+        }
+    }
+
+    fn text_position(head_sha: Option<&str>) -> GlabNotePosition {
+        GlabNotePosition {
+            position_type: "text".to_string(),
+            head_sha: head_sha.map(str::to_string),
+            new_path: Some("src/lib.rs".to_string()),
+            new_line: Some(5),
+            old_path: None,
+            old_line: None,
+        }
+    }
+
     #[test]
-    fn should_skip_discussion_without_position() {
-        // A non-individual_note discussion without a diff position is dropped.
+    fn should_keep_replied_general_comment_as_review_level_thread() {
+        // A reply turns an individual note into a positionless discussion.
         let discussion = GlabDiscussion {
             id: "disc-2".to_string(),
             individual_note: false,
-            notes: vec![GlabNote {
-                id: 101,
-                body: "general comment".to_string(),
-                author: GlabNoteAuthor::default(),
-                created_at: None,
-                commit_id: None,
-                position: None,
-                resolved: false,
-                system: false,
-            }],
+            notes: vec![note(101, "general comment", None), note(102, "reply", None)],
         };
-        assert!(discussion.into_review_thread().is_none());
+        let thread = discussion.into_review_thread("head").unwrap();
+        assert_eq!(thread.path, "");
+        assert_eq!(thread.line, None);
+        assert_eq!(thread.comments.len(), 2);
+    }
+
+    #[test]
+    fn should_mark_discussion_outdated_when_position_head_differs() {
+        let mk = |h| GlabDiscussion {
+            id: "d".to_string(),
+            individual_note: false,
+            notes: vec![note(1, "x", Some(text_position(h)))],
+        };
+        assert!(
+            mk(Some("old"))
+                .into_review_thread("new")
+                .unwrap()
+                .is_outdated
+        );
+        assert!(
+            !mk(Some("new"))
+                .into_review_thread("new")
+                .unwrap()
+                .is_outdated
+        );
+        assert!(!mk(None).into_review_thread("new").unwrap().is_outdated);
+        assert!(!mk(Some("old")).into_review_thread("").unwrap().is_outdated);
+    }
+
+    #[test]
+    fn should_keep_resolved_state_on_replied_general_thread() {
+        let mut root = note(1, "general", None);
+        root.resolved = true;
+        let discussion = GlabDiscussion {
+            id: "d".to_string(),
+            individual_note: false,
+            notes: vec![root, note(2, "reply", None)],
+        };
+        assert!(discussion.into_review_thread("head").unwrap().is_resolved);
+    }
+
+    #[test]
+    fn should_not_mark_empty_position_head_sha_outdated() {
+        let discussion = GlabDiscussion {
+            id: "d".to_string(),
+            individual_note: false,
+            notes: vec![note(1, "x", Some(text_position(Some(""))))],
+        };
+        assert!(!discussion.into_review_thread("new").unwrap().is_outdated);
     }
 
     #[test]
@@ -706,7 +778,7 @@ mod tests {
                 system: false,
             }],
         };
-        let thread = discussion.into_review_thread().unwrap();
+        let thread = discussion.into_review_thread("").unwrap();
         assert_eq!(thread.id, "disc-3");
         assert_eq!(thread.path, "");
         assert_eq!(thread.line, None);
@@ -732,6 +804,6 @@ mod tests {
                 system: true,
             }],
         };
-        assert!(discussion.into_review_thread().is_none());
+        assert!(discussion.into_review_thread("").is_none());
     }
 }
