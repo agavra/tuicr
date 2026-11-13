@@ -1041,6 +1041,86 @@ mod tests {
         assert!(rows.is_empty());
     }
 
+    fn section_lines(app: &App) -> Vec<ratatui::text::Line<'static>> {
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        crate::ui::diff_view::append_review_comments_section(
+            app,
+            &mut lines,
+            &mut line_idx,
+            99,
+            60,
+            (0, 1000),
+        );
+        lines
+    }
+
+    #[test]
+    fn should_mute_only_inactive_general_threads_by_visibility() {
+        use crate::forge::remote_comments::PrCommentsVisibility::{All, Unresolved};
+        let mut app = section_app();
+        let mut resolved = general_thread("resolved-body");
+        resolved.is_resolved = true;
+        app.forge_review_threads = vec![general_thread("active-body"), resolved];
+        let badge_fg = |app: &App, needle: &str| {
+            let lines = section_lines(app);
+            let i = lines
+                .iter()
+                .position(|l| row_text(l).contains(needle))
+                .unwrap_or_else(|| panic!("{needle} missing"));
+            // the badge header row sits above the first body row of the thread
+            let header = (0..i)
+                .rev()
+                .find(|&j| row_text(&lines[j]).contains("[github @"))
+                .unwrap();
+            lines[header].spans[1].style.fg
+        };
+        app.session.remote_comments_visibility = All;
+        let active = badge_fg(&app, "active-body");
+        let muted = badge_fg(&app, "resolved-body");
+        assert_eq!(active, Some(app.theme.diff_hunk_header));
+        assert_eq!(muted, Some(app.theme.fg_dim));
+        // Unresolved hides the resolved thread entirely, keeps the active one
+        app.session.remote_comments_visibility = Unresolved;
+        let rows: Vec<String> = section_lines(&app).iter().map(row_text).collect();
+        assert!(rows.iter().any(|r| r.contains("active-body")));
+        assert!(!rows.iter().any(|r| r.contains("resolved-body")));
+        assert_eq!(badge_fg(&app, "active-body"), active);
+    }
+
+    #[test]
+    fn should_label_remote_rows_with_the_forge_kind() {
+        let mut app = section_app();
+        app.forge_review_threads = vec![general_thread("thread-body")];
+        app.forge_review_summaries = make_app().forge_review_summaries;
+        assert!(!app.forge_review_summaries.is_empty());
+        let rows: Vec<String> = section_lines(&app).iter().map(row_text).collect();
+        let badges: Vec<&String> = rows.iter().filter(|r| r.contains(" @")).collect();
+        assert!(badges.len() >= 2);
+        assert!(badges.iter().all(|r| r.contains("[github @")), "{badges:?}");
+        // outside PR mode there is no forge kind: generic label
+        app.diff_source = DiffSource::Staged;
+        let rows: Vec<String> = section_lines(&app).iter().map(row_text).collect();
+        assert!(rows.iter().any(|r| r.contains("[forge @")));
+        assert!(!rows.iter().any(|r| r.contains("[github @")));
+    }
+
+    #[test]
+    fn should_show_comment_vim_mode_label_in_review_input_box() {
+        let mut app = section_app();
+        app.input_mode = InputMode::Comment;
+        app.comment_is_review_level = true;
+        app.comment_vim_enabled = true;
+        app.comment_buffer = "draft".to_string();
+        app.comment_cursor = 5;
+        assert!(app.comment_vim_mode_label().is_some());
+        let with = build_section(&app, 99, (0, 1000)).0;
+        assert!(with.iter().any(|r| r.contains("INSERT")), "{with:?}");
+        app.comment_vim_enabled = false;
+        let without = build_section(&app, 99, (0, 1000)).0;
+        assert!(!without.iter().any(|r| r.contains("INSERT")));
+    }
+
     #[test]
     fn should_place_new_review_comment_input_box_and_report_geometry() {
         let mut app = section_app();
