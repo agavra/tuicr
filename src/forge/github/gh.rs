@@ -952,7 +952,11 @@ fn parse_repo_hash_target(target: &str) -> Option<PullRequestTarget> {
         [owner, repo] => {
             ForgeRepository::github(DEFAULT_GITHUB_HOST, *owner, strip_git_suffix(repo))
         }
-        [host, owner, repo] => forge_repo_from_host(host, owner, strip_git_suffix(repo)),
+        // A dotless first segment is a GitLab subgroup (`group/sub/repo#N`),
+        // not a host: leave it to the GitLab target parser.
+        [host, owner, repo] if host.contains('.') => {
+            forge_repo_from_host(strip_port(host), owner, strip_git_suffix(repo))
+        }
         _ => return None,
     };
 
@@ -1592,6 +1596,17 @@ index 1111111..2222222 100644
         let repository = target.repository.unwrap();
         assert_eq!(repository.host, "github.example.com");
         assert_eq!(repository.slug(), "agavra/tuicr");
+    }
+
+    #[test]
+    fn leaves_dotless_three_segment_shorthand_to_gitlab() {
+        assert!(parse_pull_request_target("group/subgroup/repo#42").is_err());
+    }
+
+    #[test]
+    fn strips_port_from_host_qualified_shorthand() {
+        let target = parse_pull_request_target("github.example.com:443/agavra/tuicr#125").unwrap();
+        assert_eq!(target.repository.unwrap().host, "github.example.com");
     }
 
     #[test]

@@ -320,17 +320,8 @@ pub fn parse_gitea_remote_url(remote_url: &str) -> Option<ForgeRepository> {
     }
 
     if let Some((host, path)) = parse_scp_like_remote(trimmed) {
-        // Check the literal host before resolving the SSH alias: a config that
-        // maps a recognizable name onto an opaque bastion would otherwise stop
-        // looking like Gitea. Mirrors the GitLab backend's ordering.
         let resolved = resolve_ssh_hostname(host);
-        let gitea_host = if is_gitea_host(host) {
-            host
-        } else if is_gitea_host(&resolved) {
-            &resolved
-        } else {
-            return None;
-        };
+        let gitea_host = scp_gitea_host(host, &resolved)?;
         return gitea_repository_from_path(gitea_host, path);
     }
 
@@ -345,6 +336,20 @@ pub fn parse_gitea_remote_url(remote_url: &str) -> Option<ForgeRepository> {
         return None;
     }
     gitea_repository_from_path(host, path)
+}
+
+/// Pick the host for an SCP-style remote. The resolved `HostName` wins when it
+/// is a Gitea host, so `tea` logins and URL matching see the real endpoint
+/// rather than the alias. A recognizable literal host still counts when the
+/// resolved one is opaque (a config mapping a Gitea name onto a bastion).
+fn scp_gitea_host<'a>(host: &'a str, resolved: &'a str) -> Option<&'a str> {
+    if is_gitea_host(resolved) {
+        Some(resolved)
+    } else if is_gitea_host(host) {
+        Some(host)
+    } else {
+        None
+    }
 }
 
 /// Gitea repositories are always exactly `<owner>/<repo>` — no nested groups,
@@ -1499,6 +1504,18 @@ fn resolve_ssh_hostname_from_config(alias: &str, config: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scp_host_prefers_resolved_gitea_host_over_alias() {
+        assert_eq!(
+            super::scp_gitea_host("gitea-work", "code.gitea.example.com"),
+            Some("code.gitea.example.com")
+        );
+        assert_eq!(
+            super::scp_gitea_host("gitea-work", "bastion.example.com"),
+            Some("gitea-work")
+        );
+    }
+
     use super::*;
     use crate::forge::submit::InlineComment;
     use std::cell::RefCell;
