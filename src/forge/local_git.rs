@@ -20,6 +20,45 @@ fn is_hex_object_id(s: &str) -> bool {
     (4..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Whether the object named by `spec` exists. No validation: `spec` must
+/// already have passed [`is_hex_object_id`]; `--end-of-options` is the second
+/// defence should it not have.
+fn object_exists_unchecked(repo_root: &Path, spec: &str) -> bool {
+    run_command_output("git", Some(repo_root), cat_file_exists_args(spec)).is_ok()
+}
+
+/// Arguments of the existence probe. Split out because no option-shaped spec
+/// changes the probe's exit status (`cat-file -e` fails on unknown options
+/// just as it fails on unknown objects), so only the argv can pin the guard.
+fn cat_file_exists_args(spec: &str) -> Vec<&str> {
+    vec!["cat-file", "-e", "--end-of-options", spec]
+}
+
+/// `git show <spec>` without validation; see [`object_exists_unchecked`].
+fn show_object_unchecked(repo_root: &Path, spec: &str) -> Option<String> {
+    run_command_output(
+        "git",
+        Some(repo_root),
+        ["show", "--end-of-options", spec]
+            .iter()
+            .map(|s| OsStr::new(*s)),
+    )
+    .ok()
+}
+
+/// `git show -s --format=%B <spec>` without validation; see
+/// [`object_exists_unchecked`].
+fn show_message_unchecked(repo_root: &Path, spec: &str) -> Option<String> {
+    run_command_output(
+        "git",
+        Some(repo_root),
+        ["show", "-s", "--format=%B", "--end-of-options", spec]
+            .iter()
+            .map(|s| OsStr::new(*s)),
+    )
+    .ok()
+}
+
 /// Read a git blob from the checkout at `repo_root` using
 /// `git show <sha>:<path>`.
 ///
@@ -35,40 +74,15 @@ pub(crate) fn read_blob(repo_root: &Path, sha: &str, path: &Path) -> Option<Stri
     // Diff paths arrive with forward slashes, but a path joined on Windows can
     // carry backslashes, and git only resolves `<sha>:<path>` with slashes.
     let spec = format!("{}:{}", sha, path.to_string_lossy().replace('\\', "/"));
-    let exists = run_command_output(
-        "git",
-        Some(repo_root),
-        ["cat-file", "-e", "--end-of-options", spec.as_str()]
-            .iter()
-            .map(|s| OsStr::new(*s)),
-    );
-    if exists.is_err() {
+    if !object_exists_unchecked(repo_root, &spec) {
         return None;
     }
-    run_command_output(
-        "git",
-        Some(repo_root),
-        ["show", "--end-of-options", spec.as_str()]
-            .iter()
-            .map(|s| OsStr::new(*s)),
-    )
-    .ok()
+    show_object_unchecked(repo_root, &spec)
 }
 
 /// Whether the commit `sha` exists in the checkout at `repo_root`.
 pub(crate) fn commit_present(repo_root: &Path, sha: &str) -> bool {
-    if !is_hex_object_id(sha) {
-        return false;
-    }
-    let spec = format!("{sha}^{{commit}}");
-    run_command_output(
-        "git",
-        Some(repo_root),
-        ["cat-file", "-e", "--end-of-options", spec.as_str()]
-            .iter()
-            .map(|s| OsStr::new(*s)),
-    )
-    .is_ok()
+    is_hex_object_id(sha) && object_exists_unchecked(repo_root, &format!("{sha}^{{commit}}"))
 }
 
 /// Read a commit's full raw message from the checkout at `repo_root` using
@@ -81,21 +95,7 @@ pub(crate) fn read_commit_message(repo_root: &Path, sha: &str) -> Option<String>
     if !is_hex_object_id(sha) {
         return None;
     }
-    let spec = format!("{sha}^{{commit}}");
-    run_command_output(
-        "git",
-        Some(repo_root),
-        [
-            "show",
-            "-s",
-            "--format=%B",
-            "--end-of-options",
-            spec.as_str(),
-        ]
-        .iter()
-        .map(|s| OsStr::new(*s)),
-    )
-    .ok()
+    show_message_unchecked(repo_root, &format!("{sha}^{{commit}}"))
 }
 
 /// Shared git fixtures for the tests of every backend that reads the clone.
@@ -178,22 +178,40 @@ mod tests {
         }
     }
 
+    /// `--output=<file>` makes `git show` write `<file>` when it is parsed as
+    /// an option, so the unchecked helpers must not let a spec be one.
     #[test]
-    fn should_not_let_a_sha_write_files_through_git_options() {
-        // given
+    fn should_put_end_of_options_right_before_the_cat_file_spec() {
+        let args = cat_file_exists_args("--output=probe");
+
+        assert_eq!(
+            args[args.len() - 2..],
+            ["--end-of-options", "--output=probe"]
+        );
+    }
+
+    #[test]
+    fn should_not_let_a_spec_write_files_through_git_show_blob() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         init_repo_with_commit(root, &["add file"]);
 
-        // when
-        let blob = read_blob(root, "--output=probe", &PathBuf::from("file.txt"));
-        let message = read_commit_message(root, "--output=probe");
+        let out = show_object_unchecked(root, "--output=probe");
 
-        // then
-        assert_eq!(blob, None);
-        assert_eq!(message, None);
+        assert_eq!(out, None);
         assert!(!root.join("probe").exists());
-        assert!(!root.join("probe^{commit}").exists());
+    }
+
+    #[test]
+    fn should_not_let_a_spec_write_files_through_git_show_message() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        init_repo_with_commit(root, &["add file"]);
+
+        let out = show_message_unchecked(root, "--output=probe");
+
+        assert_eq!(out, None);
+        assert!(!root.join("probe").exists());
     }
 
     #[test]
