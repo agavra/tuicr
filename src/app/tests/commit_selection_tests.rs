@@ -949,3 +949,33 @@ fn should_keep_commit_only_hunk_marks_when_widening_to_the_cached_pr_diff() {
         "widening must keep hunk marks from individual commits"
     );
 }
+
+/// `r` pressed while narrowed to one commit marks the file in the cumulative
+/// review. Widening back must keep that mark: the subset hash must not
+/// overwrite the cumulative `content_hash` (which would invalidate it).
+#[test]
+fn should_keep_a_mark_made_while_narrowed_after_widening_back() {
+    let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
+    app.review_commits = app.commit_list.clone();
+    app.diff_source = DiffSource::CommitRange(vec!["c1".into(), "c2".into()]);
+    let path = PathBuf::from("src/shared.rs");
+    let full = commit_only_file(&path, vec![one_line_hunk()]);
+    app.session.add_diff_file(&full);
+    app.range_diff_files = Some(vec![full]);
+    let mut subset = commit_only_file(&path, vec![one_line_hunk()]);
+    subset.content_hash = 99;
+    app.commit_diff_cache.insert((0, 0), vec![subset]);
+    app.commit_selection_range = Some((0, 0));
+    app.reload_inline_selection().unwrap();
+
+    app.toggle_reviewed_for_file_idx(loaded_file_idx(&app, &path), true);
+    assert!(app.session.is_file_reviewed(&path));
+    app.commit_selection_range = Some((0, 1));
+    app.reload_inline_selection().unwrap();
+
+    assert!(
+        app.session.is_file_reviewed(&path),
+        "mark made while narrowed must survive widening"
+    );
+    assert_eq!(app.session.files[&path].content_hash, Some(7));
+}
