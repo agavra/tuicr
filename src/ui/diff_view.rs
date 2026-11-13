@@ -915,12 +915,12 @@ pub(super) fn comment_box_row(line: &Line) -> Option<CommentBoxRow> {
 pub(super) struct DiffOverlayPaint<'a> {
     pub inner: Rect,
     pub visible_lines_unscrolled: &'a [Line<'a>],
-    pub line_widths: &'a [usize],
+    /// Display width of every visual row as drawn (after wrapping and
+    /// horizontal scroll), indexed by visual row from the top of the viewport.
+    pub row_widths: &'a [usize],
     /// Visual row count per logical line (word-wrap aware); see
-    /// [`compute_row_heights`]. Kept alongside `line_widths`, which is still
-    /// used for content-width math (right-border fill, horizontal scroll).
+    /// [`compute_row_heights`].
     pub row_heights: &'a [usize],
-    pub wrap_lines: bool,
     pub viewport_width: usize,
     pub scroll_x: usize,
     pub scroll_offset: usize,
@@ -998,7 +998,6 @@ pub(super) fn paint_comment_box_right_border(frame: &mut Frame, ctx: &DiffOverla
                 .get(1)
                 .and_then(|s| s.style.fg)
                 .unwrap_or(ctx.theme.fg_primary);
-            let line_width = ctx.line_widths.get(idx).copied().unwrap_or(0);
 
             for r in 0..rows {
                 if visual_row + r >= ctx.inner.height as usize {
@@ -1026,14 +1025,12 @@ pub(super) fn paint_comment_box_right_border(frame: &mut Frame, ctx: &DiffOverla
                     CommentBoxRow::Top | CommentBoxRow::Divider | CommentBoxRow::Bottom
                 ) {
                     // Width of the visible content on this visual row.
-                    let content_w = if ctx.wrap_lines {
-                        let prior = r * ctx.viewport_width;
-                        line_width.saturating_sub(prior).min(ctx.viewport_width)
-                    } else {
-                        line_width
-                            .saturating_sub(ctx.scroll_x)
-                            .min(ctx.viewport_width)
-                    };
+                    let content_w = ctx
+                        .row_widths
+                        .get(visual_row + r)
+                        .copied()
+                        .unwrap_or(0)
+                        .min(ctx.viewport_width);
                     let fill_start = ctx.inner.x + content_w as u16;
                     let mut x = fill_start;
                     while x < right_x {
@@ -1203,11 +1200,6 @@ pub(super) fn paint_file_header_fill(frame: &mut Frame, ctx: &DiffOverlayPaint) 
                 .or_else(|| line.spans.get(1))
                 .and_then(|s| s.style.fg)
                 .unwrap_or(ctx.theme.fg_primary);
-            let line_width = line
-                .spans
-                .iter()
-                .map(|span| span.content.width())
-                .sum::<usize>();
             // Only fill the trailing edge of the last visual row of the header
             // — wrapped intermediate rows of an unusually long header path are
             // already entirely covered by content.
@@ -1217,14 +1209,12 @@ pub(super) fn paint_file_header_fill(frame: &mut Frame, ctx: &DiffOverlayPaint) 
                 continue;
             }
             let y = ctx.inner.y + (visual_row + last_row) as u16;
-            let content_w = if ctx.wrap_lines {
-                let prior = last_row * ctx.viewport_width;
-                line_width.saturating_sub(prior).min(ctx.viewport_width)
-            } else {
-                line_width
-                    .saturating_sub(ctx.scroll_x)
-                    .min(ctx.viewport_width)
-            };
+            let content_w = ctx
+                .row_widths
+                .get(visual_row + last_row)
+                .copied()
+                .unwrap_or(0)
+                .min(ctx.viewport_width);
             let mut x = ctx.inner.x + content_w as u16;
             while x <= right_x {
                 let cell = &mut frame.buffer_mut()[(x, y)];
@@ -1258,33 +1248,40 @@ pub(super) fn apply_horizontal_scroll(line: Line, scroll_x: usize) -> Line {
         return line;
     }
 
-    let mut spans: Vec<Span> = line.spans.into_iter().collect();
-
-    // Preserve the first span (indicator)
+    let mut spans = line.spans;
     let indicator = spans.remove(0);
-
-    // Skip scroll_x characters from the remaining spans
-    let mut chars_to_skip = scroll_x;
     let mut new_spans = vec![indicator];
-
-    for span in spans {
-        let content = span.content.to_string();
-        let char_count = content.chars().count();
-        if chars_to_skip >= char_count {
-            chars_to_skip -= char_count;
-            // Skip this span entirely
-        } else if chars_to_skip > 0 {
-            // Partially skip this span
-            let new_content: String = content.chars().skip(chars_to_skip).collect();
-            chars_to_skip = 0;
-            new_spans.push(Span::styled(new_content, span.style));
-        } else {
-            // Keep this span as-is
-            new_spans.push(Span::styled(content, span.style));
-        }
-    }
-
+    new_spans.extend(scroll_spans_by_width(Line::from(spans), scroll_x).spans);
     Line::from(new_spans)
+}
+
+/// Drop the first `columns` terminal cells of a line, preserving grapheme
+/// clusters. A wide glyph cut by the boundary leaves blank cells for its
+/// visible remainder so the rest of the row stays aligned.
+pub(super) fn scroll_spans_by_width(line: Line<'_>, mut columns: usize) -> Line<'_> {
+    if columns == 0 {
+        return line;
+    }
+    let spans = line
+        .spans
+        .into_iter()
+        .map(|span| {
+            let mut text = String::new();
+            for grapheme in span.styled_graphemes(Style::default()) {
+                let width = grapheme.symbol.width();
+                if columns == 0 {
+                    text.push_str(grapheme.symbol);
+                } else if columns >= width {
+                    columns -= width;
+                } else {
+                    text.push_str(&" ".repeat(width - columns));
+                    columns = 0;
+                }
+            }
+            Span::styled(text, span.style)
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -1308,6 +1305,13 @@ mod tests {
 
     fn two_rows_per_line(_line: usize) -> usize {
         2
+    }
+
+    #[test]
+    fn should_scroll_by_display_width_and_pad_split_wide_glyphs() {
+        let line = Line::from(vec![Span::raw(">"), Span::raw("界B")]);
+        assert_eq!(apply_horizontal_scroll(line.clone(), 1).to_string(), "> B");
+        assert_eq!(apply_horizontal_scroll(line, 2).to_string(), ">B");
     }
 
     #[test]

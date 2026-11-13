@@ -27,43 +27,6 @@ pub(super) fn truncate_or_pad(s: &str, width: usize) -> String {
     }
 }
 
-pub(super) fn truncate_or_pad_pairs_by_chars(
-    pairs: &[(Style, String)],
-    width: usize,
-    base_style: Style,
-) -> Vec<Span<'static>> {
-    let total_chars: usize = pairs.iter().map(|(_, text)| text.chars().count()).sum();
-    let mut result = Vec::new();
-    if total_chars > width {
-        let mut remaining = width.saturating_sub(3);
-        for (style, text) in pairs {
-            if remaining == 0 {
-                break;
-            }
-            let count = text.chars().count();
-            if count <= remaining {
-                result.push(Span::styled(text.clone(), *style));
-                remaining -= count;
-            } else {
-                result.push(Span::styled(
-                    text.chars().take(remaining).collect::<String>(),
-                    *style,
-                ));
-                remaining = 0;
-            }
-        }
-        result.push(Span::styled("...".to_string(), base_style));
-    } else {
-        for (style, text) in pairs {
-            result.push(Span::styled(text.clone(), *style));
-        }
-        if total_chars < width {
-            result.push(Span::styled(" ".repeat(width - total_chars), base_style));
-        }
-    }
-    result
-}
-
 /// Truncate or pad highlighted spans to a specific display width
 /// Uses unicode width to properly handle wide characters (CJK, emoji, etc.)
 /// Returns a vector of spans that fits exactly within the width
@@ -79,6 +42,7 @@ pub(super) fn truncate_or_pad_spans(
         // Need to truncate
         let mut result = Vec::new();
         let mut remaining = width.saturating_sub(3); // Reserve space for "..."
+        let mut kept = 0;
 
         for (style, text) in spans {
             if remaining == 0 {
@@ -89,6 +53,7 @@ pub(super) fn truncate_or_pad_spans(
             if text_width <= remaining {
                 result.push(Span::styled(text.clone(), *style));
                 remaining -= text_width;
+                kept += text_width;
             } else {
                 // Truncate this span character by character to fit remaining width
                 let mut truncated = String::new();
@@ -104,12 +69,16 @@ pub(super) fn truncate_or_pad_spans(
                 if !truncated.is_empty() {
                     result.push(Span::styled(truncated, *style));
                 }
+                kept += current_width;
                 remaining = 0;
             }
         }
 
         // Add ellipsis
-        result.push(Span::styled("...".to_string(), base_style));
+        // A wide glyph that did not fit leaves the cell short; keep the row
+        // exactly `width` wide so a column divider after it does not shift.
+        let ellipsis = format!("...{}", " ".repeat(width.saturating_sub(kept + 3)));
+        result.push(Span::styled(ellipsis, base_style));
         result
     } else if total_width < width {
         // Need to pad

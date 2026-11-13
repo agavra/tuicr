@@ -5,7 +5,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
     App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode,
@@ -22,7 +23,7 @@ use crate::ui::diff_view::{
 use crate::ui::styles;
 use crate::ui::text_utils::{
     apply_search_highlight_pairs, apply_search_highlight_spans, apply_search_highlight_text,
-    truncate_or_pad, truncate_or_pad_pairs_by_chars, truncate_or_pad_spans, wrap_spans,
+    truncate_or_pad_spans, wrap_spans,
 };
 use crate::vcs::git::calculate_gap;
 
@@ -116,12 +117,10 @@ fn plain_cell_spans(
     width: usize,
     search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) -> Vec<Span<'static>> {
-    if let Some((needle, hl)) = search
-        && let Some(highlighted) = apply_search_highlight_text(content, style, needle, hl)
-    {
-        return truncate_or_pad_pairs_by_chars(&highlighted, width, style);
-    }
-    vec![Span::styled(truncate_or_pad(content, width), style)]
+    let pairs = search
+        .and_then(|(needle, hl)| apply_search_highlight_text(content, style, needle, hl))
+        .unwrap_or_else(|| vec![(style, content.to_string())]);
+    truncate_or_pad_spans(&pairs, width, style)
 }
 
 fn column_pad_style(theme: &Theme, dl: &DiffLine, origin: LineOrigin) -> Style {
@@ -167,13 +166,18 @@ fn pan_spans(
     let mut visible = Vec::new();
     for span in spans {
         let mut text = String::new();
-        for ch in span.content.chars() {
-            let ch_width = ch.width().unwrap_or(if ch == '\t' { 1 } else { 0 });
+        for g in span.content.graphemes(true) {
+            let g_width = if g == "\t" { 1 } else { g.width() };
             if skipped < scroll_x {
-                skipped += ch_width;
-            } else if visible_width + ch_width <= width {
-                text.push(ch);
-                visible_width += ch_width;
+                skipped += g_width;
+                // The viewport starts inside a wide glyph: keep its remaining
+                // cells blank so the rest of the row stays aligned.
+                let lead = skipped.saturating_sub(scroll_x).min(width);
+                text.push_str(&" ".repeat(lead));
+                visible_width += lead;
+            } else if visible_width + g_width <= width {
+                text.push_str(g);
+                visible_width += g_width;
             } else {
                 if !text.is_empty() {
                     visible.push(Span::styled(text, span.style));
@@ -1071,17 +1075,6 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         .take(inner.height as usize)
         .collect();
 
-    // Calculate the width of each line for max_content_width and visible line count
-    let line_widths: Vec<usize> = visible_lines_unscrolled
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.width())
-                .sum::<usize>()
-        })
-        .collect();
-
     let max_content_width = sbs_meta
         .values()
         .flat_map(|meta| [&meta.left_content, &meta.right_content])
@@ -1176,12 +1169,15 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             .collect(),
     };
 
+    // Widths of the rows actually drawn (post-wrap, post-scroll): the overlays
+    // fill the space after the real content, so they must not guess it.
+    let row_widths: Vec<usize> = visible_lines.iter().map(Line::width).collect();
+
     let overlay_ctx = crate::ui::diff_view::DiffOverlayPaint {
         inner,
         visible_lines_unscrolled: &visible_lines_unscrolled_for_overlay,
-        line_widths: &line_widths,
+        row_widths: &row_widths,
         row_heights: &row_heights,
-        wrap_lines: app.diff_state.wrap_lines,
         viewport_width: inner.width as usize,
         scroll_x,
         scroll_offset: app.diff_state.scroll_offset,
@@ -2276,6 +2272,7 @@ mod remote_comments_side_by_side_snapshot_tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use std::path::{Path, PathBuf};
+    use unicode_width::UnicodeWidthStr;
 
     struct SnapshotVcs {
         info: VcsInfo,
@@ -2848,6 +2845,48 @@ mod remote_comments_side_by_side_snapshot_tests {
         assert_eq!(app.diff_state.scroll_x, 4);
         assert!(body_text(&buf).contains("COMMENT"));
         assert_eq!(char_at(&buf, cursor_x - 1, cursor_y), "T");
+    }
+
+    #[test]
+    fn should_keep_comment_header_text_when_scrolled_in_side_by_side() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair(
+            &format!("0000LEFT{}", "L".repeat(100)),
+            &format!("0000RIGHT{}", "R".repeat(100)),
+        )];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+        let _ = draw_sbs(&mut app, 80, 20);
+        app.scroll_right(30);
+        app.enter_comment_mode(false, Some((1, LineSide::New)));
+        let buf = draw_sbs(&mut app, 80, 20);
+        assert_eq!(app.diff_state.scroll_x, 30);
+        let body = body_text(&buf);
+        assert!(body.contains("Esc:cancel)"), "{body}");
+    }
+
+    #[test]
+    fn should_keep_cjk_cells_aligned_to_column_width() {
+        let style = ratatui::style::Style::default();
+        for width in [10, 11] {
+            let spans = super::plain_cell_spans("界界界界界界界界界界", style, width, None);
+            let w: usize = spans.iter().map(|s| s.content.width()).sum();
+            assert_eq!(w, width, "{spans:?}");
+        }
+        let spans = super::plain_cell_spans("界a", style, 8, None);
+        let w: usize = spans.iter().map(|s| s.content.width()).sum();
+        assert_eq!(w, 8);
+    }
+
+    #[test]
+    fn should_pad_a_wide_glyph_split_by_horizontal_pan() {
+        let spans = vec![ratatui::text::Span::raw("界B界")];
+        let panned = super::pan_spans(&spans, 1, 4, ratatui::style::Style::default());
+        let text: String = panned.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, " B界");
+        let panned = super::pan_spans(&spans, 2, 3, ratatui::style::Style::default());
+        let text: String = panned.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "B界");
     }
 
     #[test]
