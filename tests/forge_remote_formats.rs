@@ -83,6 +83,27 @@ fn check_remote_discovery(format: &[&str]) {
         detect_gitlab_repository(root),
         Some(ForgeRepository::gitlab("gitlab.com", "team", "project"))
     );
+    git(
+        root,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://gitlab.example.com/gitlab/team/project.git",
+        ],
+    );
+    // A relative-URL install's subfolder is indistinguishable from a top-level
+    // group here, and it stays in `owner` on purpose: that is what slugs and
+    // `PrSessionKey` persist. Only the API project id drops it, via
+    // `GitLabGlabBackend::project_path`.
+    assert_eq!(
+        detect_gitlab_repository(root),
+        Some(ForgeRepository::gitlab(
+            "gitlab.example.com",
+            "gitlab/team",
+            "project"
+        ))
+    );
 }
 
 #[test]

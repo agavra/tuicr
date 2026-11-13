@@ -20,6 +20,7 @@ use crate::process::{
 use crate::vcs::git::raw::run_git_diff;
 use crate::vcs::slice_context_lines;
 
+use super::instance::{self, SubfolderCache};
 use super::models::{
     GlabApprovalState, GlabCommit, GlabDiff, GlabDiscussion, GlabMrDetails, GlabMrSummary,
     GlabMrVersion, GlabUser,
@@ -99,9 +100,11 @@ fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<
     run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
-/// Percent-encode `owner/repo` as `owner%2Frepo` for GitLab project API paths.
-fn gl_project_path(owner: &str, name: &str) -> String {
-    format!("{}/{}", owner, name).replace('/', "%2F")
+/// Percent-encode a project path as `owner%2Frepo` for GitLab project API
+/// paths. Build the path itself with [`GitLabGlabBackend::project_path`] —
+/// `owner` can carry an install subfolder that must not reach the API.
+fn gl_encode_project_path(project_path: &str) -> String {
+    project_path.replace('/', "%2F")
 }
 
 /// Percent-encode a file path for use in GitLab repository file API endpoints.
@@ -140,6 +143,7 @@ pub struct GitLabGlabBackend<R = SystemGlabRunner> {
     default_repository: Option<ForgeRepository>,
     runner: R,
     local_checkout: Option<PathBuf>,
+    subfolders: SubfolderCache,
 }
 
 impl GitLabGlabBackend<SystemGlabRunner> {
@@ -148,6 +152,7 @@ impl GitLabGlabBackend<SystemGlabRunner> {
             default_repository,
             runner: SystemGlabRunner,
             local_checkout: None,
+            subfolders: SubfolderCache::default(),
         }
     }
 
@@ -166,7 +171,63 @@ where
             default_repository,
             runner,
             local_checkout: None,
+            subfolders: SubfolderCache::default(),
         }
+    }
+
+    /// Like [`Self::with_runner`], with `host`'s install subfolder already
+    /// known. Keeps the endpoint tests off both `GITLAB_SUBFOLDER` (process
+    /// state other tests mutate) and the runner's response queue.
+    #[cfg(test)]
+    fn with_runner_and_subfolder(
+        default_repository: Option<ForgeRepository>,
+        runner: R,
+        host: &str,
+        subfolder: Option<&str>,
+    ) -> Self {
+        Self {
+            default_repository,
+            runner,
+            local_checkout: None,
+            subfolders: SubfolderCache::seeded(host, subfolder),
+        }
+    }
+
+    /// The path prefix `glab` prepends to this host's API URLs when GitLab is
+    /// installed under a relative URL. `gitlab.com` can't be, and skipping the
+    /// lookup there keeps the common case free of a process spawn.
+    fn install_subfolder(&self, host: &str) -> Option<String> {
+        if host.eq_ignore_ascii_case(DEFAULT_GITLAB_HOST) {
+            return None;
+        }
+        self.subfolders.resolve(host, &self.runner)
+    }
+
+    /// The project path as the GitLab API names it: `owner/name` with the
+    /// instance's install subfolder removed. The GitLab analogue of
+    /// `gerrit_project()` / `azure_coords()`, and the only supported way from a
+    /// [`ForgeRepository`] to an API project path.
+    ///
+    /// A relative-URL install's subfolder is indistinguishable from a top-level
+    /// group in a clone URL, so it ends up inside `repo.owner` — deliberately,
+    /// since `owner` is persisted in session slugs and `PrSessionKey` and is
+    /// also parsed from host-less targets that could never look a subfolder up.
+    /// `glab` prefixes that subfolder onto every API URL itself, so leaving it
+    /// in the project id requests
+    /// `/<sub>/api/v4/projects/<sub>%2Fgroup%2Fproject` and 404s.
+    fn project_path(&self, repo: &ForgeRepository) -> String {
+        let full_path = format!("{}/{}", repo.owner, repo.name);
+        match self.install_subfolder(&repo.host) {
+            Some(subfolder) => {
+                instance::strip_subfolder_prefix(&full_path, &subfolder).unwrap_or(full_path)
+            }
+            None => full_path,
+        }
+    }
+
+    /// [`Self::project_path`], percent-encoded for an endpoint segment.
+    fn api_project(&self, repo: &ForgeRepository) -> String {
+        gl_encode_project_path(&self.project_path(repo))
     }
 
     fn resolve_repository(&self, target: &PullRequestTarget) -> Result<ForgeRepository> {
@@ -183,9 +244,14 @@ where
     }
 
     fn run_glab(&self, args: Vec<String>, host: &str) -> Result<String> {
-        self.runner
-            .run(&args)
-            .map_err(|err| map_glab_error(err, host))
+        self.runner.run(&args).map_err(|err| {
+            // A 404 against a self-hosted host with no subfolder configured is
+            // the one case tuicr cannot fix itself. The lookup is already
+            // cached by the time a call fails, so this costs nothing.
+            let suggest_subfolder = !host.eq_ignore_ascii_case(DEFAULT_GITLAB_HOST)
+                && self.install_subfolder(host).is_none();
+            map_glab_error(err, host, suggest_subfolder)
+        })
     }
 
     /// Build the value for `glab`'s `--repo` flag. For non-default hosts we
@@ -225,7 +291,7 @@ where
     }
 
     fn list_mr_versions(&self, pr: &PullRequestDetails) -> Result<Vec<GlabMrVersion>> {
-        let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
+        let project = self.api_project(&pr.repository);
         let mut versions = Vec::new();
         for page in 1..=100 {
             let endpoint = format!(
@@ -248,7 +314,7 @@ where
         pr: &PullRequestDetails,
         versions: &[GlabMrVersion],
     ) -> Result<Vec<PullRequestReviewRecord>> {
-        let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
+        let project = self.api_project(&pr.repository);
         let endpoint = format!(
             "projects/{}/merge_requests/{}/approvals",
             project, pr.number
@@ -277,7 +343,7 @@ where
         pr: &PullRequestDetails,
         versions: &[GlabMrVersion],
     ) -> Result<Vec<PullRequestReviewRecord>> {
-        let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
+        let project = self.api_project(&pr.repository);
         let mut records = Vec::new();
         for page in 1..=100 {
             let endpoint = format!(
@@ -376,7 +442,7 @@ where
 
     fn get_pull_request(&self, target: PullRequestTarget) -> Result<PullRequestDetails> {
         let repository = self.resolve_repository(&target)?;
-        let project = gl_project_path(&repository.owner, &repository.name);
+        let project = self.api_project(&repository);
         let endpoint = format!("projects/{project}/merge_requests/{}", target.number);
         let output = self.run_api(&repository, endpoint)?;
         let mr: GlabMrDetails = serde_json::from_str(&output)?;
@@ -384,7 +450,7 @@ where
     }
 
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
-        let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
+        let project = self.api_project(&pr.repository);
         let mut patches = Vec::new();
         for page in 1..=100 {
             let endpoint = format!(
@@ -409,7 +475,7 @@ where
     }
 
     fn list_pull_request_commits(&self, pr: &PullRequestDetails) -> Result<Vec<PullRequestCommit>> {
-        let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
+        let project = self.api_project(&pr.repository);
         let mut commits: Vec<PullRequestCommit> = Vec::new();
         for page in 1..=10 {
             let endpoint = format!(
@@ -469,7 +535,7 @@ where
     }
 
     fn list_review_threads(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>> {
-        let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
+        let project = self.api_project(&pr.repository);
         let mut all: Vec<RemoteReviewThread> = Vec::new();
         for page in 1..=100 {
             let endpoint = format!(
@@ -558,7 +624,7 @@ where
         // review. The author publishes from the GitLab "Submit review" UI.
         let is_draft = request.event == SubmitEvent::Draft;
 
-        let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
+        let project = self.api_project(&pr.repository);
         let start_sha = pr
             .diff_start_sha
             .as_deref()
@@ -684,15 +750,18 @@ where
 
             if std::env::var("TUICR_GLAB_DEBUG").is_ok() {
                 let host = &pr.repository.host;
-                let project_encoded =
-                    format!("{}/{}", pr.repository.owner, pr.repository.name).replace('/', "%2F");
+                let subfolder = self
+                    .install_subfolder(&pr.repository.host)
+                    .map(|sub| format!("/{sub}"))
+                    .unwrap_or_default();
+                let project_encoded = self.api_project(&pr.repository);
                 let endpoint_label = if is_draft {
                     "draft_notes"
                 } else {
                     "discussions"
                 };
                 let url = format!(
-                    "https://{host}/api/v4/projects/{project_encoded}/merge_requests/{}/{endpoint_label}",
+                    "https://{host}{subfolder}/api/v4/projects/{project_encoded}/merge_requests/{}/{endpoint_label}",
                     pr.number
                 );
                 glab_debug_log(&format!(
@@ -737,7 +806,7 @@ where
         }
 
         if request.event == SubmitEvent::RequestChanges {
-            let full_path = format!("{}/{}", pr.repository.owner, pr.repository.name);
+            let full_path = self.project_path(&pr.repository);
             let query = "mutation($projectPath: ID!, $iid: String!) { \
                 mergeRequestRequestChanges(input: { projectPath: $projectPath, iid: $iid }) { errors } }";
             let mut args = vec![
@@ -781,7 +850,7 @@ where
     R: GlabCommandRunner,
 {
     fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
-        let project = gl_project_path(&request.repository.owner, &request.repository.name);
+        let project = self.api_project(&request.repository);
         let path_str = request.path.to_string_lossy().replace('\\', "/");
         let encoded_path = gl_encode_file_path(&path_str);
         let endpoint = format!(
@@ -906,14 +975,16 @@ fn is_gitlab_host(host: &str, lookup: HostLookup) -> bool {
 /// Used to recognize self-hosted GitLab instances whose domain doesn't
 /// contain the substring "gitlab". Returns `None` when `glab` is missing,
 /// the command fails, or no host is configured.
+///
+/// Only the hostname is returned. The value is often written as a URL
+/// (`https://git.example.com:8443/gitlab`), and comparing it whole — as this
+/// first did — meant a self-hosted instance on a neutral domain was never
+/// claimed as GitLab at all. The path it may carry is deliberately ignored:
+/// `glab` prefixes its API URLs from the `subfolder` key alone, so inferring an
+/// install subfolder from this value would break requests that work today.
 fn glab_default_host() -> Option<String> {
     let output = run_command_output("glab", None, ["config", "get", "host"]).ok()?;
-    let host = output.trim();
-    if host.is_empty() {
-        None
-    } else {
-        Some(host.to_string())
-    }
+    instance::parse_configured_hostname(&output)
 }
 
 fn parse_numeric_target(target: &str) -> Option<PullRequestTarget> {
@@ -1025,7 +1096,7 @@ fn trim_url_suffix(value: &str) -> &str {
 /// (self-hosted instances, GitLab's SSH-over-443 setup); that port is
 /// meaningless for the HTTPS API host used to build `--repo` arguments, and
 /// left in place it turns into a broken URL (wrong port, TLS failure).
-fn strip_port(host: &str) -> &str {
+pub(super) fn strip_port(host: &str) -> &str {
     match host.rsplit_once(':') {
         Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
         _ => host,
@@ -1104,7 +1175,24 @@ fn resolve_ssh_hostname_from_config(alias: &str, config: &str) -> String {
     alias.to_string()
 }
 
-fn map_glab_error(error: GlabCommandError, host: &str) -> TuicrError {
+/// `glab` builds its API base URL from its own `subfolder` setting, so an
+/// instance served from a relative URL that `glab` does not know about 404s
+/// every call and tuicr cannot fix it from this side. Say so once, on the
+/// error, rather than probing for it up front.
+fn subfolder_hint(host: &str) -> String {
+    format!(
+        "\nIf GitLab is installed under a subfolder, tell `glab` about it: `glab config set subfolder <path> --host {host}`."
+    )
+}
+
+fn looks_like_not_found(stderr: &str) -> bool {
+    let lowered = stderr.to_ascii_lowercase();
+    lowered.contains("404") || lowered.contains("not found")
+}
+
+/// `suggest_subfolder` appends [`subfolder_hint`] to a not-found failure. Only
+/// callers that know the host has no configured subfolder pass `true`.
+fn map_glab_error(error: GlabCommandError, host: &str, suggest_subfolder: bool) -> TuicrError {
     match error {
         GlabCommandError::MissingGlab => TuicrError::Forge(
             "GitLab integration requires `glab`.\nInstall GitLab CLI and run `glab auth login`."
@@ -1116,6 +1204,11 @@ fn map_glab_error(error: GlabCommandError, host: &str) -> TuicrError {
             ))
         }
         GlabCommandError::Failed { stderr, status } => {
+            let hint = if suggest_subfolder && looks_like_not_found(&stderr) {
+                subfolder_hint(host)
+            } else {
+                String::new()
+            };
             let detail = if stderr.is_empty() {
                 status
                     .map(|code| format!("glab exited with status {code}"))
@@ -1123,7 +1216,7 @@ fn map_glab_error(error: GlabCommandError, host: &str) -> TuicrError {
             } else {
                 stderr
             };
-            TuicrError::Forge(format!("GitLab command failed: {detail}"))
+            TuicrError::Forge(format!("GitLab command failed: {detail}{hint}"))
         }
     }
 }
@@ -1215,7 +1308,7 @@ fn map_create_notes_error(error: GlabCommandError, host: &str) -> TuicrError {
             "Cannot submit review: GitLab token lacks merge request write permission.".to_string(),
         );
     }
-    map_glab_error(error, host)
+    map_glab_error(error, host, false)
 }
 
 fn looks_like_auth_failure(stderr: &str) -> bool {
@@ -1430,6 +1523,172 @@ mod tests {
         assert!(
             !calls[0].0.iter().any(|arg| arg == "--output"),
             "glab 1.36 does not support `mr view --output`"
+        );
+    }
+
+    /// A relative-URL install's subfolder lands in `owner` (it is
+    /// indistinguishable from a top-level group in a clone URL), and `glab`
+    /// prefixes it onto the API URL itself — so it must not also appear in the
+    /// project id.
+    fn subfolder_repo() -> ForgeRepository {
+        ForgeRepository::gitlab("git.example.com", "gitlab/group", "project")
+    }
+
+    #[test]
+    fn should_strip_install_subfolder_from_api_project_id() {
+        let repo = subfolder_repo();
+        let runner = RecordingRunner::new_with_responses(vec![
+            r#"{
+                "iid": 42,
+                "title": "Test MR",
+                "web_url": "https://git.example.com/gitlab/group/project/-/merge_requests/42",
+                "state": "opened",
+                "source_branch": "feature",
+                "target_branch": "main",
+                "diff_refs": {
+                    "base_sha": "basesha1",
+                    "head_sha": "headsha1",
+                    "start_sha": "startsha1"
+                }
+            }"#
+            .to_string(),
+        ]);
+        let backend = GitLabGlabBackend::with_runner_and_subfolder(
+            Some(repo),
+            runner,
+            "git.example.com",
+            Some("gitlab"),
+        );
+
+        backend
+            .get_pull_request(PullRequestTarget::number(42, "42"))
+            .unwrap();
+
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(
+            calls[0].0,
+            vec![
+                "api",
+                "--hostname",
+                "git.example.com",
+                "projects/group%2Fproject/merge_requests/42",
+            ]
+        );
+    }
+
+    /// Regression test for the 404 in #567: this is the call that failed.
+    #[test]
+    fn should_strip_install_subfolder_when_listing_review_threads() {
+        let repo = subfolder_repo();
+        let pr = make_pr_details(repo.clone());
+        let runner = RecordingRunner::new_with_responses(vec!["[]".to_string()]);
+        let backend = GitLabGlabBackend::with_runner_and_subfolder(
+            Some(repo),
+            runner,
+            "git.example.com",
+            Some("gitlab"),
+        );
+
+        backend.list_review_threads(&pr).unwrap();
+
+        let calls = backend.runner.calls.borrow();
+        assert!(
+            calls[0].0.iter().any(|arg| arg
+                == "projects/group%2Fproject/merge_requests/42/discussions?per_page=100&page=1"),
+            "expected a subfolder-free project id, got {:?}",
+            calls[0].0
+        );
+    }
+
+    #[test]
+    fn should_keep_project_id_when_no_subfolder_is_configured() {
+        let repo = subfolder_repo();
+        let pr = make_pr_details(repo.clone());
+        let runner = RecordingRunner::new_with_responses(vec!["[]".to_string()]);
+        // `glab` is unaware of any subfolder, so it prefixes nothing and the
+        // whole namespace is the project id — exactly as before this fix.
+        let backend = GitLabGlabBackend::with_runner_and_subfolder(
+            Some(repo),
+            runner,
+            "git.example.com",
+            None,
+        );
+
+        backend.list_review_threads(&pr).unwrap();
+
+        let calls = backend.runner.calls.borrow();
+        assert!(
+            calls[0].0.iter().any(|arg| arg
+                .starts_with("projects/gitlab%2Fgroup%2Fproject/merge_requests/42/discussions")),
+            "expected the namespace untouched, got {:?}",
+            calls[0].0
+        );
+    }
+
+    #[test]
+    fn should_strip_install_subfolder_from_the_unencoded_graphql_project_path() {
+        let repo = subfolder_repo();
+        let runner = RecordingRunner::new_with_responses(Vec::new());
+        let backend = GitLabGlabBackend::with_runner_and_subfolder(
+            Some(repo.clone()),
+            runner,
+            "git.example.com",
+            Some("gitlab"),
+        );
+
+        // What the `mergeRequestRequestChanges` mutation sends as `projectPath`.
+        assert_eq!(backend.project_path(&repo), "group/project");
+        assert_eq!(backend.api_project(&repo), "group%2Fproject");
+    }
+
+    #[test]
+    fn should_not_look_up_a_subfolder_for_gitlab_com() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let runner = RecordingRunner::new_with_responses(Vec::new());
+        let backend = GitLabGlabBackend::with_runner(Some(repo.clone()), runner);
+
+        assert_eq!(backend.project_path(&repo), "owner/repo");
+        assert!(
+            backend.runner.calls.borrow().is_empty(),
+            "gitlab.com cannot be under a subfolder, so it must cost no lookup"
+        );
+    }
+
+    fn not_found_error() -> GlabCommandError {
+        GlabCommandError::Failed {
+            status: Some(1),
+            stderr: "HTTP 404: 404 Project Not Found".to_string(),
+        }
+    }
+
+    #[test]
+    fn should_hint_at_subfolder_config_on_a_404() {
+        let message = map_glab_error(not_found_error(), "git.example.com", true).to_string();
+        assert!(
+            message.contains("glab config set subfolder <path> --host git.example.com"),
+            "expected a subfolder hint, got {message}"
+        );
+    }
+
+    #[test]
+    fn should_not_hint_at_subfolder_config_when_one_is_configured() {
+        let message = map_glab_error(not_found_error(), "git.example.com", false).to_string();
+        assert!(
+            !message.contains("subfolder"),
+            "expected no subfolder hint, got {message}"
+        );
+    }
+
+    #[test]
+    fn should_not_hint_at_subfolder_config_for_an_unrelated_failure() {
+        let error = GlabCommandError::Failed {
+            status: Some(1),
+            stderr: "HTTP 500: something broke".to_string(),
+        };
+        let message = map_glab_error(error, "git.example.com", true).to_string();
+        assert!(
+            !message.contains("subfolder"),
+            "expected no subfolder hint, got {message}"
         );
     }
 
@@ -2311,6 +2570,19 @@ mod tests {
         assert_eq!(
             GitLabGlabBackend::<SystemGlabRunner>::repo_arg(&repo),
             "https://git.example.com/group/team/project"
+        );
+    }
+
+    #[test]
+    fn repo_arg_keeps_the_install_subfolder_in_the_browse_url() {
+        // `owner` carries a relative-URL install's subfolder on purpose, and
+        // `glab` strips its configured subfolder when it parses a `--repo`
+        // URL, so this full clone-style URL resolves correctly. Only the API
+        // project id has to drop it.
+        let repo = ForgeRepository::gitlab("git.example.com", "gitlab/group", "project");
+        assert_eq!(
+            GitLabGlabBackend::<SystemGlabRunner>::repo_arg(&repo),
+            "https://git.example.com/gitlab/group/project"
         );
     }
 
