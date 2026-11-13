@@ -449,6 +449,7 @@ mod tests {
                 new_lineno: Some(start + offset),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             })
             .collect();
         DiffHunk {

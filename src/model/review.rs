@@ -398,6 +398,7 @@ mod tests {
                 new_lineno: Some(new_start),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             }],
             old_start: new_start,
             old_count: 1,
