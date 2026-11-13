@@ -38,12 +38,13 @@ use crate::forge::traits::{
     GhCreateReviewResponse, PagedPullRequests, PullRequestCheckStatus, PullRequestCommit,
     PullRequestDetails, PullRequestInfo, PullRequestIssueComment, PullRequestListQuery,
     PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord,
-    PullRequestReviewStatus, PullRequestSummary, PullRequestTarget, commit_message_body,
+    PullRequestReviewStatus, PullRequestSummary, PullRequestTarget,
 };
 use crate::model::{DiffLine, FilePatch, FileStatus};
 use crate::process::{CommandOutputErrorKind, run_command_output, run_command_streams};
 use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch, run_git_diff};
 use crate::vcs::slice_context_lines;
+use crate::vcs::split_commit_message;
 
 use super::models::{
     GiteaChangedFile, GiteaCombinedStatus, GiteaCommit, GiteaIssue, GiteaIssueComment,
@@ -1202,12 +1203,8 @@ fn into_pull_request_commit(commit: GiteaCommit) -> PullRequestCommit {
         message: String::new(),
         author: None,
     });
-    let summary = payload
-        .message
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_string();
+    let (subject, body) = split_commit_message(&payload.message);
+    let summary = subject.to_string();
     let author = GiteaUser::login(commit.author)
         .or_else(|| payload.author.map(|author| author.name))
         .unwrap_or_default();
@@ -1216,7 +1213,7 @@ fn into_pull_request_commit(commit: GiteaCommit) -> PullRequestCommit {
         oid: commit.sha,
         short_oid,
         summary,
-        body: commit_message_body(&payload.message),
+        body,
         author,
         timestamp: commit.created,
     }

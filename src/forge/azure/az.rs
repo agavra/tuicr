@@ -1015,6 +1015,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+    use crate::forge::local_git::test_support::{init_repo, init_repo_with_commit};
     use crate::forge::submit::InlineComment;
 
     fn azure_repo() -> ForgeRepository {
@@ -1277,28 +1278,15 @@ mod tests {
         // given
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
-        let git = |args: &[&str]| {
-            run_command_output("git", Some(root), args.iter().map(|s| OsStr::new(*s)))
-                .expect("git command")
-        };
-        git(&["init", "--quiet"]);
-        git(&["config", "user.email", "test@example.com"]);
-        git(&["config", "user.name", "test"]);
-        git(&["config", "commit.gpgsign", "false"]);
-        std::fs::write(root.join("file.txt"), "one\ntwo\n").expect("write");
-        git(&["add", "file.txt"]);
-        git(&[
-            "commit",
-            "--quiet",
-            "-m",
-            "Fix the parser",
-            "-m",
-            "Handle nested expressions.",
-            "-m",
-            "Keep context.",
-        ]);
-        let sha = git(&["rev-parse", "HEAD"]);
-        let sha = sha.trim();
+        let sha = init_repo_with_commit(
+            root,
+            &[
+                "Fix the parser",
+                "Handle nested expressions.",
+                "Keep context.",
+            ],
+        );
+        let sha = sha.as_str();
         let shared = SharedHttp::new(vec![
             json!({
                 "count": 1,
@@ -1337,15 +1325,10 @@ mod tests {
     fn should_fetch_a_truncated_message_when_the_commit_is_missing_from_the_clone() {
         // given
         let dir = tempfile::tempdir().expect("tempdir");
-        run_command_output(
-            "git",
-            Some(dir.path()),
-            ["init", "--quiet"].iter().map(|s| OsStr::new(*s)),
-        )
-        .expect("git init");
+        init_repo(dir.path());
         let shared = SharedHttp::new(vec![
-            r#"{"count":1,"value":[{"commitId":"deadbeef","comment":"Fix the par","commentTruncated":true}]}"#.to_string(),
-            r#"{"commitId":"deadbeef","comment":"Fix the parser\n\nHandle nested expressions."}"#.to_string(),
+            r#"{"count":1,"value":[{"commitId":"abcdef1234567890","comment":"Fix the par","commentTruncated":true,"author":{"name":"Alice"}}]}"#.to_string(),
+            r#"{"commitId":"abcdef1234567890","comment":"Fix the parser\n\nHandle nested expressions.\n\nKeep context.\n"}"#.to_string(),
         ]);
         let backend =
             AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()))
@@ -1354,29 +1337,6 @@ mod tests {
         // when
         let commits = backend.list_pull_request_commits(&pr_details()).unwrap();
 
-        // then
-        assert_eq!(commits.len(), 1);
-        assert_eq!(commits[0].summary, "Fix the parser");
-        assert_eq!(
-            commits[0].body.as_deref(),
-            Some("Handle nested expressions.")
-        );
-        let calls = shared.0.calls.lock().unwrap();
-        assert_eq!(calls.len(), 2);
-        assert!(calls[1].1.contains("/commits/deadbeef?api-version=7.1"));
-    }
-
-    #[test]
-    fn should_fetch_the_full_message_for_a_truncated_commit() {
-        // given
-        let shared = SharedHttp::new(vec![
-            r#"{"count":1,"value":[{"commitId":"abcdef1234567890","comment":"Fix the par","commentTruncated":true,"author":{"name":"Alice"}}]}"#.to_string(),
-            r#"{"commitId":"abcdef1234567890","comment":"Fix the parser\n\nHandle nested expressions.\n\nKeep context.\n"}"#.to_string(),
-        ]);
-        let backend =
-            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
-        // when
-        let commits = backend.list_pull_request_commits(&pr_details()).unwrap();
         // then
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].summary, "Fix the parser");
@@ -1587,10 +1547,7 @@ mod tests {
         // which is what makes lastMergeTargetCommit the wrong old-side rev.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        git(root, &["init", "--quiet"]);
-        git(root, &["config", "user.email", "test@example.com"]);
-        git(root, &["config", "user.name", "Test"]);
-        git(root, &["config", "commit.gpgsign", "false"]);
+        init_repo(root);
         let fork_point = commit(root, "a");
         let pr_head = commit(root, "b");
         git(root, &["checkout", "--quiet", &fork_point]);

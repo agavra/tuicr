@@ -620,6 +620,7 @@ impl App {
                     &previous,
                     opened.session.clone(),
                     &opened.diff_files,
+                    &opened.commits,
                 );
                 Ok(crate::forge::pr_open::OpenedPullRequest { session, ..opened })
             }
@@ -641,6 +642,7 @@ impl App {
                 &previous_session,
                 fresh_session,
                 &opened.diff_files,
+                &opened.commits,
             ),
         };
         Ok(crate::forge::pr_open::OpenedPullRequest { session, ..opened })
@@ -650,18 +652,32 @@ impl App {
         previous: &ReviewSession,
         next: ReviewSession,
         diff_files: &[DiffFile],
+        commits: &[crate::forge::traits::PullRequestCommit],
     ) -> ReviewSession {
         let file_by_path: HashMap<_, _> = diff_files
             .iter()
             .map(|file| (file.display_path().clone(), file))
             .collect();
-        let files = next
+        let mut files: HashMap<PathBuf, FileReview> = next
             .files
             .into_iter()
             .map(|(path, review)| {
                 Self::file_review_carried_forward(path, review, previous, &file_by_path)
             })
             .collect();
+        // Commit messages are not forge diff files, so the loop above never
+        // sees them. A commit that is still in the PR has the same message
+        // (same oid), so its pseudo-file's review carries over unchanged;
+        // entries of removed commits are dropped.
+        for commit in commits {
+            let path = DiffFile::commit_message_path(&commit.short_oid);
+            if let Some(review) = previous.files.get(&path) {
+                let mut carried = review.clone();
+                carried.file_comments.retain(|comment| !comment.is_locked());
+                carried.line_comments = Self::line_draft_comments_carried_forward(review);
+                files.insert(path, carried);
+            }
+        }
         let review_comments = previous
             .review_comments
             .iter()

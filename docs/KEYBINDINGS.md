@@ -378,6 +378,9 @@ When exactly one commit is selected, its message is shown above its diff as a
 `Commit Message (<sha>)` entry, in local and pull request reviews alike. A review of a single
 commit, including a single-commit pull request, shows the message without the selector. Comments
 on a commit message in a pull request are submitted in the review summary rather than inline.
+When a pull request opens with a narrowed range, the message appears once the selected range has
+loaded. When the PR's diff base or its known commit list changes, a reload resets the selection to
+all commits.
 
 | Key | Action |
 |-----|--------|

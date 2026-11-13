@@ -75,6 +75,27 @@ pub(crate) fn tabify(s: &str) -> String {
     s.replace('\t', &" ".repeat(TAB_WIDTH))
 }
 
+/// Split a raw commit message into its subject (the first line, `""` if there
+/// is none) and its body: the text after the subject and any blank separator
+/// lines, trailing whitespace trimmed, `None` when nothing is left. Every
+/// backend and forge shares this, so a commit reads the same wherever it is
+/// shown. Placeholders for an absent message belong to the callers.
+pub(crate) fn split_commit_message(message: &str) -> (&str, Option<String>) {
+    let mut lines = message.lines();
+    let subject = lines.next().unwrap_or("");
+    let mut lines = lines.skip_while(|line| line.trim().is_empty());
+    let Some(first) = lines.next() else {
+        return (subject, None);
+    };
+    let mut body = first.to_string();
+    for line in lines {
+        body.push('\n');
+        body.push_str(line);
+    }
+    body.truncate(body.trim_end().len());
+    (subject, Some(body))
+}
+
 /// Slice `[start_line, end_line]` (1-indexed, inclusive) into `DiffLine`s.
 pub(crate) fn slice_context_lines(content: &str, start_line: u32, end_line: u32) -> Vec<DiffLine> {
     if start_line > end_line || start_line == 0 {
@@ -410,6 +431,69 @@ mod tests {
                 panic!("Unexpected error: {e:?}");
             }
         }
+    }
+
+    fn body_of(message: &str) -> Option<String> {
+        split_commit_message(message).1
+    }
+
+    #[test]
+    fn should_omit_commit_body_for_a_subject_only() {
+        // given / when / then
+        assert_eq!(body_of("Subject"), None);
+        assert_eq!(body_of("Subject\n\n \t\n"), None);
+    }
+
+    #[test]
+    fn should_preserve_paragraphs_inside_commit_body() {
+        // given
+        let message = "Subject\n\nFirst paragraph.\nContinued.\n\nSecond paragraph.";
+        // when
+        let body = body_of(message);
+        // then
+        assert_eq!(
+            body.as_deref(),
+            Some("First paragraph.\nContinued.\n\nSecond paragraph.")
+        );
+    }
+
+    #[test]
+    fn should_skip_multiple_blank_commit_message_separators() {
+        // given / when
+        let body = body_of("Subject\n\n \t\n\n  Indented body.");
+        // then
+        assert_eq!(body.as_deref(), Some("  Indented body."));
+    }
+
+    #[test]
+    fn should_trim_trailing_commit_body_whitespace() {
+        // given / when
+        let body = body_of("Subject\n\nBody. \t\n\n");
+        // then
+        assert_eq!(body.as_deref(), Some("Body."));
+    }
+
+    #[test]
+    fn should_normalize_crlf_commit_message_lines() {
+        // given / when
+        let body = body_of("Subject\r\n\r\nFirst.\r\n\r\nSecond.\r\n");
+        // then
+        assert_eq!(body.as_deref(), Some("First.\n\nSecond."));
+    }
+
+    #[test]
+    fn should_split_the_subject_from_the_message() {
+        // given / when / then
+        assert_eq!(split_commit_message(""), ("", None));
+        assert_eq!(split_commit_message("Subject"), ("Subject", None));
+        assert_eq!(
+            split_commit_message("Subject\r\n\r\nBody\r\n"),
+            ("Subject", Some("Body".to_string()))
+        );
+        assert_eq!(
+            split_commit_message("\nBody"),
+            ("", Some("Body".to_string()))
+        );
     }
 
     #[test]

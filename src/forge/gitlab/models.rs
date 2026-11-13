@@ -5,10 +5,11 @@ use std::path::PathBuf;
 use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::{RemoteCommentSide, RemoteReviewComment, RemoteReviewThread};
 use crate::forge::traits::{
-    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary, commit_message_body,
+    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
 };
 use crate::model::{FilePatch, FileStatus};
 use crate::vcs::git::raw::is_binary_patch;
+use crate::vcs::split_commit_message;
 
 /// One entry from GitLab's merge-request diffs API.
 #[derive(Debug, Deserialize)]
@@ -225,7 +226,7 @@ impl GlabCommit {
             oid: self.id,
             short_oid,
             summary: self.title,
-            body: commit_message_body(&self.message),
+            body: split_commit_message(&self.message).1,
             author: self.author_name,
             timestamp: self.committed_date,
         }

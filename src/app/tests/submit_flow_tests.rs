@@ -445,32 +445,6 @@ fn should_not_map_single_commit_pr_message_comments_inline() {
 }
 
 #[test]
-fn should_allow_commit_message_comment_as_the_only_local_draft() {
-    // given a saved message comment while the PR's cumulative diff is visible
-    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
-    app.pr_commits = vec![pr_commit("abcdef0123"), pr_commit("deadbeef02")];
-    let file = register_commit_message_file(&mut app, "deadbee");
-    add_line_comment(
-        &mut app,
-        file.display_path().to_str().unwrap(),
-        1,
-        line_comment(LineSide::New, Some(1), None),
-    );
-
-    // when
-    app.start_submit(SubmitEvent::Comment);
-
-    // then — it counts as a draft even though no real diff file has it
-    assert!(app.submit_state.is_some());
-    assert_eq!(app.input_mode, InputMode::SubmitResolver);
-    assert!(
-        app.message
-            .as_ref()
-            .is_none_or(|message| !message.content.contains("Nothing to submit"))
-    );
-}
-
-#[test]
 fn should_order_commit_message_comments_oldest_first_then_by_anchor() {
     // given message comments saved out of line order on two PR commits
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");

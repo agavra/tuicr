@@ -19,26 +19,17 @@ use crate::vcs::traits::{
 use crate::vcs::whitespace::{WhitespaceComparison, materialize_diff};
 use crate::vcs::{
     BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files, slice_context_lines,
+    split_commit_message,
 };
 
-/// Parse a jj description into (summary, optional body).
-fn parse_description(desc: &str) -> (String, Option<String>) {
+/// Split a jj description into (summary, optional body). The placeholder
+/// applies only when the whole description is blank.
+fn summary_and_body(desc: &str) -> (String, Option<String>) {
     if desc.trim().is_empty() {
         return ("(no description set)".to_string(), None);
     }
-
-    let mut lines = desc.lines();
-    let summary = lines.next().unwrap_or("(no description set)").to_string();
-    let body_text: String = lines
-        .skip_while(|l| l.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let body = if body_text.trim().is_empty() {
-        None
-    } else {
-        Some(body_text)
-    };
-    (summary, body)
+    let (subject, body) = split_commit_message(desc);
+    (subject.to_string(), body)
 }
 
 /// Jujutsu backend implementation using jj CLI commands
@@ -360,7 +351,7 @@ impl VcsBackend for JjBackend {
 
             let id = parts[0].to_string();
             let short_id = parts[1].to_string();
-            let (summary, body) = parse_description(parts[2]);
+            let (summary, body) = summary_and_body(parts[2]);
             let author = parts[3].to_string();
 
             // jj timestamp format is ISO 8601: "2024-01-15T10:30:00.000-05:00"
@@ -449,7 +440,7 @@ impl VcsBackend for JjBackend {
             }
             let id = parts[0].to_string();
             let short_id = parts[1].to_string();
-            let (summary, body) = parse_description(parts[2]);
+            let (summary, body) = summary_and_body(parts[2]);
             let author = parts[3].to_string();
             let time = DateTime::parse_from_rfc3339(parts[4])
                 .map(|dt| dt.with_timezone(&Utc))
@@ -723,12 +714,17 @@ mod tests {
     #[test]
     fn empty_description_uses_jj_wording() {
         assert_eq!(
-            parse_description(""),
+            summary_and_body(""),
             ("(no description set)".to_string(), None)
         );
         assert_eq!(
-            parse_description("  \n"),
+            summary_and_body("  \n"),
             ("(no description set)".to_string(), None)
+        );
+        // Only an entirely blank description gets the placeholder.
+        assert_eq!(
+            summary_and_body("\nBody"),
+            (String::new(), Some("Body".to_string()))
         );
     }
 

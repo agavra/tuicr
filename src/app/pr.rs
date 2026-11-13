@@ -1,6 +1,22 @@
 use super::*;
 
 impl App {
+    /// Shared tail of every PR path that assigns `diff_files`: place (or drop)
+    /// the commit-message pseudo-file, then sort, expand and re-annotate.
+    ///
+    /// `insert_message` is false only while a strict initial selection's range
+    /// diff is still loading, so no message sits above the cumulative diff.
+    pub(in crate::app) fn rebuild_pr_diff_view(&mut self, insert_message: bool) {
+        if insert_message {
+            self.insert_commit_message_if_single();
+        } else {
+            self.diff_files.retain(|f| !f.is_commit_message);
+        }
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
+    }
+
     /// Re-enter PR mode after we've already opened a PR via the selector.
     /// Used by the selector → PR open path and by `:reload` in PR mode.
     pub fn enter_pr_diff_mode(
@@ -78,11 +94,7 @@ impl App {
         let preserve_hunks =
             Self::is_strict_commit_selection(self.commit_selection_range, self.pr_commits.len());
         Self::register_diff_files(&mut self.session, &self.diff_files, preserve_hunks);
-        self.insert_commit_message_if_single();
-
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        self.rebuild_pr_diff_view(!preserve_hunks);
 
         if let Some(reason) = read_only_reason {
             self.set_warning(format!("This PR is {reason} — review is read-only"));
@@ -282,10 +294,7 @@ impl App {
         for file in &self.diff_files {
             self.session.add_diff_file(file);
         }
-        self.insert_commit_message_if_single();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        self.rebuild_pr_diff_view(true);
         if let Some(anchor) = anchor {
             self.restore_pr_cursor_to_anchor(&anchor);
         }
@@ -440,10 +449,7 @@ impl App {
         // Range diffs can hide hunks that are still reviewed in the broader
         // PR session, so registration must not prune them.
         Self::register_diff_files(&mut self.session, &self.diff_files, true);
-        self.insert_commit_message_if_single();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        self.rebuild_pr_diff_view(true);
 
         if let Some(anchor) = &request.anchor {
             self.restore_pr_cursor_to_anchor(anchor);
@@ -618,19 +624,81 @@ impl App {
         Ok(())
     }
 
+    /// The PR's diff base or known commit list changed under an unmoved head:
+    /// any narrowed range, pending range fetch or persisted index now refers
+    /// to commits that are gone. Show the new cumulative diff with every
+    /// commit selected. Comments keep their `commit_id`; selecting all
+    /// commits explicitly (not `None`) keeps removed commits' comments hidden.
+    fn reset_pr_selection_to_cumulative(
+        &mut self,
+        diff_files: Vec<DiffFile>,
+        commits: Vec<crate::forge::traits::PullRequestCommit>,
+    ) {
+        // A late result for the old base or membership must not land.
+        self.pr_range_reload_state = None;
+        self.pr_range_reload_rx = None;
+        self.diff_files = diff_files;
+        self.clear_expanded_gaps();
+        Self::register_diff_files(&mut self.session, &self.diff_files, false);
+        if !commits.is_empty() {
+            self.review_commits = commits.iter().map(pr_commit_to_commit_info).collect();
+            self.commit_list = self.review_commits.clone();
+            self.pr_commits = commits;
+        }
+        self.commit_diff_cache.clear();
+        self.saved_inline_selection = None;
+        self.range_diff_files = (self.review_commits.len() > 1).then(|| self.diff_files.clone());
+        self.visible_commit_count = self.review_commits.len();
+        self.commit_list_cursor = 0;
+        self.commit_list_scroll_offset = 0;
+        self.has_more_commit = false;
+        self.commit_selection_range = self
+            .review_commits
+            .len()
+            .checked_sub(1)
+            .map(|last| (0, last));
+        if self.review_commits.len() < 2 {
+            self.show_commit_selector = false;
+            if self.focused_panel == FocusedPanel::CommitSelector {
+                self.focused_panel = FocusedPanel::Diff;
+            }
+        }
+        self.insert_commit_message_if_single();
+        // All commits selected persists as `None`; write it so a reopen cannot
+        // restore stale indices.
+        self.persist_pr_commit_selection_range();
+    }
+
     /// Take in a reload that found the PR's head unchanged: refresh the
     /// diff, the PR info and the reviewed-commit markers, and keep the
     /// session.
     fn apply_same_head_pr_reload(&mut self, opened: crate::forge::pr_open::OpenedPullRequest) {
+        // An empty incoming list means membership is unknown (a degraded fetch,
+        // gotcha 23), never "commits removed", so it only skips the membership
+        // comparison; a changed base still counts.
+        let identity_changed = matches!(
+            &self.diff_source,
+            DiffSource::PullRequest(pr) if pr.base_sha != opened.details.base_sha
+        ) || (!opened.commits.is_empty()
+            && !opened
+                .commits
+                .iter()
+                .map(|c| &c.oid)
+                .eq(self.pr_commits.iter().map(|c| &c.oid)));
         self.set_pr_last_reviewed_commit_from_metadata(&opened.commits, &opened.review_metadata);
         // Keep the active base in sync even when the head has not changed.
         if let DiffSource::PullRequest(pr) = &mut self.diff_source {
             pr.base_sha = opened.details.base_sha.clone();
         }
         self.pr_info = Some(opened.pr_info);
-        if Self::is_strict_commit_selection(self.commit_selection_range, self.pr_commits.len()) {
-            // The head did not move, so neither did the commits: the narrowed
-            // diff on screen is still the diff of the selection. Only the
+        if identity_changed {
+            self.reset_pr_selection_to_cumulative(opened.diff_files, opened.commits);
+        } else if Self::is_strict_commit_selection(
+            self.commit_selection_range,
+            self.pr_commits.len(),
+        ) {
+            // The diff base and commit list are unchanged: the narrowed diff
+            // on screen is still the diff of the selection. Only the
             // cumulative diff behind it is refreshed.
             self.range_diff_files = Some(opened.diff_files);
         } else {
