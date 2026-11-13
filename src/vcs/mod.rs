@@ -123,7 +123,12 @@ pub(crate) fn slice_context_lines(content: &str, start_line: u32, end_line: u32)
 
 /// Read a file from the working tree, returning `None` on any IO error.
 pub(crate) fn read_workdir_file(root: &Path, rel: &Path) -> Option<String> {
-    std::fs::read_to_string(root.join(rel)).ok()
+    let path = root.join(rel);
+    // Untracked symlinks must not be followed out of the repository.
+    if !std::fs::symlink_metadata(&path).ok()?.file_type().is_file() {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
 }
 
 /// Parse the output of a batched `hg cat` / `jj file show` invocation whose
@@ -376,6 +381,19 @@ pub fn detect_vcs(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn read_workdir_file_does_not_follow_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("real.txt"), "x\n").unwrap();
+        std::os::unix::fs::symlink("real.txt", dir.path().join("link.txt")).unwrap();
+        assert_eq!(
+            read_workdir_file(dir.path(), Path::new("real.txt")).as_deref(),
+            Some("x\n")
+        );
+        assert!(read_workdir_file(dir.path(), Path::new("link.txt")).is_none());
+    }
+
     use super::*;
     use crate::vcs::traits::VcsType;
     use std::path::PathBuf;
