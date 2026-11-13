@@ -1653,6 +1653,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::Approve,
                     commit_id: "abc1234",
+                    base_commit_id: None,
                     body: "LGTM",
                     comments: &comments,
                 },
@@ -1795,6 +1796,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::Draft,
                     commit_id: "abc1234",
+                    base_commit_id: None,
                     body: "still thinking",
                     comments: &comments,
                 },
@@ -1835,6 +1837,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::Draft,
                     commit_id: "abc1234",
+                    base_commit_id: None,
                     body: "still thinking",
                     comments: &comments,
                 },
@@ -1864,6 +1867,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::Draft,
                     commit_id: "abc1234",
+                    base_commit_id: None,
                     body: "still thinking",
                     comments: &[],
                 },
@@ -2194,6 +2198,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::Comment,
                     commit_id: "abc1234",
+                    base_commit_id: None,
                     body: "hi",
                     comments: &[],
                 },

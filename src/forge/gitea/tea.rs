@@ -2544,6 +2544,7 @@ mod tests {
                 CreateReviewRequest {
                     event,
                     commit_id: "headsha",
+                    base_commit_id: None,
                     body,
                     comments,
                 },
@@ -2643,6 +2644,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::RequestChanges,
                     commit_id: "headsha",
+                    base_commit_id: None,
                     body: "   ",
                     comments: &[],
                 },
@@ -2661,6 +2663,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::Comment,
                     commit_id: "headsha",
+                    base_commit_id: None,
                     body: "",
                     comments: &[],
                 },

@@ -520,6 +520,10 @@ impl SubmitReceipts {
 pub struct CreateReviewRequest<'a> {
     pub event: SubmitEvent,
     pub commit_id: &'a str,
+    /// Revision of the displayed diff's old side when the inline commit
+    /// selector shows a strict subset (the parent of its oldest commit).
+    /// `None` for the cumulative PR diff, whose old side is the merge base.
+    pub base_commit_id: Option<&'a str>,
     pub body: &'a str,
     pub comments: &'a [crate::forge::submit::InlineComment],
 }

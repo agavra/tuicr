@@ -191,7 +191,8 @@ as PR comment threads; Approve/Request changes also cast a reviewer vote. Auth i
 Access Token in `AZURE_DEVOPS_EXT_PAT` (preferred — works with enterprise tenants), falling back
 to `az login` via the Azure CLI. Run tuicr from a local clone of the repo — Azure exposes no
 unified-diff API, so the diff is built with `git diff base...head`. See
-[docs/AZURE.md](docs/AZURE.md) for setup, supported URL forms, and MVP limitations.
+[docs/AZURE.md](docs/AZURE.md) for setup, supported URL forms, and MVP limitations. From a commit subrange, inline comments
+submit only when the newest selected commit is a PR iteration head (see the AZURE doc).
 
 ### To Gerrit
 

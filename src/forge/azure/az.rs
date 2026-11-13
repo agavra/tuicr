@@ -410,6 +410,142 @@ impl AzureDevOpsBackend {
         Ok(serde_json::from_str(&output)?)
     }
 
+    /// Build each comment's `pullRequestThreadContext` (`changeTrackingId` plus
+    /// the iteration pair) for the iteration whose source commit is the
+    /// reviewed `commit_id`. Azure requires it for iteration-tracked PRs; a
+    /// commit that is not an iteration head, or a file the iteration does not
+    /// change, cannot be anchored and is rejected before any POST.
+    ///
+    /// Equal iterations make Azure diff against the common base, which is the
+    /// old side of the cumulative diff. A strict commit subset displays the
+    /// parent of its oldest commit instead (`base_commit_id`): its Left
+    /// comments anchor only when that parent is the common base or another
+    /// iteration head (the pair then starts at that iteration), otherwise they
+    /// are rejected. Right-side lines do not depend on the old side.
+    ///
+    /// A PR without iterations (`supportsIterations=false`) has nothing to
+    /// anchor to, so its comments carry no context (`None`).
+    fn resolve_thread_contexts(
+        &self,
+        pr: &PullRequestDetails,
+        commit_id: &str,
+        base_commit_id: Option<&str>,
+        comments: &[crate::forge::submit::InlineComment],
+    ) -> Result<Vec<Option<serde_json::Value>>> {
+        let base = git_api_base(&pr.repository);
+        let iterations: serde_json::Value = self.get_json(
+            &pr.repository,
+            format!("{base}/pullRequests/{}/iterations", pr.number),
+        )?;
+        let list = iterations["value"].as_array().cloned().unwrap_or_default();
+        if list.is_empty() {
+            return Ok(vec![None; comments.len()]);
+        }
+        let source = |it: &serde_json::Value| {
+            it["sourceRefCommit"]["commitId"]
+                .as_str()
+                .map(str::to_owned)
+        };
+        let (iteration, head) = list
+            .iter()
+            .filter(|it| source(it).as_deref() == Some(commit_id))
+            .filter_map(|it| Some((it["id"].as_u64()?, it)))
+            .max_by_key(|(id, _)| *id)
+            .ok_or_else(|| {
+                TuicrError::Forge(format!(
+                    "Azure DevOps has no pull request iteration for commit {}; inline comments \
+                     can only be posted against an iteration head. Select all commits (or \
+                     reload the PR) and retry.",
+                    short(commit_id)
+                ))
+            })?;
+        let common = head["commonRefCommit"]["commitId"].as_str();
+
+        // Per `$compareTo` value (0 = common base): path -> changeTrackingId.
+        let mut trackings: std::collections::HashMap<u64, std::collections::HashMap<String, u64>> =
+            Default::default();
+        comments
+            .iter()
+            .map(|comment| {
+                let on_left =
+                    comment.side == GhSide::Left || comment.start_side == Some(GhSide::Left);
+                let first = match base_commit_id {
+                    Some(old) if on_left && Some(old) != common => list
+                        .iter()
+                        .filter(|it| source(it).as_deref() == Some(old))
+                        .filter_map(|it| it["id"].as_u64())
+                        .filter(|id| *id < iteration)
+                        .max()
+                        .ok_or_else(|| {
+                            TuicrError::Forge(format!(
+                                "Azure DevOps cannot anchor a comment on the old side of this \
+                                 commit selection: its base {} is neither the common base nor \
+                                 an iteration head. Select all commits, or comment on the \
+                                 new side.",
+                                short(old)
+                            ))
+                        })?,
+                    _ => iteration,
+                };
+                let compare_to = if first == iteration { 0 } else { first };
+                if let std::collections::hash_map::Entry::Vacant(slot) = trackings.entry(compare_to)
+                {
+                    slot.insert(self.change_tracking_ids(pr, iteration, compare_to)?);
+                }
+                let mut path = forge_path(&comment.path);
+                if !path.starts_with('/') {
+                    path = format!("/{path}");
+                }
+                let id = trackings[&compare_to].get(&path).ok_or_else(|| {
+                    TuicrError::Forge(format!(
+                        "Azure DevOps iteration {iteration} does not list `{path}` as changed, \
+                         so its comment cannot be anchored."
+                    ))
+                })?;
+                Ok(Some(json!({
+                    "changeTrackingId": id,
+                    "iterationContext": {
+                        "firstComparingIteration": first,
+                        "secondComparingIteration": iteration,
+                    },
+                })))
+            })
+            .collect()
+    }
+
+    /// `path -> changeTrackingId` for `iteration` compared to `compare_to`
+    /// (0 = the common base), following `nextSkip` paging.
+    fn change_tracking_ids(
+        &self,
+        pr: &PullRequestDetails,
+        iteration: u64,
+        compare_to: u64,
+    ) -> Result<std::collections::HashMap<String, u64>> {
+        let base = git_api_base(&pr.repository);
+        let mut tracking: std::collections::HashMap<String, u64> = Default::default();
+        let mut skip = 0u64;
+        loop {
+            let url = format!(
+                "{base}/pullRequests/{}/iterations/{iteration}/changes?$compareTo={compare_to}&$skip={skip}",
+                pr.number
+            );
+            let page: serde_json::Value = self.get_json(&pr.repository, url)?;
+            for entry in page["changeEntries"].as_array().into_iter().flatten() {
+                if let (Some(path), Some(id)) = (
+                    entry["item"]["path"].as_str(),
+                    entry["changeTrackingId"].as_u64(),
+                ) {
+                    tracking.insert(path.to_string(), id);
+                }
+            }
+            match page["nextSkip"].as_u64() {
+                Some(next) if next > skip => skip = next,
+                _ => break,
+            }
+        }
+        Ok(tracking)
+    }
+
     /// Resolve the authenticated user's identity id (needed to cast a vote and
     /// to filter the PR list to review-requested).
     fn current_user_id(&self, repo: &ForgeRepository) -> Result<Option<String>> {
@@ -625,6 +761,19 @@ impl ForgeBackend for AzureDevOpsBackend {
                 SubmitEvent::Comment | SubmitEvent::Draft => None,
             };
 
+            // Resolve every inline thread's iteration anchor before anything is
+            // posted: an unrepresentable commit must not leave a lone summary.
+            let anchors = if request.comments.is_empty() {
+                Vec::new()
+            } else {
+                self.resolve_thread_contexts(
+                    pr,
+                    request.commit_id,
+                    request.base_commit_id,
+                    request.comments,
+                )?
+            };
+
             // Overall review body → a context-less PR comment thread.
             if !request.body.is_empty() {
                 let payload = json!({
@@ -642,7 +791,7 @@ impl ForgeBackend for AzureDevOpsBackend {
             }
 
             // Each inline comment → a thread anchored to a file/line range.
-            for comment in request.comments {
+            for (comment, anchor) in request.comments.iter().zip(anchors) {
                 let mut file_path = forge_path(&comment.path);
                 if !file_path.starts_with('/') {
                     file_path = format!("/{file_path}");
@@ -665,11 +814,14 @@ impl ForgeBackend for AzureDevOpsBackend {
                         "leftFileEnd": end,
                     }),
                 };
-                let payload = json!({
+                let mut payload = json!({
                     "comments": [{ "parentCommentId": 0, "content": comment.body, "commentType": "text" }],
                     "status": "active",
                     "threadContext": thread_context,
                 });
+                if let Some(anchor) = anchor {
+                    payload["pullRequestThreadContext"] = anchor;
+                }
                 let out = self.send(
                     &pr.repository,
                     "POST",
@@ -1219,13 +1371,17 @@ mod tests {
 
     struct RecordingHttp {
         calls: Mutex<Vec<(String, String, Option<String>)>>,
+        lookups: Mutex<Vec<String>>,
         responses: Mutex<Vec<AzHttpResult<String>>>,
+        iterations: String,
     }
 
     impl RecordingHttp {
         fn with_responses(responses: Vec<String>) -> Self {
             Self {
                 calls: Mutex::new(Vec::new()),
+                lookups: Mutex::new(Vec::new()),
+                iterations: ITERATIONS.to_string(),
                 responses: Mutex::new(responses.into_iter().map(Ok).collect()),
             }
         }
@@ -1233,6 +1389,19 @@ mod tests {
 
     impl AzHttp for RecordingHttp {
         fn request(&self, method: &str, url: &str, body: Option<&str>) -> AzHttpResult<String> {
+            // Iteration lookups are canned and not recorded, so tests see only
+            // the calls they care about.
+            if method == "GET" && url.contains("/iterations") {
+                self.lookups.lock().unwrap().push(url.to_string());
+                return Ok(if !url.contains("/changes") {
+                    self.iterations.as_str()
+                } else if url.contains("$skip=0") {
+                    CHANGES_PAGE_1
+                } else {
+                    CHANGES_PAGE_2
+                }
+                .to_string());
+            }
             self.calls.lock().unwrap().push((
                 method.to_string(),
                 url.to_string(),
@@ -1255,6 +1424,12 @@ mod tests {
             Self(std::sync::Arc::new(RecordingHttp::with_responses(
                 responses,
             )))
+        }
+
+        fn with_iterations(responses: Vec<String>, iterations: &str) -> Self {
+            let mut http = RecordingHttp::with_responses(responses);
+            http.iterations = iterations.to_string();
+            Self(std::sync::Arc::new(http))
         }
     }
     impl AzHttp for SharedHttp {
@@ -1456,6 +1631,248 @@ mod tests {
         assert_eq!(shared.0.calls.lock().unwrap().len(), 2);
     }
 
+    // Iteration 4 shares iteration 3's head commit (the later one wins);
+    // iterations 1 and 2 share `old000` (the later one is the base anchor).
+    const ITERATIONS: &str = r#"{"value":[
+        {"id":1,"sourceRefCommit":{"commitId":"old000"},"commonRefCommit":{"commitId":"base000"}},
+        {"id":2,"sourceRefCommit":{"commitId":"old000"},"commonRefCommit":{"commitId":"base000"}},
+        {"id":3,"sourceRefCommit":{"commitId":"head111"},"commonRefCommit":{"commitId":"base000"}},
+        {"id":4,"sourceRefCommit":{"commitId":"head111"},"commonRefCommit":{"commitId":"base000"}}]}"#;
+    // Two pages; page 2 repeats a non-advancing `nextSkip` (must not loop).
+    const CHANGES_PAGE_1: &str = r#"{"nextSkip":1,"changeEntries":[
+        {"changeTrackingId":7,"item":{"path":"/src/lib.rs"}}]}"#;
+    const CHANGES_PAGE_2: &str = r#"{"nextSkip":1,"changeEntries":[
+        {"changeTrackingId":8,"item":{"path":"/src/a\\b.rs"}}]}"#;
+
+    #[test]
+    fn create_review_anchors_threads_to_the_reviewed_iteration() {
+        let shared = SharedHttp::new(vec![r#"{"id": 1}"#.to_string()]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        let comments = [inline(10, GhSide::Right)];
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Comment,
+            commit_id: "head111",
+            base_commit_id: None,
+            body: "",
+            comments: &comments,
+        };
+        backend.create_review(&pr_details(), request).unwrap();
+        let calls = shared.0.calls.lock().unwrap();
+        let lookups = shared.0.lookups.lock().unwrap();
+        assert!(lookups[1].contains("/iterations/4/changes?$compareTo=0&$skip=0"));
+        let ctx = &body_json(&calls[0])["pullRequestThreadContext"];
+        assert_eq!(ctx["changeTrackingId"], 7);
+        assert_eq!(ctx["iterationContext"]["firstComparingIteration"], 4);
+        assert_eq!(ctx["iterationContext"]["secondComparingIteration"], 4);
+    }
+
+    #[test]
+    fn create_review_finds_files_on_later_change_pages_and_without_a_leading_slash() {
+        let shared = SharedHttp::new(vec![r#"{"id": 1}"#.to_string()]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        let mut comment = inline(1, GhSide::Right);
+        comment.path = PathBuf::from("src/a\\b.rs");
+        let comments = [comment];
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Comment,
+            commit_id: "head111",
+            base_commit_id: None,
+            body: "",
+            comments: &comments,
+        };
+        backend.create_review(&pr_details(), request).unwrap();
+        let calls = shared.0.calls.lock().unwrap();
+        let ctx = &body_json(&calls[0])["pullRequestThreadContext"];
+        assert_eq!(ctx["changeTrackingId"], 8);
+    }
+
+    #[test]
+    fn create_review_rejects_a_file_the_iteration_does_not_change_before_any_post() {
+        let shared = SharedHttp::new(vec![]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        let mut comment = inline(1, GhSide::Right);
+        comment.path = PathBuf::from("src/other.rs");
+        let comments = [inline(10, GhSide::Right), comment];
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Comment,
+            commit_id: "head111",
+            base_commit_id: None,
+            body: "summary",
+            comments: &comments,
+        };
+        let err = backend.create_review(&pr_details(), request).unwrap_err();
+        assert!(err.to_string().contains("src/other.rs"), "{err}");
+        assert!(shared.0.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn create_review_without_inline_comments_skips_the_iteration_lookup() {
+        let shared = SharedHttp::new(vec![r#"{"id": 1}"#.to_string()]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Comment,
+            commit_id: "unknown",
+            base_commit_id: None,
+            body: "summary",
+            comments: &[],
+        };
+        backend.create_review(&pr_details(), request).unwrap();
+        assert!(shared.0.lookups.lock().unwrap().is_empty());
+        assert_eq!(shared.0.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn create_review_rejects_a_commit_that_is_not_an_iteration_before_any_post() {
+        let shared = SharedHttp::new(vec![]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        let comments = [inline(10, GhSide::Right)];
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Comment,
+            commit_id: "mid999",
+            base_commit_id: None,
+            body: "summary",
+            comments: &comments,
+        };
+        let err = backend.create_review(&pr_details(), request).unwrap_err();
+        assert!(!matches!(err, TuicrError::PartialSubmit { .. }), "{err:?}");
+        let calls = shared.0.calls.lock().unwrap();
+        assert!(calls.is_empty(), "{calls:?}");
+    }
+
+    /// Run one inline comment through `create_review` with a subset base.
+    fn review_with_base(
+        iterations: Option<&str>,
+        base: Option<&str>,
+        mut comment: InlineComment,
+        path: &str,
+    ) -> (Result<GhCreateReviewResponse>, SharedHttp) {
+        let shared = match iterations {
+            Some(it) => SharedHttp::with_iterations(vec![r#"{"id": 1}"#.to_string()], it),
+            None => SharedHttp::new(vec![r#"{"id": 1}"#.to_string()]),
+        };
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        comment.path = PathBuf::from(path);
+        let comments = [comment];
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Comment,
+            commit_id: "head111",
+            base_commit_id: base,
+            body: "summary",
+            comments: &comments,
+        };
+        let result = backend.create_review(&pr_details(), request);
+        (result, shared)
+    }
+
+    #[test]
+    fn create_review_anchors_a_subset_left_comment_to_the_base_iteration() {
+        let (result, shared) =
+            review_with_base(None, Some("old000"), inline(3, GhSide::Left), "src/lib.rs");
+        result.unwrap();
+        let calls = shared.0.calls.lock().unwrap();
+        let ctx = &body_json(&calls[1])["pullRequestThreadContext"];
+        assert_eq!(ctx["iterationContext"]["firstComparingIteration"], 2);
+        assert_eq!(ctx["iterationContext"]["secondComparingIteration"], 4);
+        let lookups = shared.0.lookups.lock().unwrap();
+        assert!(
+            lookups[1].contains("/iterations/4/changes?$compareTo=2&"),
+            "{lookups:?}"
+        );
+    }
+
+    #[test]
+    fn create_review_ignores_a_later_iteration_with_the_base_commit() {
+        // `head111` is iterations 3 and 4; only 3 precedes the reviewed 4.
+        let (result, shared) =
+            review_with_base(None, Some("head111"), inline(3, GhSide::Left), "src/lib.rs");
+        result.unwrap();
+        let calls = shared.0.calls.lock().unwrap();
+        let ctx = &body_json(&calls[1])["pullRequestThreadContext"];
+        assert_eq!(ctx["iterationContext"]["firstComparingIteration"], 3);
+    }
+
+    #[test]
+    fn create_review_uses_the_common_base_for_a_subset_based_on_it() {
+        let (result, shared) =
+            review_with_base(None, Some("base000"), inline(3, GhSide::Left), "src/lib.rs");
+        result.unwrap();
+        let calls = shared.0.calls.lock().unwrap();
+        let ctx = &body_json(&calls[1])["pullRequestThreadContext"];
+        assert_eq!(ctx["iterationContext"]["firstComparingIteration"], 4);
+        let lookups = shared.0.lookups.lock().unwrap();
+        assert!(lookups[1].contains("$compareTo=0&"), "{lookups:?}");
+    }
+
+    #[test]
+    fn create_review_rejects_a_subset_left_comment_without_a_base_iteration_before_any_post() {
+        let (result, shared) =
+            review_with_base(None, Some("mid999"), inline(3, GhSide::Left), "src/lib.rs");
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("old side"), "{err}");
+        assert!(shared.0.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn create_review_rejects_a_range_starting_on_the_left_before_any_post() {
+        let mut comment = inline(3, GhSide::Right);
+        comment.start_line = Some(1);
+        comment.start_side = Some(GhSide::Left);
+        let (result, shared) = review_with_base(None, Some("mid999"), comment, "src/lib.rs");
+        assert!(result.is_err());
+        assert!(shared.0.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn create_review_anchors_a_subset_right_comment_without_a_base_iteration() {
+        let (result, shared) =
+            review_with_base(None, Some("mid999"), inline(3, GhSide::Right), "src/lib.rs");
+        result.unwrap();
+        let calls = shared.0.calls.lock().unwrap();
+        let ctx = &body_json(&calls[1])["pullRequestThreadContext"];
+        assert_eq!(ctx["iterationContext"]["firstComparingIteration"], 4);
+    }
+
+    #[test]
+    fn create_review_posts_without_a_context_when_the_pr_has_no_iterations() {
+        let (result, shared) = review_with_base(
+            Some(r#"{"value":[],"count":0}"#),
+            None,
+            inline(3, GhSide::Right),
+            "src/lib.rs",
+        );
+        result.unwrap();
+        let calls = shared.0.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(
+            body_json(&calls[1])
+                .get("pullRequestThreadContext")
+                .is_none()
+        );
+        assert_eq!(shared.0.lookups.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn create_review_accepts_a_path_that_already_has_a_leading_slash() {
+        let (result, shared) =
+            review_with_base(None, None, inline(3, GhSide::Right), "/src/lib.rs");
+        result.unwrap();
+        let calls = shared.0.calls.lock().unwrap();
+        assert_eq!(
+            body_json(&calls[1])["threadContext"]["filePath"],
+            "/src/lib.rs"
+        );
+        assert_eq!(
+            body_json(&calls[1])["pullRequestThreadContext"]["changeTrackingId"],
+            7
+        );
+    }
+
     #[test]
     fn create_review_posts_inline_thread_with_right_context() {
         let shared = SharedHttp::new(vec![r#"{"id": 555}"#.to_string()]);
@@ -1464,6 +1881,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: "head111",
+            base_commit_id: None,
             body: "",
             comments: &[inline(10, GhSide::Right)],
         };
@@ -1492,6 +1910,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: "head111",
+            base_commit_id: None,
             body: "",
             comments: &[inline(4, GhSide::Left)],
         };
@@ -1514,6 +1933,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Approve,
             commit_id: "head111",
+            base_commit_id: None,
             body: "",
             comments: &[],
         };
@@ -1705,6 +2125,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::Comment,
                     commit_id: "head111",
+                    base_commit_id: None,
                     body: "",
                     comments: &[comment],
                 },
@@ -1724,6 +2145,8 @@ mod tests {
         // given — the second thread POST fails
         let http = RecordingHttp {
             calls: Mutex::new(Vec::new()),
+            lookups: Mutex::new(Vec::new()),
+            iterations: ITERATIONS.to_string(),
             responses: Mutex::new(vec![
                 Ok(r#"{"id": 1}"#.to_string()),
                 Err(AzHttpError::Failed {
@@ -1739,6 +2162,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: "head111",
+            base_commit_id: None,
             body: "",
             comments: &comments,
         };
@@ -1759,6 +2183,8 @@ mod tests {
         // given the body thread posts, then the first inline thread fails
         let http = RecordingHttp {
             calls: Mutex::new(Vec::new()),
+            lookups: Mutex::new(Vec::new()),
+            iterations: ITERATIONS.to_string(),
             responses: Mutex::new(vec![
                 Ok(r#"{"id": 1}"#.to_string()),
                 Err(AzHttpError::Failed {
@@ -1772,6 +2198,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: "head111",
+            base_commit_id: None,
             body: "summary",
             comments: &comments,
         };
@@ -1792,6 +2219,8 @@ mod tests {
         // given the identity lookup fails
         let shared = SharedHttp(std::sync::Arc::new(RecordingHttp {
             calls: Mutex::new(Vec::new()),
+            lookups: Mutex::new(Vec::new()),
+            iterations: ITERATIONS.to_string(),
             responses: Mutex::new(vec![Err(AzHttpError::Failed {
                 status: Some(500),
                 body: "boom".to_string(),
@@ -1803,6 +2232,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Approve,
             commit_id: "head111",
+            base_commit_id: None,
             body: "summary",
             comments: &comments,
         };
