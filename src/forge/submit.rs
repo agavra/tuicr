@@ -260,7 +260,7 @@ pub enum CommentAnchor {
 /// Map a single local `Comment` to either an inline GitHub comment or an
 /// `Unmappable` outcome. `file` must be the diff file that produced this
 /// comment (lookup is the caller's responsibility — it owns the current
-/// `diff_files` / `range_diff_files` slice).
+/// displayed `diff_files`).
 pub fn map_comment(
     comment: &Comment,
     anchor: CommentAnchor,

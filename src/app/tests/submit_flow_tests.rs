@@ -383,6 +383,51 @@ fn should_open_resolver_when_any_comment_is_unmappable() {
 }
 
 #[test]
+fn should_map_a_comment_on_a_file_only_in_the_selected_commit() {
+    use crate::forge::submit::GhSide;
+
+    // given a narrowed multi-commit PR whose displayed diff has a file the
+    // cumulative cache lacks (the cache is stale or differs)
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.pr_commits = vec![
+        pr_commit("abcdef0123"),
+        pr_commit("deadbeef02"),
+        pr_commit("facecafe01"),
+    ];
+    app.review_commits = app
+        .pr_commits
+        .iter()
+        .map(pr_commit_to_commit_info)
+        .collect();
+    app.commit_selection_range = Some((1, 1));
+    app.range_diff_files = Some(app.diff_files.clone());
+    let mut only = app.diff_files[0].clone();
+    only.old_path = Some(PathBuf::from("src/only.rs"));
+    only.new_path = Some(PathBuf::from("src/only.rs"));
+    app.session.add_diff_file(&only);
+    app.diff_files = vec![only];
+    add_line_comment(
+        &mut app,
+        "src/only.rs",
+        11,
+        line_comment(LineSide::New, Some(11), None),
+    );
+
+    // when
+    app.start_submit(SubmitEvent::Comment);
+
+    // then the comment maps to the displayed file, at the subset's head
+    let state = app.submit_state.as_ref().expect("submit state");
+    assert!(state.unmappable.is_empty());
+    assert_eq!(state.mappable.len(), 1);
+    let inline = &state.mappable[0];
+    assert_eq!(inline.path, PathBuf::from("src/only.rs"));
+    assert_eq!(inline.line, 11);
+    assert_eq!(inline.side, GhSide::Right);
+    assert_eq!(state.commit_id, "deadbeef02");
+}
+
+#[test]
 fn should_resolve_commit_message_comments_missing_from_cumulative_pr_diff() {
     // given a single-commit view of a multi-commit PR
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");

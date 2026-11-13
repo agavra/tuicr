@@ -1122,6 +1122,74 @@ fn should_keep_selected_pr_diff_on_same_head_reload_and_refresh_cumulative_cache
 }
 
 #[test]
+fn should_refresh_the_cumulative_cache_on_an_unchanged_identity_reload() {
+    // given a multi-commit PR with every commit selected, so the cumulative
+    // diff is the displayed one
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    let details = test_pr_details(424398, "fresh cache");
+    let commits = three_commits();
+    let mut backend =
+        FakeForgeBackend::open_pr_details(details.clone(), two_hunk_patch().to_string());
+    backend.commits = commits.clone();
+    app.open_pr_with_backend(
+        &sample_pr(details.number, &details.title),
+        Box::new(backend),
+        None,
+    )
+    .unwrap();
+    assert!(app.range_diff_files.is_some());
+    let old_hash = app.diff_files[0].content_hash;
+
+    // when a same-base, same-commits reload brings a changed patch
+    let reload_patch = two_hunk_patch().replace("new two", "newer two");
+    let request = PrReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        started_at: Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    };
+    app.finish_pr_reload(
+        details.clone(),
+        structured_patch(&reload_patch),
+        commits,
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details.clone()),
+        &request,
+    )
+    .unwrap();
+    let new_hash = app.diff_files[0].content_hash;
+    assert_ne!(new_hash, old_hash);
+
+    // and the user narrows, then widens back to every commit
+    app.commit_selection_range = Some((2, 2));
+    let range_request = PrRangeReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        start_sha: details.base_sha.clone(),
+        end_sha: "aaa1111111".to_string(),
+        range: (2, 2),
+        started_at: Instant::now(),
+        anchor: None,
+    };
+    app.finish_pr_range_reload(&range_request, structured_patch(first_hunk_patch()))
+        .unwrap();
+    app.commit_selection_range = Some((0, 2));
+    app.reload_pr_inline_selection();
+
+    // then the widened view is the refreshed diff, not the one from open
+    let file = app
+        .diff_files
+        .iter()
+        .find(|f| !f.is_commit_message)
+        .unwrap();
+    assert_eq!(file.content_hash, new_hash);
+}
+
+#[test]
 fn should_not_ask_the_forge_for_a_commit_message_line_count() {
     // given a single-commit PR, whose diff opens with the commit's message
     let _reviews = TestReviewsDir::new();

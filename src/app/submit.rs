@@ -54,13 +54,10 @@ impl App {
             _ => pr.key.head_sha.clone(),
         };
 
-        // Source of truth for the diff: when the inline commit selector is
-        // showing a strict subset, `range_diff_files` carries the merged
-        // subset diff; otherwise `diff_files` is canonical.
-        let files: Vec<&DiffFile> = match self.range_diff_files.as_ref() {
-            Some(range) => range.iter().collect(),
-            None => self.diff_files.iter().collect(),
-        };
+        // Map against the displayed diff: a narrowed selection's anchors live
+        // there, and `commit_id` above is that selection's head.
+        // `range_diff_files` is only the full-range cache, so it is not used.
+        let files: Vec<&DiffFile> = self.diff_files.iter().collect();
 
         let submit_ctx = SubmitContext::new(&self.forge_config, &self.comment_types);
 
