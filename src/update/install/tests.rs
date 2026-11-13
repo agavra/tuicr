@@ -793,3 +793,63 @@ fn system_runtime_reports_success_failure_and_missing_manager_commands() {
         Err(UpdateError::Manager { .. })
     ));
 }
+
+#[cfg(unix)]
+#[test]
+fn detects_cargo_install_behind_a_symlinked_cargo_home() {
+    let temp = TempDir::new().unwrap();
+    let real = temp.path().join("real-cargo");
+    let link = temp.path().join("dot-cargo");
+    std::fs::create_dir_all(real.join("bin")).unwrap();
+    std::fs::write(real.join("bin/tuicr"), b"binary").unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let executable = canonical_executable(&link.join("bin/tuicr")).unwrap();
+    let root = canonical_cargo_root(None, Some(&link));
+
+    assert_eq!(
+        detect_install_method(&executable, None, root.as_deref()),
+        InstallMethod::Cargo
+    );
+    let root = canonical_cargo_root(Some(temp.path()), None);
+    assert_eq!(
+        root,
+        Some(temp.path().join(".cargo")),
+        "missing root falls back to raw path"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn update_context_resolves_cargo_for_symlinked_cargo_home_and_implicit_home() {
+    let temp = TempDir::new().unwrap();
+    let real = temp.path().join("real");
+    let link = temp.path().join("link");
+    std::fs::create_dir_all(real.join(".cargo/bin")).unwrap();
+    std::fs::write(real.join(".cargo/bin/tuicr"), b"binary").unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let exe = real.join(".cargo/bin/tuicr");
+
+    // Explicit CARGO_HOME behind a symlink.
+    let explicit = UpdateContext::resolve(&exe, None, Some(&link.join(".cargo"))).unwrap();
+    assert_eq!(explicit.method, InstallMethod::Cargo);
+    // Implicit ~/.cargo with a symlinked HOME.
+    let implicit = UpdateContext::resolve(&exe, Some(&link), None).unwrap();
+    assert_eq!(implicit.method, InstallMethod::Cargo);
+}
+
+#[cfg(windows)]
+#[test]
+fn canonical_executable_and_cargo_root_agree_on_windows_verbatim_paths() {
+    let temp = TempDir::new().unwrap();
+    let bin = temp.path().join(".cargo").join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let exe = bin.join("tuicr.exe");
+    std::fs::write(&exe, b"binary").unwrap();
+
+    let canonical = canonical_executable(&exe).unwrap();
+    assert!(canonical.to_string_lossy().starts_with(r"\\?\"));
+    let context = UpdateContext::resolve(&exe, Some(temp.path()), None).unwrap();
+    assert_eq!(context.method, InstallMethod::Cargo);
+    assert_eq!(context.executable, canonical);
+}
