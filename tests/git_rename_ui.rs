@@ -258,8 +258,8 @@ fn should_render_an_unstaged_rename_without_changing_the_repository() {
     }
     for expected in [
         "@@ -9,7 +9,7 @@",
-        "12 ▌ KEEP_12 rename fixture stable content",
-        "12 ▌ EDIT_12 renamed and edited content",
+        "12○▌ KEEP_12 rename fixture stable content",
+        "12○▌ EDIT_12 renamed and edited content",
         "11   KEEP_11 rename fixture stable content",
     ] {
         assert!(

@@ -576,6 +576,7 @@ mod tests {
             new_lineno: new,
             raw_content: None,
             highlighted_spans: None,
+            stage: None,
         }
     }
 

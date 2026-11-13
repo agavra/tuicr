@@ -8,7 +8,9 @@ use ratatui::{
 use crate::app::{
     AnnotatedLine, App, DiffViewMode, ExpandDirection, GAP_EXPAND_BATCH, GapId, VisualSelection,
 };
-use crate::model::{Comment, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide};
+use crate::model::{
+    Comment, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide, StageState,
+};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_side_by_side::render_side_by_side_diff;
@@ -164,6 +166,7 @@ mod relative_line_number_tests {
             new_lineno: new,
             raw_content: None,
             highlighted_spans: None,
+            stage: None,
         }
     }
 
@@ -196,6 +199,15 @@ mod relative_line_number_tests {
             );
             assert_eq!(unified_line_number_field(&dl, 3, true, 9, 7, false), "  2 ");
         }
+    }
+}
+
+/// Gutter cell after the line number: `●` staged, `○` unstaged, else blank.
+pub(super) fn stage_cell(dl: &DiffLine) -> char {
+    match dl.stage {
+        Some(StageState::Staged) => '●',
+        Some(StageState::Unstaged) => '○',
+        None => ' ',
     }
 }
 

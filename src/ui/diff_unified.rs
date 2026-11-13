@@ -233,7 +233,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         let style = base_style;
                         // A commit message is prose, not code: render it without
                         // line numbers, matching the side-by-side view.
-                        let line_num_str = crate::ui::diff_view::unified_line_number_field(
+                        let mut line_num_str = crate::ui::diff_view::unified_line_number_field(
                             diff_line,
                             lw,
                             app.relative_line_numbers,
@@ -247,6 +247,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
                         let line_num_style = styles::dim_style(&app.theme);
 
+                        line_num_str.pop();
+                        line_num_str.push(crate::ui::diff_view::stage_cell(diff_line));
                         let mut line_spans = vec![
                             Span::styled(
                                 indicator,
@@ -1104,7 +1106,7 @@ mod remote_comments_snapshot_tests {
     use crate::forge::traits::{ForgeRepository, PrSessionKey};
     use crate::model::{
         DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide, ReviewSession,
-        SessionDiffSource,
+        SessionDiffSource, StageState,
     };
     use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
@@ -1171,6 +1173,7 @@ mod remote_comments_snapshot_tests {
                 new_lineno: Some(1),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             },
             DiffLine {
                 origin: LineOrigin::Addition,
@@ -1179,6 +1182,7 @@ mod remote_comments_snapshot_tests {
                 new_lineno: Some(2),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             },
         ];
         let hunk = DiffHunk {
@@ -1370,6 +1374,7 @@ mod remote_comments_snapshot_tests {
                 new_lineno: Some(i as u32 + 1),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             })
             .collect();
         let new_count = lines.len() as u32;
@@ -1403,6 +1408,7 @@ mod remote_comments_snapshot_tests {
                 new_lineno: Some(i),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             })
             .collect();
         let hunks = vec![DiffHunk {
@@ -2242,6 +2248,7 @@ mod remote_comments_snapshot_tests {
                 new_lineno: Some(1),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             }],
             old_start: 0,
             old_count: 0,
@@ -2319,6 +2326,7 @@ mod remote_comments_snapshot_tests {
                 new_lineno: Some(n),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             })
             .collect();
         let hunks = vec![DiffHunk {
@@ -2399,6 +2407,7 @@ mod remote_comments_snapshot_tests {
                 new_lineno: Some(i + 1),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             })
             .collect();
         lines.push(DiffLine {
@@ -2408,6 +2417,7 @@ mod remote_comments_snapshot_tests {
             new_lineno: Some(31),
             raw_content: None,
             highlighted_spans: None,
+            stage: None,
         });
         let hunk = DiffHunk {
             header: "@@ -0,0 +1,31 @@".to_string(),
@@ -2477,6 +2487,7 @@ mod remote_comments_snapshot_tests {
                 new_lineno: Some(1),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             }],
             old_start: 0,
             old_count: 0,
@@ -2592,6 +2603,7 @@ mod remote_comments_snapshot_tests {
                 Style::default().fg(Color::White).bg(marker_bg),
                 "added".to_string(),
             )]),
+            stage: None,
         }];
         let hunk = DiffHunk {
             header: "@@ -0,0 +1,1 @@".to_string(),
@@ -2642,6 +2654,7 @@ mod remote_comments_snapshot_tests {
             new_lineno,
             raw_content: None,
             highlighted_spans: None,
+            stage: None,
         };
         let lines = vec![
             line(LineOrigin::Context, "alpha", Some(40), Some(50)),
@@ -2669,6 +2682,46 @@ mod remote_comments_snapshot_tests {
             is_commit_message: false,
             content_hash,
         }
+    }
+
+    fn screen_rows(buffer: &Buffer) -> Vec<String> {
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn should_draw_stage_markers_beside_line_numbers() {
+        let mut file = relative_numbering_file();
+        for line in &mut file.hunks[0].lines {
+            line.stage = match line.origin {
+                LineOrigin::Deletion => Some(StageState::Staged),
+                LineOrigin::Addition => Some(StageState::Unstaged),
+                LineOrigin::Context => None,
+            };
+        }
+        let mut app = make_revision_app(vec![file]);
+        let rows = screen_rows(&draw_unified_diff(&mut app));
+        let row = |word: &str| rows.iter().find(|r| r.contains(word)).unwrap().clone();
+        assert!(
+            row("charlie").contains("42●▌ charlie"),
+            "{:?}",
+            row("charlie")
+        );
+        assert!(row("delta").contains("52○▌ delta"), "{:?}", row("delta"));
+        assert!(row("alpha").contains("50   alpha"), "{:?}", row("alpha"));
+    }
+
+    #[test]
+    fn should_leave_the_stage_cell_blank_without_marks() {
+        let mut app = make_revision_app(vec![relative_numbering_file()]);
+        let rows = screen_rows(&draw_unified_diff(&mut app));
+        let row = rows.iter().find(|r| r.contains("charlie")).unwrap();
+        assert!(row.contains("42 ▌ charlie"), "{row:?}");
     }
 
     /// Numbers printed on the screen row of `annotation`. Content words in
@@ -2888,6 +2941,7 @@ mod remote_comments_snapshot_tests {
                 old_lineno: None,
                 new_lineno: Some(1),
                 highlighted_spans: None,
+                stage: None,
             }],
             old_start: 0,
             old_count: 0,
