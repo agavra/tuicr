@@ -610,13 +610,18 @@ where
         number: u64,
     ) -> Result<PullRequestDetails> {
         let pr: GiteaPullRequest = self.get_json(repo, &Self::pulls_endpoint(repo, number, ""))?;
+        Self::require_commit_shas(&pr, number)?;
+        Ok(into_details(pr, repo))
+    }
+
+    fn require_commit_shas(pr: &GiteaPullRequest, number: u64) -> Result<()> {
         if pr.head.sha.is_empty() || pr.base.sha.is_empty() {
             return Err(TuicrError::Forge(format!(
                 "Gitea pull request #{number} did not report head and base commit SHAs; \
                  tuicr cannot anchor a review session without them."
             )));
         }
-        Ok(into_details(pr, repo))
+        Ok(())
     }
 
     /// File metadata for the PR, in the same order as the `.diff` body.
@@ -765,14 +770,14 @@ where
 
     fn get_pull_request_info(&self, target: PullRequestTarget) -> Result<PullRequestInfo> {
         let repository = self.resolve_repository(&target)?;
-        let details = self.fetch_pull_request(&repository, target.number)?;
-
-        let raw: GiteaPullRequest = self.get_json(
+        let mut raw: GiteaPullRequest = self.get_json(
             &repository,
             &Self::pulls_endpoint(&repository, target.number, ""),
         )?;
+        Self::require_commit_shas(&raw, target.number)?;
         let requested_reviewers = raw
             .requested_reviewers
+            .take()
             .unwrap_or_default()
             .into_iter()
             .filter_map(|user| GiteaUser::login(Some(user)))
@@ -780,10 +785,13 @@ where
         let mergeable = raw
             .mergeable
             .map(|ok| if ok { "MERGEABLE" } else { "CONFLICTING" }.to_string());
+        let details = into_details(raw, &repository);
 
-        // Latest response per reviewer, newest wins. Pending reviews are the
-        // viewer's own unsubmitted drafts and review-requests are not
-        // responses, so neither belongs in the summary row.
+        // Effective response per reviewer. A newer decisive review replaces an
+        // older one, but a COMMENT never revokes a vote (as in Gitea), and a
+        // dismissed vote no longer counts. Pending reviews are the viewer's
+        // own unsubmitted drafts and review-requests are not responses, so
+        // neither belongs in the summary row.
         let mut latest: BTreeMap<String, PullRequestReviewStatus> = BTreeMap::new();
         for review in self.reviews(&details).unwrap_or_default() {
             let state = match review.state.to_ascii_uppercase().as_str() {
@@ -792,6 +800,10 @@ where
                 "COMMENT" => "COMMENTED",
                 _ => continue,
             };
+            let decisive = state != "COMMENTED";
+            if decisive && review.dismissed {
+                continue;
+            }
             let Some(author) = GiteaUser::login(review.user) else {
                 continue;
             };
@@ -803,7 +815,13 @@ where
             latest
                 .entry(author)
                 .and_modify(|existing| {
-                    if candidate.submitted_at >= existing.submitted_at {
+                    let existing_decisive = existing.state != "COMMENTED";
+                    let replaces = if decisive == existing_decisive {
+                        candidate.submitted_at >= existing.submitted_at
+                    } else {
+                        decisive
+                    };
+                    if replaces {
                         *existing = candidate.clone();
                     }
                 })
@@ -2501,6 +2519,100 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.to_string().contains("at least one inline comment"));
+    }
+
+    // ----- PR info -----
+
+    fn review_json(id: u64, state: &str, at: &str, extra: &str) -> String {
+        format!(
+            r#"{{"id":{id},"state":"{state}","body":"","user":{{"login":"a"}},"submitted_at":"{at}","comments_count":0,"commit_id":"","html_url":"u"{extra}}}"#
+        )
+    }
+
+    fn info_for(reviews: &[String]) -> (PullRequestInfo, usize) {
+        let runner = FakeTeaRunner::default()
+            .route("/pulls/42", PR_JSON)
+            .route_counted(
+                "/pulls/42/reviews",
+                &format!("[{}]", reviews.join(",")),
+                reviews.len(),
+            );
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let info = backend
+            .get_pull_request_info(PullRequestTarget::number(42, "42"))
+            .expect("info");
+        let detail_gets = backend
+            .runner
+            .endpoints()
+            .iter()
+            .filter(|e| e.ends_with("/pulls/42"))
+            .count();
+        (info, detail_gets)
+    }
+
+    #[test]
+    fn should_fetch_pull_request_details_once_for_the_info_panel() {
+        let (_, detail_gets) = info_for(&[]);
+        assert_eq!(detail_gets, 1);
+    }
+
+    #[test]
+    fn should_keep_a_decisive_vote_after_a_later_comment_in_either_order() {
+        for decisive in ["APPROVED", "REQUEST_CHANGES"] {
+            let want = if decisive == "APPROVED" {
+                "APPROVED"
+            } else {
+                "CHANGES_REQUESTED"
+            };
+            let vote = review_json(1, decisive, "2026-08-20T10:00:00Z", "");
+            let comment = review_json(2, "COMMENT", "2026-08-20T11:00:00Z", "");
+            for reviews in [
+                [vote.clone(), comment.clone()],
+                [comment.clone(), vote.clone()],
+            ] {
+                let (info, _) = info_for(&reviews);
+                assert_eq!(info.review_decision.as_deref(), Some(want));
+                assert_eq!(info.latest_reviews.len(), 1);
+                assert_eq!(info.latest_reviews[0].state, want);
+            }
+        }
+    }
+
+    #[test]
+    fn should_let_a_newer_decisive_review_replace_an_older_one() {
+        let approve = review_json(1, "APPROVED", "2026-08-20T10:00:00Z", "");
+        let reject = review_json(2, "REQUEST_CHANGES", "2026-08-20T11:00:00Z", "");
+        for reviews in [
+            [approve.clone(), reject.clone()],
+            [reject.clone(), approve.clone()],
+        ] {
+            let (info, _) = info_for(&reviews);
+            assert_eq!(info.review_decision.as_deref(), Some("CHANGES_REQUESTED"));
+        }
+    }
+
+    #[test]
+    fn should_ignore_a_dismissed_vote() {
+        let vote = review_json(
+            1,
+            "APPROVED",
+            "2026-08-20T10:00:00Z",
+            r#","dismissed":true"#,
+        );
+        let (info, _) = info_for(&[vote]);
+        assert_eq!(info.review_decision, None);
+        assert!(info.latest_reviews.is_empty());
+    }
+
+    #[test]
+    fn should_reject_info_for_a_pull_request_without_commit_shas() {
+        let json = PR_JSON.replace("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "");
+        let runner = FakeTeaRunner::default().route("/pulls/42", &json);
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let error = backend
+            .get_pull_request_info(PullRequestTarget::number(42, "42"))
+            .unwrap_err();
+        assert!(error.to_string().contains("head and base"), "{error}");
     }
 
     // ----- commits -----

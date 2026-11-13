@@ -134,6 +134,9 @@ pub(crate) struct GiteaPullReview {
     pub html_url: String,
     #[serde(default)]
     pub comments_count: u32,
+    /// A dismissed approval/rejection no longer counts as a vote.
+    #[serde(default)]
+    pub dismissed: bool,
 }
 
 /// A line-anchored review comment.
