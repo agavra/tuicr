@@ -7,7 +7,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::app::{App, SUBMIT_PICKER_EVENTS};
@@ -84,42 +84,47 @@ pub fn render_submit_resolver(frame: &mut Frame, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut lines: Vec<Line> = Vec::with_capacity(n + 4);
-    lines.push(Line::from(""));
-    for (i, (item, action)) in state
+    // Rows scroll in a `List` (selection-aware); the footer is pinned below.
+    let [list_area, footer_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+    let width = list_area.width.saturating_sub(1).max(1) as usize;
+    let items: Vec<ListItem> = state
         .unmappable
         .iter()
         .zip(state.resolver_choices.iter())
         .enumerate()
-    {
-        let cursor = if i == state.resolver_cursor { ">" } else { " " };
-        let action_label = match action {
-            ResolverAction::MoveToSummary => "[x] Move to summary",
-            ResolverAction::Omit => "[ ] Omit             ",
-        };
-        let style = if i == state.resolver_cursor {
-            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        lines.push(Line::from(Span::styled(
-            format!(
+        .map(|(i, (item, action))| {
+            let cursor = if i == state.resolver_cursor { ">" } else { " " };
+            let action_label = match action {
+                ResolverAction::MoveToSummary => "[x] Move to summary",
+                ResolverAction::Omit => "[ ] Omit             ",
+            };
+            let text = format!(
                 "{cursor} {action_label}  {row}",
                 row = describe_row(app, item)
-            ),
-            style,
-        )));
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
+            );
+            // Wrap long rows by hand so no text is clipped.
+            let chars: Vec<char> = text.chars().collect();
+            let lines: Vec<Line> = chars
+                .chunks(width)
+                .map(|c| Line::from(c.iter().collect::<String>()))
+                .collect();
+            ListItem::new(lines)
+        })
+        .collect();
+    let list = List::new(items)
+        .style(styles::popup_style(theme))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD));
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.resolver_cursor.min(n.saturating_sub(1))));
+    frame.render_stateful_widget(list, list_area, &mut list_state);
+
+    let footer = Paragraph::new(Line::from(Span::styled(
         "Enter: toggle action   s: submit   Esc: cancel",
         Style::default().fg(theme.fg_secondary),
-    )));
-
-    let paragraph = Paragraph::new(lines)
-        .style(styles::popup_style(theme))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, inner);
+    )))
+    .style(styles::popup_style(theme));
+    frame.render_widget(footer, footer_area);
 }
 
 /// Render the final confirmation modal before submit. Shows the counts and
@@ -228,8 +233,9 @@ fn describe_row(app: &App, item: &UnmappableItem) -> String {
         format!("[{label}] ")
     };
     let path = item.file.display();
-    let preview: String = item.comment.content.chars().take(40).collect();
-    let ellipsis = if item.comment.content.chars().count() > 40 {
+    let content = item.comment.content.replace(['\r', '\n'], " ");
+    let preview: String = content.chars().take(40).collect();
+    let ellipsis = if content.chars().count() > 40 {
         "…"
     } else {
         ""
@@ -486,6 +492,35 @@ mod tests {
         let text = buffer_text(&buffer);
         assert!(text.contains("> Request changes"));
         assert!(!text.contains("> Comment"));
+    }
+
+    #[test]
+    fn resolver_scrolls_to_selected_row_and_keeps_footer() {
+        use crate::forge::submit::UnmappableReason;
+        let mut app = make_pr_app();
+        let n = 12;
+        app.submit_state = Some(SubmitState {
+            event: SubmitEvent::Comment,
+            mappable: Vec::new(),
+            unmappable: (0..n)
+                .map(|i| {
+                    unmappable_item(
+                        &format!("file{i:02}.rs"),
+                        CommentType::from_id("note"),
+                        "first line\nsecond line",
+                        UnmappableReason::FileLevelNoAnchor,
+                    )
+                })
+                .collect(),
+            resolver_choices: vec![ResolverAction::MoveToSummary; n],
+            resolver_cursor: n - 1,
+            commit_id: "abcdef0123".to_string(),
+            skip_confirm: false,
+        });
+        let text = buffer_text(&draw_resolver(&app));
+        assert!(text.contains("> [x] Move to summary  file11.rs"), "{text}");
+        assert!(text.contains("s: submit"), "footer: {text}");
+        assert!(text.contains("first line second line"), "{text}");
     }
 
     #[test]
