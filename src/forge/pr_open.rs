@@ -87,7 +87,29 @@ pub fn open_pull_request(
 /// The diff, the commit list, and the review metadata need nothing but the
 /// pinned `details`, so they run concurrently: startup waits for the slowest
 /// of them, not their sum. Each one still paginates sequentially.
+///
+/// The head can advance while those calls are in flight, which would pair
+/// head A's metadata (and session key) with head B's diff. After the fan-out
+/// the head is read again; on a mismatch the whole fetch is retried once,
+/// then the open fails.
 pub fn fetch_pr_data(
+    backend: &(dyn ForgeBackend + Sync),
+    target: PullRequestTarget,
+) -> Result<PrFetchData> {
+    for _ in 0..2 {
+        let data = fetch_pr_data_once(backend, target.clone())?;
+        let current = backend.get_pull_request_info(target.clone())?;
+        if current.details.head_sha == data.0.head_sha {
+            return Ok(data);
+        }
+    }
+    Err(TuicrError::Forge(format!(
+        "Pull request #{} changed while it was being loaded; try again",
+        target.number
+    )))
+}
+
+fn fetch_pr_data_once(
     backend: &(dyn ForgeBackend + Sync),
     target: PullRequestTarget,
 ) -> Result<PrFetchData> {
@@ -247,6 +269,8 @@ mod tests {
         /// rather than the merge base the patch is taken from. `None` models
         /// a backend that already reports the merge base (GitLab).
         diff_base_sha: Option<String>,
+        /// Head SHAs returned by successive metadata reads (last one repeats).
+        heads: Mutex<Vec<String>>,
     }
 
     impl StaticBackend {
@@ -256,7 +280,13 @@ mod tests {
                 patch: patch.to_string(),
                 calls: Mutex::new(Vec::new()),
                 diff_base_sha: None,
+                heads: Mutex::new(Vec::new()),
             }
+        }
+
+        fn with_heads(self, heads: &[&str]) -> Self {
+            *self.heads.lock().unwrap() = heads.iter().rev().map(|h| h.to_string()).collect();
+            self
         }
 
         fn with_diff_base_sha(mut self, sha: &str) -> Self {
@@ -276,7 +306,12 @@ mod tests {
         }
         fn get_pull_request(&self, _target: PullRequestTarget) -> Result<PullRequestDetails> {
             self.calls.lock().unwrap().push("get_pull_request");
-            Ok(self.details.clone())
+            let mut details = self.details.clone();
+            let mut heads = self.heads.lock().unwrap();
+            if let Some(head) = heads.pop() {
+                details.head_sha = head;
+            }
+            Ok(details)
         }
         fn get_pull_request_diff(&self, _pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
             self.calls.lock().unwrap().push("get_pull_request_diff");
@@ -358,9 +393,37 @@ index 1111111..2222222 100644
             &[
                 "get_pull_request",
                 "resolve_diff_base_sha",
-                "get_pull_request_diff"
+                "get_pull_request_diff",
+                "get_pull_request"
             ],
         );
+    }
+
+    #[test]
+    fn should_retry_once_when_the_head_moves_during_the_fetch() {
+        // given — the head advances after the first fetch's metadata read
+        let backend = StaticBackend::new(details(), SIMPLE_PATCH)
+            .with_heads(&["aaaa", "bbbb", "bbbb", "bbbb"]);
+        // when
+        let (details, ..) = fetch_pr_data(&backend, target()).unwrap();
+        // then — the second attempt pins the new head, re-checked as stable
+        assert_eq!(details.head_sha, "bbbb");
+        let calls = backend.calls.lock().unwrap();
+        assert_eq!(
+            calls.iter().filter(|c| **c == "get_pull_request").count(),
+            4
+        );
+    }
+
+    #[test]
+    fn should_error_when_the_head_keeps_moving() {
+        // given
+        let backend = StaticBackend::new(details(), SIMPLE_PATCH)
+            .with_heads(&["aaaa", "bbbb", "cccc", "dddd"]);
+        // when
+        let error = fetch_pr_data(&backend, target()).unwrap_err();
+        // then
+        assert!(error.to_string().contains("changed while"), "{error}");
     }
 
     /// Patch fixture covering add/modify/delete/rename in a single PR diff.
@@ -723,12 +786,13 @@ rename to new_name.rs
         let concurrent = started.elapsed();
         eprintln!("4 calls x {delay_ms}ms: sequential {sequential:?}, concurrent {concurrent:?}");
         // then — the sequential path pays for all four calls; the concurrent
-        // one pays for the PR metadata plus the slowest of the other three.
+        // one pays for the PR metadata, the slowest of the other three and the
+        // head re-check.
         assert!(sequential >= std::time::Duration::from_millis(4 * delay_ms));
         assert!(
-            concurrent < std::time::Duration::from_millis(3 * delay_ms),
+            concurrent < std::time::Duration::from_millis(4 * delay_ms),
             "expected ~{}ms, took {concurrent:?}",
-            2 * delay_ms
+            3 * delay_ms
         );
         assert_eq!(sequential_backend.peak_in_flight(), 1);
         assert_eq!(concurrent_backend.peak_in_flight(), 3);
