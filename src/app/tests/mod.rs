@@ -27,3 +27,4 @@ mod target_selector_tests;
 mod theme_picker_tests;
 mod tree_tests;
 mod visual_selection_tests;
+mod worktree_rows_tests;

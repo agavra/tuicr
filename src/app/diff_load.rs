@@ -94,6 +94,55 @@ impl App {
         self.session.add_diff_file(&self.diff_files[0]);
     }
 
+    /// Which of the "Staged changes" and "Unstaged changes" rows a commit
+    /// list should carry, given the tree's real `status`.
+    ///
+    /// Git always carries both, so the two rows sit at fixed offsets whatever
+    /// the tree holds: a side emptying never shifts the commits below it, and
+    /// picking an empty side opens an empty review that says so. Other
+    /// backends keep a row only while its side has changes. Jujutsu has no
+    /// staging index, and Mercurial has nothing to stage.
+    ///
+    /// This decides rows only. Callers that pick a default diff source or
+    /// report "nothing to review" read the real status instead.
+    pub(in crate::app) fn worktree_row_status(
+        vcs_type: VcsType,
+        status: VcsChangeStatus,
+    ) -> VcsChangeStatus {
+        match vcs_type {
+            VcsType::Git => VcsChangeStatus {
+                staged: true,
+                unstaged: true,
+            },
+            _ => status,
+        }
+    }
+
+    /// Where the selector cursor starts: on the first row that has something
+    /// to review. Git keeps both working-tree rows even when they are empty
+    /// (`worktree_row_status`), so row 0 can be an empty side, and `Enter`
+    /// there would open an empty review rather than the newest commit.
+    ///
+    /// `status` is the tree's real status. Preference follows the row order:
+    /// unstaged, then staged, then the first commit.
+    pub(in crate::app) fn initial_selector_cursor(
+        rows: &[CommitInfo],
+        status: VcsChangeStatus,
+    ) -> usize {
+        let unstaged = status
+            .unstaged
+            .then(|| rows.iter().position(Self::is_unstaged_commit))
+            .flatten();
+        let staged = || {
+            status
+                .staged
+                .then(|| rows.iter().position(Self::is_staged_commit))
+                .flatten()
+        };
+        let first_commit = || rows.iter().position(|row| !Self::is_special_commit(row));
+        unstaged.or_else(staged).or_else(first_commit).unwrap_or(0)
+    }
+
     pub(in crate::app) fn is_staged_commit(commit: &CommitInfo) -> bool {
         commit.id == STAGED_SELECTION_ID
     }
@@ -408,38 +457,17 @@ impl App {
 
     pub(in crate::app) fn load_staged_and_unstaged_selection(&mut self) -> Result<()> {
         let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match Self::get_working_tree_diff_with_ignore(
+        let diff_files = Self::get_working_tree_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
             self.path_filter.as_deref(),
-        ) {
-            Ok(diff_files) => diff_files,
-            Err(TuicrError::NoChanges) => {
-                self.set_message("No staged or unstaged changes");
-                return Ok(());
-            }
-            Err(e) => return Err(e),
-        };
-
-        self.session =
-            Self::load_or_create_session(&self.vcs_info, SessionDiffSource::StagedAndUnstaged);
-        for file in &diff_files {
-            self.session.add_diff_file(file);
-        }
-        self.reset_persisted_session_tracking()?;
-
-        self.diff_files = diff_files;
-        self.diff_source = DiffSource::StagedAndUnstaged;
-        self.input_mode = InputMode::Normal;
-        self.diff_state = DiffState::default();
-        self.file_list_state = FileListState::default();
-        self.clear_expanded_gaps();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
-
-        Ok(())
+        );
+        self.open_worktree_side_review(
+            diff_files,
+            SessionDiffSource::StagedAndUnstaged,
+            DiffSource::StagedAndUnstaged,
+        )
     }
 
     /// Load a whole-working-tree review (`tuicr -w`).
@@ -484,63 +512,118 @@ impl App {
 
     pub(in crate::app) fn load_staged_selection(&mut self) -> Result<()> {
         let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match Self::get_staged_diff_with_ignore(
+        let diff_files = Self::get_staged_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
             self.path_filter.as_deref(),
-        ) {
-            Ok(diff_files) => diff_files,
-            Err(TuicrError::NoChanges) => {
-                self.set_message("No staged changes");
-                return Ok(());
-            }
-            Err(e) => return Err(e),
-        };
-
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Staged);
-        for file in &diff_files {
-            self.session.add_diff_file(file);
-        }
-        self.reset_persisted_session_tracking()?;
-
-        self.diff_files = diff_files;
-        self.diff_source = DiffSource::Staged;
-        self.input_mode = InputMode::Normal;
-        self.diff_state = DiffState::default();
-        self.file_list_state = FileListState::default();
-        self.clear_expanded_gaps();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
-
-        Ok(())
+        );
+        self.open_worktree_side_review(diff_files, SessionDiffSource::Staged, DiffSource::Staged)
     }
 
     pub(in crate::app) fn load_unstaged_selection(&mut self) -> Result<()> {
         let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match Self::get_unstaged_diff_with_ignore(
+        let diff_files = Self::get_unstaged_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
             self.path_filter.as_deref(),
-        ) {
+        );
+        self.open_worktree_side_review(
+            diff_files,
+            SessionDiffSource::Unstaged,
+            DiffSource::Unstaged,
+        )
+    }
+
+    /// What the message bar says when the review behind a "Staged changes" or
+    /// "Unstaged changes" row (or both) is empty. `None` for any other source.
+    fn worktree_side_empty_message(source: &DiffSource) -> Option<&'static str> {
+        match source {
+            DiffSource::Staged => Some("No staged changes"),
+            DiffSource::Unstaged => Some("No unstaged changes"),
+            DiffSource::StagedAndUnstaged => Some("No staged or unstaged changes"),
+            _ => None,
+        }
+    }
+
+    /// The line the diff pane shows while a staged or unstaged review has no
+    /// files, so an empty review keeps saying why after the message bar
+    /// clears. `None` when there are files or the source cannot open empty.
+    pub fn empty_review_placeholder(&self) -> Option<&'static str> {
+        if !self.diff_files.is_empty() {
+            return None;
+        }
+        Self::worktree_side_empty_message(&self.diff_source)
+    }
+
+    /// Whether `commit` is a working-tree row whose side the last status read
+    /// found empty. Git shows such rows anyway (`worktree_row_status`), and
+    /// the row renderer dims them so the user can tell before pressing Enter.
+    pub fn is_empty_worktree_row(&self, commit: &CommitInfo) -> bool {
+        let Some(status) = self.worktree_status else {
+            return false;
+        };
+        (Self::is_staged_commit(commit) && !status.staged)
+            || (Self::is_unstaged_commit(commit) && !status.unstaged)
+    }
+
+    /// Whether `:e` coming back with `NoChanges` means "this side is empty
+    /// now" rather than a failure. True for the staged, unstaged, and
+    /// staged-plus-unstaged reviews, which can open empty.
+    pub fn reload_can_empty(&self) -> bool {
+        Self::worktree_side_empty_message(&self.diff_source).is_some()
+    }
+
+    /// `:e` on a staged/unstaged review whose side has emptied: show the
+    /// empty review and say why, the same way `:stage` does when it stages
+    /// the last file.
+    ///
+    /// The persisted session is deliberately not reconciled against the
+    /// empty list. Reconciling would drop every file entry, along with its
+    /// reviewed mark and comments, the moment a side happens to be empty,
+    /// for example between `git commit` and the next edit. The session stays
+    /// as it was, and the next non-empty reload reconciles as usual.
+    pub fn show_emptied_review(&mut self) {
+        self.diff_files.clear();
+        self.diff_state = DiffState::default();
+        self.file_list_state = FileListState::default();
+        self.clear_expanded_gaps();
+        self.rebuild_annotations();
+        if let Some(message) = Self::worktree_side_empty_message(&self.diff_source) {
+            self.set_message(message);
+        }
+    }
+
+    /// Opens the review behind a "Staged changes" or "Unstaged changes" row,
+    /// or both.
+    ///
+    /// An empty side still opens, with `worktree_side_empty_message` on the
+    /// message bar.
+    /// Git keeps both rows in the selector even when a side has nothing in it
+    /// (`worktree_row_status`), so picking one has to land somewhere, and an
+    /// empty review that says why is clearer than staying put in the selector.
+    fn open_worktree_side_review(
+        &mut self,
+        diff_files: Result<Vec<DiffFile>>,
+        session_source: SessionDiffSource,
+        diff_source: DiffSource,
+    ) -> Result<()> {
+        let diff_files = match diff_files {
             Ok(diff_files) => diff_files,
-            Err(TuicrError::NoChanges) => {
-                self.set_message("No unstaged changes");
-                return Ok(());
-            }
+            Err(TuicrError::NoChanges) => Vec::new(),
             Err(e) => return Err(e),
         };
+        let empty = diff_files.is_empty();
 
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Unstaged);
+        self.session = Self::load_or_create_session(&self.vcs_info, session_source);
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
         self.reset_persisted_session_tracking()?;
 
         self.diff_files = diff_files;
-        self.diff_source = DiffSource::Unstaged;
+        self.diff_source = diff_source;
         self.input_mode = InputMode::Normal;
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
@@ -549,6 +632,9 @@ impl App {
         self.expand_all_dirs();
         self.rebuild_annotations();
 
+        if empty && let Some(message) = Self::worktree_side_empty_message(&self.diff_source) {
+            self.set_message(message);
+        }
         Ok(())
     }
 
@@ -1284,10 +1370,20 @@ impl App {
         change_status: Option<VcsChangeStatus>,
     ) -> bool {
         let fetched = fetched.filter(|_| Self::pane_tracks_history(&self.diff_source));
-        let change_status =
+        let vcs_type = self.vcs_info.vcs_type;
+        let real_status =
             change_status.filter(|_| Self::pane_tracks_working_tree(&self.diff_source));
+        // Recorded before the rows are widened: the renderer dims an empty
+        // side by this, and a side emptying or filling changes nothing else on
+        // a Git pane, so it alone has to ask for the redraw.
+        let status_changed = real_status.is_some_and(|status| {
+            let changed = self.worktree_status != Some(status);
+            self.worktree_status = Some(status);
+            changed
+        });
+        let change_status = real_status.map(|status| Self::worktree_row_status(vcs_type, status));
         let Some(rebuilt) = self.rebuilt_commit_pane(fetched, change_status) else {
-            return false;
+            return status_changed;
         };
         match Self::reanchored_commit_selection(
             self.commit_selection_range,
@@ -1298,7 +1394,7 @@ impl App {
                 self.install_refreshed_commit_pane(rebuilt, range);
                 true
             }
-            CommitSelectionAnchor::Lost => false,
+            CommitSelectionAnchor::Lost => status_changed,
         }
     }
 
@@ -1418,6 +1514,9 @@ impl App {
     /// diff fingerprint reports nothing, and without this the newly staged
     /// side would gain no row until the review target was reopened. A backend
     /// that cannot report status sends `None`, and the rows are left alone.
+    /// For Git, `apply_fetched_commits` has already widened `status` through
+    /// `worktree_row_status`, so both rows stay put as either side empties or
+    /// fills and the rows below them never shift.
     ///
     /// Rows already on screen keep their order, and a row that appears goes
     /// after them. The two startup paths disagree about that order: `App::new`

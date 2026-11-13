@@ -199,13 +199,15 @@ impl App {
         // Check if there might be more commits
         self.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
         self.commit_list = commits;
-        if has_staged_changes {
+        let rows = Self::worktree_row_status(self.vcs_info.vcs_type, change_status);
+        if rows.staged {
             self.commit_list.insert(0, Self::staged_commit_entry());
         }
-        if has_unstaged_changes {
+        if rows.unstaged {
             self.commit_list.insert(0, Self::unstaged_commit_entry());
         }
-        self.commit_list_cursor = 0;
+        self.commit_list_cursor = Self::initial_selector_cursor(&self.commit_list, change_status);
+        self.worktree_status = Some(change_status);
         self.commit_list_scroll_offset = 0;
         self.commit_selection_range = None;
         self.visible_commit_count = self.commit_list.len();

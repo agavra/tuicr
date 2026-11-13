@@ -352,6 +352,14 @@ comments that the author publishes from Gerrit's Reply UI.
 | `Esc` | Return to the diff |
 | `:q` | Quit |
 
+In a Git repo the Local tab always starts with "Unstaged changes" and "Staged changes" rows,
+even when a side is empty. An empty row is dimmed and marked "(no changes)", here and in the
+inline commit selector. Picking one opens an empty review that says "No staged changes" or
+"No unstaged changes" in the diff pane for as long as it stays empty, and so does `:e` once a
+side has emptied. The cursor starts on the first row with something to review, so `Enter` on a clean
+tree still opens the newest commit. Jujutsu and Mercurial list a row only while its side has
+changes.
+
 In the Pull Requests tab, `r` steps through the list scopes the forge supports and
 refetches the first page: all open PRs, then PRs requesting your review, then back. On
 GitHub a third scope, `requested (me)`, sits between "requested" and "all": it lists only

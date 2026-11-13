@@ -226,18 +226,19 @@ impl App {
                 .into_iter()
                 .rev()
                 .collect();
-                // Prepend staged/unstaged entries only when the backend supports them
-                let change_status = Self::get_change_status_with_ignore(
+                // Prepend the staged/unstaged entries `worktree_row_status` calls for
+                let worktree_status = Self::get_change_status_with_ignore(
                     vcs.as_ref(),
                     &vcs_info.root_path,
                     highlighter,
                     options.path_filter,
                 )?;
+                let rows = Self::worktree_row_status(vcs_info.vcs_type, worktree_status);
                 let mut all_commits = Vec::new();
-                if change_status.staged {
+                if rows.staged {
                     all_commits.push(Self::staged_commit_entry());
                 }
-                if change_status.unstaged {
+                if rows.unstaged {
                     all_commits.push(Self::unstaged_commit_entry());
                 }
                 all_commits.extend(review_commits);
@@ -268,6 +269,7 @@ impl App {
                 app.has_more_commit = false;
                 app.show_commit_selector = all_commits.len() > 1;
                 app.commit_diff_cache.clear();
+                app.worktree_status = Some(worktree_status);
                 app.review_commits = all_commits;
                 // `initial_commit_selection = oldest` scopes the review to a single
                 // commit; narrow the loaded diff to it.
@@ -390,7 +392,7 @@ impl App {
             let has_unstaged_changes = change_status.unstaged;
 
             // No eager working-tree-diff fetch — the selector only needs to
-            // know whether to render the Staged/Unstaged rows. The actual
+            // know which side has changes. The actual
             // diff loads when the user picks one (load_staged_selection /
             // load_unstaged_selection / load_staged_and_unstaged_selection).
 
@@ -403,11 +405,15 @@ impl App {
                 return Err(TuicrError::NoChanges);
             }
 
+            // Rows come from `worktree_row_status`, which keeps both for Git
+            // even when a side is empty. The default source below still
+            // follows the real status.
+            let rows = Self::worktree_row_status(vcs_info.vcs_type, change_status);
             let mut commit_list = commits.clone();
-            if has_staged_changes {
+            if rows.staged {
                 commit_list.insert(0, Self::staged_commit_entry());
             }
-            if has_unstaged_changes {
+            if rows.unstaged {
                 commit_list.insert(0, Self::unstaged_commit_entry());
             }
 
@@ -451,6 +457,8 @@ impl App {
 
             app.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
             app.visible_commit_count = app.commit_list.len();
+            app.commit_list_cursor = Self::initial_selector_cursor(&app.commit_list, change_status);
+            app.worktree_status = Some(change_status);
             Ok(app)
         }
     }
@@ -667,6 +675,7 @@ impl App {
             commit_order: CommitOrder::default(),
             commit_selection_start: CommitSelectionStart::default(),
             initial_comments_visibility: None,
+            worktree_status: None,
             commit_diff_cache: HashMap::new(),
             range_diff_files: None,
             saved_inline_selection: None,

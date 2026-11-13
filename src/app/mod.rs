@@ -1499,6 +1499,11 @@ pub struct App {
     /// Configured `pr_comments_visibility` default for fresh PR sessions;
     /// a persisted session restores its own value.
     pub initial_comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
+    /// The tree's real staged/unstaged status as of the last time the
+    /// working-tree rows were built or refreshed. Git shows both rows even
+    /// when a side is empty, and this is how the row renderer knows to dim an
+    /// empty one. `None` when no status was read.
+    pub worktree_status: Option<VcsChangeStatus>,
     /// Cached individual/subrange diffs keyed by (start_idx, end_idx) into review_commits
     pub commit_diff_cache: HashMap<(usize, usize), Vec<DiffFile>>,
     /// Full-range (every commit) diff cache, used to restore the widened view
