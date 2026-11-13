@@ -977,7 +977,6 @@ where
             // Bare approvals carry no prose; the review-summary area only
             // renders bodies.
             .filter(|review| !review.body.trim().is_empty())
-            .filter(|review| !review.state.eq_ignore_ascii_case("PENDING"))
             .map(|review| RemoteReviewSummary {
                 id: review.id.to_string(),
                 author: GiteaUser::login(review.user),
@@ -2188,6 +2187,24 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].body, "please fix");
         assert_eq!(summaries[0].state, RemoteReviewState::ChangesRequested);
+    }
+
+    #[test]
+    fn should_read_back_a_pending_draft_review_summary() {
+        // `:submit draft` leaves a PENDING review with a body; if it is not
+        // read back, the post-submit prune deletes the only local copy.
+        let reviews = r#"[{"id":9,"state":"PENDING","body":"draft body","user":{"login":"me"},"comments_count":0,"commit_id":"h","html_url":"u9"}]"#;
+        let runner = FakeTeaRunner::default()
+            .route("/pulls/42", PR_JSON)
+            .route_counted("/pulls/42/reviews", reviews, 1);
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let summaries = backend
+            .list_review_summaries(&details())
+            .expect("summaries");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].body, "draft body");
+        assert_eq!(summaries[0].state, RemoteReviewState::Pending);
     }
 
     #[test]
