@@ -320,8 +320,33 @@ impl App {
     }
 
     pub fn toggle_reviewed(&mut self) {
+        if self.is_cursor_on_pr_description() {
+            self.toggle_pr_description_reviewed();
+            return;
+        }
         let file_idx = self.diff_state.current_file_idx;
         self.toggle_reviewed_for_file_idx(file_idx, true);
+    }
+
+    fn is_cursor_on_pr_description(&self) -> bool {
+        matches!(
+            self.line_annotations.get(self.diff_state.cursor_line),
+            Some(AnnotatedLine::PrInfoLine { .. })
+        )
+    }
+
+    /// Mark the PR description reviewed (collapsing it to its title row) or
+    /// unreviewed (expanding it again). The cursor parks on the title row,
+    /// which is the only row left when collapsing.
+    pub fn toggle_pr_description_reviewed(&mut self) {
+        if self.pr_info.is_none() {
+            return;
+        }
+        self.session.pr_description_reviewed = !self.session.pr_description_reviewed;
+        self.dirty = true;
+        self.rebuild_annotations();
+        self.diff_state.cursor_line = 0;
+        self.ensure_cursor_visible();
     }
 
     pub fn toggle_reviewed_for_file_idx(&mut self, file_idx: usize, adjust_cursor: bool) {

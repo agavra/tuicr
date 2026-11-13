@@ -133,6 +133,11 @@ pub struct ReviewSession {
     /// without this field deserialize as `None`.
     #[serde(default)]
     pub commit_selection_range: Option<(usize, usize)>,
+    /// PR mode only: the reviewer marked the PR description reviewed, which
+    /// collapses it to its title row. Older sessions without this field
+    /// deserialize as `false`.
+    #[serde(default)]
+    pub pr_description_reviewed: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(default)]
@@ -164,6 +169,7 @@ impl ReviewSession {
             pr_session_key: None,
             remote_comments_visibility: PrCommentsVisibility::default(),
             commit_selection_range: None,
+            pr_description_reviewed: false,
             created_at: now,
             updated_at: now,
             review_comments: Vec::new(),
@@ -177,9 +183,11 @@ impl ReviewSession {
     }
 
     pub fn has_reviewed_state(&self) -> bool {
-        self.files
-            .values()
-            .any(|file| file.reviewed || !file.reviewed_hunks.is_empty())
+        self.pr_description_reviewed
+            || self
+                .files
+                .values()
+                .any(|file| file.reviewed || !file.reviewed_hunks.is_empty())
     }
 
     /// Registers a file in the session. Returns true if the file was previously
@@ -342,6 +350,11 @@ impl ReviewSession {
                 file.reviewed = false;
                 file.reviewed_hunks.clear();
             }
+        }
+        // The PR description's mark is reset too, but it is not a file, so it
+        // stays out of the unreviewed-files count.
+        if scope == ClearScope::CommentsAndReviewed {
+            self.pr_description_reviewed = false;
         }
         (cleared, unreviewed)
     }
@@ -869,6 +882,56 @@ mod tests {
             comment.commit_id, None,
             "comment JSON without commit_id must default to None"
         );
+    }
+
+    #[test]
+    fn should_default_pr_description_reviewed_to_false_for_legacy_session() {
+        // given a session JSON saved before pr_description_reviewed existed
+        // when
+        let session: ReviewSession =
+            serde_json::from_str(LEGACY_SESSION_JSON).expect("legacy session should parse");
+        // then
+        assert!(!session.pr_description_reviewed);
+    }
+
+    #[test]
+    fn should_round_trip_pr_description_reviewed_on_pr_session() {
+        // given
+        let mut session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abcdef0123456789".to_string(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        session.pr_description_reviewed = true;
+        // when
+        let json = serde_json::to_string(&session).unwrap();
+        let restored: ReviewSession = serde_json::from_str(&json).unwrap();
+        // then
+        assert!(restored.pr_description_reviewed);
+        assert!(restored.has_reviewed_state());
+    }
+
+    #[test]
+    fn should_clear_pr_description_reviewed_only_with_reviewed_marks() {
+        let mut session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abcdef0123456789".to_string(),
+            None,
+            SessionDiffSource::PullRequest,
+        );
+        session.pr_description_reviewed = true;
+
+        session.clear_comments(ClearScope::CommentsOnly);
+        assert!(session.pr_description_reviewed);
+
+        let (cleared, unreviewed) = session.clear_comments(ClearScope::CommentsAndReviewed);
+        assert_eq!(
+            (cleared, unreviewed),
+            (0, 0),
+            "the description is not a file"
+        );
+        assert!(!session.pr_description_reviewed);
     }
 
     #[test]

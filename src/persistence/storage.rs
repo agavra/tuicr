@@ -1615,6 +1615,20 @@ mod tests {
     }
 
     #[test]
+    fn should_roundtrip_pr_description_reviewed_and_keep_session_on_cleanup() {
+        let _g = with_test_reviews_dir();
+        let key = make_pr_key(126, "abcdef0123456789");
+        let mut session = make_pr_session(&key);
+        session.pr_description_reviewed = true;
+        let path = save_session(&session).unwrap();
+
+        let (_, loaded) = load_pr_session(&key).unwrap().unwrap();
+        assert!(loaded.pr_description_reviewed);
+        // A reviewed description is review progress, not an empty session.
+        assert!(!delete_session_if_empty(&path).unwrap());
+    }
+
+    #[test]
     fn should_return_none_when_head_changes_for_pr() {
         let _g = with_test_reviews_dir();
         let old_key = make_pr_key(125, "abcdef0123456789");
