@@ -31,6 +31,7 @@ impl App {
                     show_comments: options.show_pr_comments,
                     comments_visibility: options.pr_comments_visibility,
                 },
+                options.vcs_open_options(),
             );
         }
 
@@ -463,6 +464,7 @@ impl App {
             theme,
             vcs,
             vcs_info,
+            parked_vcs: None,
             local_repo_root,
             session,
             persisted_session_snapshot,
@@ -784,9 +786,11 @@ impl App {
                 show_comments: true,
                 comments_visibility: None,
             },
+            VcsOpenOptions::default(),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_from_pr_target_with_pr_display_options(
         theme: Theme,
         comment_type_configs: Option<Vec<CommentTypeConfig>>,
@@ -795,6 +799,7 @@ impl App {
         repo_url_override: Option<ForgeRepository>,
         commit_selection: CommitSelectionStart,
         display_options: PrDisplayOptions,
+        vcs_open_options: VcsOpenOptions,
     ) -> Result<Self> {
         use crate::forge::azure::az::parse_pull_request_target_azure;
         use crate::forge::bitbucket::bkt::parse_pull_request_target_bitbucket;
@@ -830,10 +835,13 @@ impl App {
         //   3. detected local `origin` as the final fallback
         // URL- and owner-repo-hash targets carry their own repository, which
         // wins over all of the above since it's PR-specific.
-        let local_repo_root = std::env::current_dir().ok();
-        let detected_repo = local_repo_root
+        let launch_dir = std::env::current_dir().ok();
+        let detected_repo = launch_dir
             .as_deref()
             .and_then(crate::forge::detect_forge_repository);
+        let local_repo_root = launch_dir
+            .as_deref()
+            .and_then(|dir| checkout_root_for_launch_dir(dir, &vcs_open_options));
 
         let target_repo = pr_target_repository(
             parsed.repository.as_ref(),
@@ -852,7 +860,7 @@ impl App {
         // Use the local checkout for `.tuicrignore` only when it matches the
         // PR's target repository — using a foreign repo's checkout would
         // mis-filter the PR diff.
-        let local_checkout_for_target = local_repo_root
+        let local_checkout_for_target = launch_dir
             .as_deref()
             .and_then(|root| crate::forge::local_checkout_for_repo(root, &target_repo));
 
@@ -890,6 +898,7 @@ impl App {
             display_options,
             commit_selection,
             local_repo_root,
+            vcs_open_options,
         )?;
         // Spawn thread-fetch on startup; the main event loop will drain
         // the receiver via `poll_pr_threads_events` once it begins.
@@ -911,6 +920,7 @@ impl App {
         display_options: PrDisplayOptions,
         commit_selection: CommitSelectionStart,
         local_repo_root: Option<PathBuf>,
+        vcs_open_options: VcsOpenOptions,
     ) -> Result<Self> {
         let pr_source = PullRequestDiffSource::from_details(&opened.details);
         let diff_source = DiffSource::PullRequest(Box::new(pr_source));
@@ -948,6 +958,7 @@ impl App {
         // directory here — PRs opened later from the PR tab resolve their
         // local checkout from it.
         app.local_repo_root = local_repo_root;
+        app.vcs_open_options = vcs_open_options;
         // Wire the forge backend so context expansion routes through it.
         app.forge_backend = Some(backend);
         app.forge_repository = Some(target_repo);
@@ -982,4 +993,21 @@ impl App {
         }
         Ok(app)
     }
+}
+
+/// The checkout root a `tuicr pr` launch directory belongs to, or `None`
+/// outside any checkout. Local sessions are scoped by this root, so a
+/// subdirectory launch must not narrow them and a non-checkout must not
+/// scope the tab to the directory.
+pub(in crate::app) fn checkout_root_for_launch_dir(
+    dir: &std::path::Path,
+    options: &VcsOpenOptions,
+) -> Option<PathBuf> {
+    crate::vcs::detect_vcs_in(
+        dir,
+        options.git_backend_preference,
+        options.diff_whitespace_mode.clone(),
+    )
+    .ok()
+    .map(|vcs| vcs.info().root_path.clone())
 }

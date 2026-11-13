@@ -3546,6 +3546,7 @@ fn should_hold_the_commit_message_back_in_cli_startup_with_a_strict_range() {
         },
         CommitSelectionStart::Oldest,
         None,
+        VcsOpenOptions::default(),
     )
     .unwrap();
 
@@ -3591,6 +3592,7 @@ fn should_open_a_single_commit_pr_from_the_cli_with_its_message_first() {
         },
         CommitSelectionStart::All,
         None,
+        VcsOpenOptions::default(),
     )
     .unwrap();
 
@@ -4366,4 +4368,278 @@ fn should_clear_in_flight_reloads_when_entering_another_pr() {
     // then none of it survives
     assert!(app.pr_reload_state.is_none() && app.pr_reload_rx.is_none());
     assert!(app.pr_range_reload_state.is_none() && app.pr_range_reload_rx.is_none());
+}
+
+fn app_in_pr_mode_from_checkout() -> (App, tempfile::TempDir, TestReviewsDir) {
+    let reviews = TestReviewsDir::new();
+    let dir = tempfile::tempdir().expect("failed to create test repo dir");
+    let commits = vec![
+        CommitInfo {
+            id: "c2".to_string(),
+            short_id: "c2".to_string(),
+            branch_name: None,
+            summary: "second".to_string(),
+            body: None,
+            author: "a".to_string(),
+            time: chrono::Utc::now(),
+        },
+        CommitInfo {
+            id: "c1".to_string(),
+            short_id: "c1".to_string(),
+            branch_name: None,
+            summary: "first".to_string(),
+            body: None,
+            author: "a".to_string(),
+            time: chrono::Utc::now(),
+        },
+    ];
+    let mut app = build_app_rooted(dir.path().to_path_buf(), commits, None);
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "first"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    ));
+    app.open_pr_with_backend(&sample_pr(42, "first"), backend, None)
+        .unwrap();
+    (app, dir, reviews)
+}
+
+/// Entering PR mode swaps in `PrNoopVcs`, which has no commits or working
+/// tree, so the Local tab used to be empty for the rest of the run.
+#[test]
+fn should_list_local_commits_after_entering_pr_mode() {
+    // given a checkout app that has opened a PR
+    let (mut app, dir, _reviews) = app_in_pr_mode_from_checkout();
+    assert!(
+        app.vcs_info
+            .root_path
+            .to_string_lossy()
+            .starts_with("forge:")
+    );
+
+    // when the Local tab is opened
+    app.enter_target_selector(TargetTab::Local).unwrap();
+
+    // then the checkout's commits are listed
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+    assert_eq!(app.commit_list.len(), 2);
+    // and the PR stays active behind the selector
+    assert!(
+        app.vcs_info
+            .root_path
+            .to_string_lossy()
+            .starts_with("forge:")
+    );
+    assert!(matches!(app.diff_source, DiffSource::PullRequest(_)));
+    // and local sessions are scoped by the checkout, not the PR identity
+    // (the reload runs with the PR backend active, so it must not read its root)
+    app.enter_target_selector(TargetTab::Sessions).unwrap();
+    app.sessions_tab_toggle_show_empty();
+    assert_eq!(
+        app.sessions_tab.scope(),
+        dir.path().file_name().unwrap().to_string_lossy()
+    );
+}
+
+/// A local load that finds nothing leaves the PR on screen with its own
+/// backend; one that succeeds leaves PR mode with the checkout's backend.
+#[test]
+fn should_keep_the_pr_backend_when_a_local_load_finds_nothing() {
+    let (mut app, dir, _reviews) = app_in_pr_mode_from_checkout();
+
+    let loaded = app
+        .with_local_vcs(|app| app.load_working_tree_selection())
+        .unwrap();
+
+    assert!(!loaded);
+    assert!(matches!(app.diff_source, DiffSource::PullRequest(_)));
+    assert!(
+        app.vcs_info
+            .root_path
+            .to_string_lossy()
+            .starts_with("forge:")
+    );
+    // and the checkout is still reachable afterwards
+    app.enter_target_selector(TargetTab::Local).unwrap();
+    assert_eq!(app.commit_list.len(), 2);
+    drop(dir);
+}
+
+/// Leaving PR mode for a local review must drop the PR rows from the
+/// annotation cache, or row 0 stays a PR-description row with no `pr_info`.
+#[test]
+fn should_drop_pr_annotations_when_a_local_review_replaces_the_pr() {
+    // given a PR app whose annotations include PR rows
+    let (mut app, _dir, _reviews) = app_in_pr_mode_from_checkout();
+    app.rebuild_annotations();
+    let is_pr_row = |a: &AnnotatedLine| {
+        matches!(
+            a,
+            AnnotatedLine::PrInfoLine { .. } | AnnotatedLine::RemoteReviewSummaryLine { .. }
+        )
+    };
+    assert!(app.line_annotations.iter().any(is_pr_row));
+
+    // when a local action replaces the PR (as the local loaders do)
+    app.with_local_vcs(|app| {
+        app.diff_source = DiffSource::WorkingTree;
+        app.rebuild_annotations();
+        Ok(())
+    })
+    .unwrap();
+
+    // then no PR row survives
+    assert!(app.pr_info.is_none());
+    assert!(!app.line_annotations.iter().any(is_pr_row));
+}
+
+/// `tuicr pr` from a checkout subdirectory records the checkout root, and
+/// from outside any checkout records nothing.
+#[test]
+fn should_record_the_checkout_root_for_cli_pr_launch_dirs() {
+    use crate::app::init::checkout_root_for_launch_dir;
+    let options = VcsOpenOptions::default();
+
+    // given a checkout with a subdirectory
+    let repo = tempfile::tempdir().unwrap();
+    crate::forge::local_git::test_support::init_repo_with_commit(repo.path(), &["one"]);
+    let sub = repo.path().join("src");
+    std::fs::create_dir(&sub).unwrap();
+
+    // then the subdirectory resolves to the root
+    let root = checkout_root_for_launch_dir(&sub, &options).unwrap();
+    assert_eq!(
+        root.canonicalize().unwrap(),
+        repo.path().canonicalize().unwrap()
+    );
+
+    // and a directory outside any checkout resolves to nothing
+    let plain = tempfile::tempdir().unwrap();
+    assert_eq!(checkout_root_for_launch_dir(plain.path(), &options), None);
+}
+
+fn app_in_pr_mode_with_commits(n: usize) -> (App, tempfile::TempDir, TestReviewsDir) {
+    let reviews = TestReviewsDir::new();
+    let dir = tempfile::tempdir().expect("failed to create test repo dir");
+    let commits = (0..n)
+        .map(|i| CommitInfo {
+            id: format!("c{i}"),
+            short_id: format!("c{i}"),
+            branch_name: None,
+            summary: format!("commit {i}"),
+            body: None,
+            author: "a".to_string(),
+            time: chrono::Utc::now(),
+        })
+        .collect();
+    let mut app = build_app_rooted(dir.path().to_path_buf(), commits, None);
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "first"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    ));
+    app.open_pr_with_backend(&sample_pr(42, "first"), backend, None)
+        .unwrap();
+    (app, dir, reviews)
+}
+
+/// "Show more" pages through the checkout's history, not the PR's no-op
+/// backend (which answers with nothing and used to end pagination at 10).
+#[test]
+fn should_page_local_history_after_entering_pr_mode() {
+    // given a PR opened from a checkout with 25 commits
+    let (mut app, _dir, _reviews) = app_in_pr_mode_with_commits(25);
+    app.enter_target_selector(TargetTab::Local).unwrap();
+    assert_eq!(app.commit_list.len(), VISIBLE_COMMIT_COUNT);
+    assert!(app.has_more_commit);
+
+    // when the list is expanded past the first page
+    app.visible_commit_count = app.commit_list.len();
+    app.expand_commit().unwrap();
+
+    // then older commits were fetched and the PR backend is back in place
+    assert!(app.commit_list.len() > VISIBLE_COMMIT_COUNT);
+    assert_eq!(app.commit_list[VISIBLE_COMMIT_COUNT].id, "c10");
+    assert!(
+        app.vcs_info
+            .root_path
+            .to_string_lossy()
+            .starts_with("forge:")
+    );
+}
+
+/// A lazily reopened backend follows the recorded checkout, not wherever the
+/// process currently is.
+#[test]
+fn should_reopen_the_recorded_checkout_not_the_cwd() {
+    // given a PR app with no parked backend and a real recorded checkout
+    let (mut app, _dir, _reviews) = app_in_pr_mode_from_checkout();
+    let repo = tempfile::tempdir().unwrap();
+    crate::forge::local_git::test_support::init_repo_with_commit(repo.path(), &["one"]);
+    app.parked_vcs = None;
+    app.local_repo_root = Some(repo.path().to_path_buf());
+    assert_ne!(
+        std::env::current_dir().unwrap().canonicalize().unwrap(),
+        repo.path().canonicalize().unwrap()
+    );
+
+    // when a local action runs
+    let root = app
+        .with_local_vcs(|app| Ok(app.vcs_info.root_path.clone()))
+        .unwrap();
+
+    // then it ran against the recorded checkout
+    assert_eq!(
+        root.canonicalize().unwrap(),
+        repo.path().canonicalize().unwrap()
+    );
+}
+
+/// `tuicr pr` records the configured backend and whitespace mode so the
+/// reopened checkout backend matches a normal start.
+#[test]
+fn should_record_the_startup_vcs_options_for_cli_pr_startup() {
+    let _reviews = TestReviewsDir::new();
+    let details = test_pr_details(424398, "cli opts");
+    let patch = crate::forge::github::gh::tests_fixture::SIMPLE_PATCH;
+    let opened = crate::forge::pr_open::prepare_open_pr(
+        details.clone(),
+        structured_patch(patch),
+        vec![sample_pr_commit_with_body(
+            &details.head_sha,
+            "only",
+            "body",
+        )],
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details.clone()),
+        None,
+        &SyntaxHighlighter::default(),
+    )
+    .unwrap();
+    let configured = VcsOpenOptions {
+        git_backend_preference: GitBackendPreference::Cli,
+        diff_whitespace_mode: DiffWhitespaceMode::IgnoreAll,
+    };
+
+    let app = App::from_opened_pr(
+        opened,
+        Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            patch.to_string(),
+        )),
+        details.repository.clone(),
+        Theme::dark(),
+        None,
+        true,
+        None,
+        PrDisplayOptions {
+            show_checks: false,
+            show_comments: true,
+            comments_visibility: None,
+        },
+        CommitSelectionStart::All,
+        None,
+        configured.clone(),
+    )
+    .unwrap();
+
+    assert_eq!(app.vcs_open_options, configured);
 }

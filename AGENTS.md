@@ -30,6 +30,8 @@ Repository-managed agent integration: `skills/tuicr/` (shared skill bundle that 
 
 **ReviewStore** (`src/review_store.rs`): library facade (`list_sessions_for_repo`, `get_review`, `add_comment`, `save_review`, `delete_review`). `add_comment_to_session()` is shared with `App::save_comment()`.
 
+**PR mode and the local backend**: PR mode swaps `vcs`/`vcs_info` for `PrNoopVcs` and a `forge:` root; the checkout's backend is parked in `App::parked_vcs` (or reopened with `detect_vcs` after `tuicr pr`). Anything that lists or loads a local target (selector, session resume) must run inside `with_local_vcs`, which swaps it in and then either restores the PR backend or, if a local review replaced the PR, drops the PR state. Scope local sessions by `local_repo_root`, never `vcs_info.root_path`.
+
 **Action** (`src/input/keybindings.rs`): `map_key_to_action(key, mode)`. `map_global_key` covers keys identical in every mode (`Ctrl-l` → `Redraw`); `main.rs` checks it via `handler::handle_global_key` before the pending-prefix, vim-editor and per-mode maps, so they never reach a text buffer. `Redraw` and `Event::Resize` call `App::request_full_redraw`; the main loop then calls `TerminalSession::repaint_from_scratch` inside the synchronized update. Never use ratatui's `Terminal::clear` there: it queries the cursor position, which times out under `--stdout`.
 
 ## Behavior notes (not visible from the code layout)

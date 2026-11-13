@@ -171,6 +171,10 @@ impl App {
     /// selector). `PullRequests` switches the tab; the actual fetch is
     /// triggered lazily through `on_target_tab_entered`.
     pub fn enter_target_selector(&mut self, initial_tab: TargetTab) -> Result<()> {
+        self.with_local_vcs(|app| app.enter_target_selector_inner(initial_tab))
+    }
+
+    fn enter_target_selector_inner(&mut self, initial_tab: TargetTab) -> Result<()> {
         // Save inline selection state if we have review commits
         if !self.review_commits.is_empty() {
             self.saved_inline_selection = self.commit_selection_range;
@@ -357,7 +361,12 @@ impl App {
     /// (`delete_session_if_empty`); a crash can leave one behind. `a` on the
     /// tab unhides them so they can be cleaned up with `dd`.
     pub fn load_sessions_tab(&mut self) {
-        let root = self.vcs_info.root_path.clone();
+        // PR mode swaps `vcs_info` for a synthetic `forge:` root; the checkout
+        // is what scopes local sessions.
+        let root = self
+            .local_repo_root
+            .clone()
+            .unwrap_or_else(|| self.vcs_info.root_path.clone());
         let store = crate::review_store::ReviewStore::new();
         let show_empty = self.sessions_tab.show_empty();
         let mut result = store
@@ -475,6 +484,10 @@ impl App {
     /// `commit_range`, which is what the user would otherwise have to retype as
     /// `-r` / `-w` flags.
     pub fn sessions_tab_select(&mut self) -> Result<()> {
+        self.with_local_vcs(Self::sessions_tab_select_inner)
+    }
+
+    fn sessions_tab_select_inner(&mut self) -> Result<()> {
         let Some(summary) = self.sessions_tab.cursor_session().cloned() else {
             return Ok(());
         };
@@ -731,7 +744,8 @@ impl App {
         let offset = self.loaded_history_commit_count();
         let limit = self.commit_page_size;
 
-        let new_commits = self.vcs.get_recent_commits(offset, limit)?;
+        // A PR on screen parks the checkout's backend; history lives there.
+        let new_commits = self.with_local_vcs(|app| app.vcs.get_recent_commits(offset, limit))?;
 
         if new_commits.is_empty() {
             self.has_more_commit = false;
@@ -981,7 +995,7 @@ impl App {
         };
         crate::profile::time_with(
             "commit_select.confirm_selection",
-            || self.confirm_commit_selection_inner(),
+            || self.with_local_vcs(Self::confirm_commit_selection_inner),
             |result| format!("{selection}, {}", profile_unit_result(result)),
         )
     }

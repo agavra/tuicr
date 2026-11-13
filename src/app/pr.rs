@@ -42,13 +42,22 @@ impl App {
         let read_only_reason = pr_source.read_only_reason();
         let virtual_root = session.repo_path.clone();
 
-        self.vcs_info = VcsInfo {
+        let pr_vcs_info = VcsInfo {
             root_path: virtual_root.clone(),
             head_commit: details.head_sha.clone(),
             branch_name: Some(details.head_ref_name.clone()),
             vcs_type: VcsType::File,
         };
-        self.vcs = Box::new(PrNoopVcs::new(self.vcs_info.clone()));
+        let local_info = std::mem::replace(&mut self.vcs_info, pr_vcs_info);
+        let local_vcs = std::mem::replace(
+            &mut self.vcs,
+            Box::new(PrNoopVcs::new(self.vcs_info.clone())),
+        );
+        // Keep the checkout's backend for the Local tab; a PR opened from
+        // another PR already has it parked (or reopens it on demand).
+        if !matches!(self.diff_source, DiffSource::PullRequest(_)) {
+            self.parked_vcs = Some((local_vcs, local_info));
+        }
         self.session = session;
         self.diff_files = diff_files;
         self.reset_persisted_session_tracking()?;
@@ -118,6 +127,76 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// While a PR is open, swap the checkout's backend in so a local target can
+    /// be listed or loaded. Reopens it from the launch directory when tuicr
+    /// started on `tuicr pr`. Returns whether it swapped; pair with
+    /// `settle_local_vcs`.
+    fn activate_local_vcs(&mut self) -> bool {
+        if !matches!(self.diff_source, DiffSource::PullRequest(_)) {
+            return false;
+        }
+        let local = self.parked_vcs.take().or_else(|| {
+            let root = self.local_repo_root.as_deref()?;
+            let options = self.vcs_open_options.clone();
+            let vcs = crate::vcs::detect_vcs_in(
+                root,
+                options.git_backend_preference,
+                options.diff_whitespace_mode,
+            )
+            .ok()?;
+            let info = vcs.info().clone();
+            Some((vcs, info))
+        });
+        let Some((vcs, info)) = local else {
+            return false;
+        };
+        let pr_info = std::mem::replace(&mut self.vcs_info, info);
+        let pr_vcs = std::mem::replace(&mut self.vcs, vcs);
+        self.parked_vcs = Some((pr_vcs, pr_info));
+        true
+    }
+
+    /// Undo `activate_local_vcs`. If the local action replaced the PR with a
+    /// local review, keep the local backend and drop the PR state; otherwise
+    /// put the PR backend back.
+    fn settle_local_vcs(&mut self) {
+        if matches!(self.diff_source, DiffSource::PullRequest(_)) {
+            if let Some((vcs, info)) = self.parked_vcs.take() {
+                self.parked_vcs = Some((
+                    std::mem::replace(&mut self.vcs, vcs),
+                    std::mem::replace(&mut self.vcs_info, info),
+                ));
+            }
+            return;
+        }
+        self.parked_vcs = None;
+        self.pr_info = None;
+        self.forge_review_threads = Vec::new();
+        self.forge_review_summaries = Vec::new();
+        self.forge_review_threads_loading = false;
+        self.pr_threads_rx = None;
+        self.pr_reload_state = None;
+        self.pr_reload_rx = None;
+        self.pr_range_reload_state = None;
+        self.pr_range_reload_rx = None;
+        self.current_pr_head = None;
+        // Annotations were built while the PR state was still present.
+        self.rebuild_annotations();
+    }
+
+    /// Run a local-target action with the checkout's backend active.
+    pub(in crate::app) fn with_local_vcs<T>(
+        &mut self,
+        action: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        let swapped = self.activate_local_vcs();
+        let result = action(self);
+        if swapped {
+            self.settle_local_vcs();
+        }
+        result
     }
 
     /// Reload the PR's head from the forge. If the head SHA changed, this

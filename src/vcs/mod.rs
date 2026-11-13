@@ -379,6 +379,27 @@ pub fn detect_vcs(
     Err(TuicrError::NotARepository)
 }
 
+/// Like `detect_vcs`, but discovers from `path` instead of the process's
+/// current directory.
+pub fn detect_vcs_in(
+    path: &Path,
+    git_backend_preference: GitBackendPreference,
+    whitespace_mode: DiffWhitespaceMode,
+) -> Result<Box<dyn VcsBackend>> {
+    if let Ok(backend) = JjBackend::discover_from(path, whitespace_mode.clone()) {
+        return Ok(Box::new(backend));
+    }
+    if let Ok(backend) =
+        GitBackend::discover_from(path, git_backend_preference, whitespace_mode.clone())
+    {
+        return Ok(Box::new(backend));
+    }
+    if let Ok(backend) = HgBackend::discover_from(path, whitespace_mode) {
+        return Ok(Box::new(backend));
+    }
+    Err(TuicrError::NotARepository)
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
