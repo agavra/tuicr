@@ -65,6 +65,7 @@ impl Editor {
                 new_lineno: Some(1),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             }],
         }];
         let file = DiffFile {

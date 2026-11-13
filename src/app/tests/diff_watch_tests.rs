@@ -126,6 +126,7 @@ fn make_hunk(new_start: u32, new_count: u32) -> DiffHunk {
             new_lineno: Some(new_start + i),
             raw_content: None,
             highlighted_spans: None,
+            stage: None,
         });
     }
     DiffHunk {

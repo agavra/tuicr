@@ -59,6 +59,7 @@ fn diff_file_with_marker_bg(path: &str, marker_bg: Color) -> DiffFile {
                 Style::default().bg(marker_bg),
                 "let x = 1;".to_string(),
             )]),
+            stage: None,
         }],
         old_start: 1,
         old_count: 0,

@@ -458,6 +458,7 @@ mod tests {
                     new_lineno: Some(n),
                     raw_content: None,
                     highlighted_spans: None,
+                    stage: None,
                 })
                 .collect())
         }
@@ -495,6 +496,7 @@ mod tests {
                     new_lineno: Some(30),
                     raw_content: None,
                     highlighted_spans: None,
+                    stage: None,
                 },
                 DiffLine {
                     origin: LineOrigin::Deletion,
@@ -503,6 +505,7 @@ mod tests {
                     new_lineno: None,
                     raw_content: None,
                     highlighted_spans: None,
+                    stage: None,
                 },
                 DiffLine {
                     origin: LineOrigin::Addition,
@@ -511,6 +514,7 @@ mod tests {
                     new_lineno: Some(31),
                     raw_content: None,
                     highlighted_spans: None,
+                    stage: None,
                 },
                 DiffLine {
                     origin: LineOrigin::Addition,
@@ -519,6 +523,7 @@ mod tests {
                     new_lineno: Some(32),
                     raw_content: None,
                     highlighted_spans: None,
+                    stage: None,
                 },
             ],
             old_start: 30,
@@ -535,6 +540,7 @@ mod tests {
                 new_lineno: Some(100),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             }],
             old_start: 100,
             old_count: 1,

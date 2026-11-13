@@ -399,6 +399,7 @@ fn one_line_hunk() -> DiffHunk {
             new_lineno: Some(1),
             raw_content: None,
             highlighted_spans: None,
+            stage: None,
         }],
         old_start: 1,
         old_count: 1,

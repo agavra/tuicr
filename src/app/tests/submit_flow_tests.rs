@@ -74,6 +74,7 @@ fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
                     new_lineno: Some(10),
                     raw_content: None,
                     highlighted_spans: None,
+                    stage: None,
                 },
                 DiffLine {
                     origin: LineOrigin::Addition,
@@ -82,6 +83,7 @@ fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
                     new_lineno: Some(11),
                     raw_content: None,
                     highlighted_spans: None,
+                    stage: None,
                 },
             ],
         }],
@@ -167,6 +169,7 @@ fn register_commit_message_file(app: &mut App, short_id: &str) -> DiffFile {
                     new_lineno: Some(index as u32 + 1),
                     raw_content: None,
                     highlighted_spans: None,
+                    stage: None,
                 })
                 .collect(),
         }],

@@ -47,6 +47,7 @@ fn hunk() -> DiffHunk {
                 new_lineno: Some(1),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             },
             DiffLine {
                 origin: LineOrigin::Addition,
@@ -55,6 +56,7 @@ fn hunk() -> DiffHunk {
                 new_lineno: Some(2),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             },
         ],
         old_start: 1,
