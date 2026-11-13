@@ -47,7 +47,7 @@ Repository-managed agent integration: `skills/tuicr/` (shared skill bundle that 
 
 ## Forge integration
 
-Everything under `src/forge/` (GitHub `gh`, GitLab `glab`, Gitea `tea`, Bitbucket `bkt`, Azure DevOps, Gerrit). **Read `docs/FORGES.md` before** touching `src/forge/`, PR mode, session keys/lifecycle, PR submit, or any code that assigns `diff_files` in PR mode (commit-message pseudo-file, file registration, base/merge-base SHA, batched line counts, `e` in PR mode). It holds detection order, `ForgeBackend` contracts, async/session/submit rules and gotchas F1-F10, G1-G10.
+Everything under `src/forge/` (GitHub `gh`, GitLab `glab`, Gitea `tea`, Bitbucket `bkt`, Azure DevOps, Gerrit). **Read `docs/FORGES.md` before** touching `src/forge/`, PR mode, session keys/lifecycle, PR submit, or any code that assigns `diff_files` in PR mode (commit-message pseudo-file, file registration, base/merge-base SHA, batched line counts, `e` in PR mode). It holds detection order, `ForgeBackend` contracts, async/session/submit rules and gotchas F1-F10, G1-G11.
 
 ## Hard-won gotchas
 
