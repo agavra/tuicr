@@ -8,9 +8,7 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{
-    App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode,
-};
+use crate::app::{App, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode};
 use crate::model::{DiffLine, FileStatus, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
@@ -447,17 +445,6 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     let mut lines: Vec<Line> = Vec::new();
     let mut line_idx: usize = 0;
 
-    // Track cursor position for IME when in Comment mode
-    let mut comment_cursor_logical_line: Option<usize> = None;
-    let mut comment_cursor_column: u16 = 0;
-    // Track the full extent of the comment input box so we can auto-scroll
-    // the viewport to keep it visible while the user types.
-    let mut comment_input_box_range: Option<(usize, usize)> = None;
-    let mut annotation_offset: Option<(usize, usize, usize)> = None;
-
-    let is_review_comment_mode =
-        app.input_mode == InputMode::Comment && app.comment_is_review_level;
-
     crate::ui::pr_info_panel::append_pr_info_section(
         app,
         &mut lines,
@@ -465,165 +452,18 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         ctx.current_line_idx,
     );
 
-    // The `═══ Review Comments ═══` label is redundant in single-file
-    // view -- see the matching guard in `src/ui/diff_unified.rs`.
-    if app.show_review_comments_header() {
-        let general_indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
-        lines.push(Line::from(vec![
-            Span::styled(
-                general_indicator,
-                styles::current_line_indicator_style(&app.theme),
-            ),
-            Span::styled(
-                crate::ui::diff_view::REVIEW_COMMENTS_HEADER_PREFIX,
-                styles::file_header_style(&app.theme),
-            ),
-            Span::styled(
-                crate::ui::diff_view::HEADER_RULE,
-                styles::file_header_style(&app.theme),
-            ),
-        ]));
-        line_idx += 1;
-    }
-
-    for summary in &app.forge_review_summaries {
-        let summary_lines = comment_panel::format_remote_review_summary_lines(
-            &app.theme,
-            summary,
-            app.forge_kind(),
-        );
-        for mut summary_line in summary_lines {
-            let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-            summary_line.spans.insert(
-                0,
-                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-            );
-            lines.push(summary_line);
-            line_idx += 1;
-        }
-    }
-
-    for comment in &app.session.review_comments {
-        let is_being_edited =
-            app.editing_comment_id.as_ref() == Some(&comment.id) && is_review_comment_mode;
-
-        if is_being_edited {
-            let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
-                &app.theme,
-                comment_type_presentation(app, &app.comment_type),
-                &app.comment_buffer,
-                app.comment_cursor,
-                None,
-                true,
-                ctx.panel_width.saturating_sub(1),
-                app.comment_vim_mode_label()
-                    .as_ref()
-                    .map(|(t, w)| (t.as_str(), *w)),
-                app.supports_keyboard_enhancement,
-            );
-            comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
-            comment_cursor_column = 1 + cursor_info.column;
-            comment_input_box_range =
-                Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-            let annotations_replaced = App::comment_display_lines(comment, inner.width as usize);
-            annotation_offset = Some((line_idx, input_lines.len(), annotations_replaced));
-
-            for mut input_line in input_lines {
-                let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-                input_line.spans.insert(
-                    0,
-                    Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                );
-                lines.push(input_line);
-                line_idx += 1;
-            }
-        } else {
-            let rows = App::comment_display_lines(comment, ctx.panel_width);
-            if !ctx.box_visible(line_idx, rows) {
-                skip_comment_box(&mut lines, &mut line_idx, rows);
-                continue;
-            }
-            let comment_lines = comment_panel::format_comment_lines(
-                &app.theme,
-                comment_type_presentation(app, &comment.comment_type),
-                &comment.content,
-                None,
-                ctx.panel_width.saturating_sub(1),
-                (comment.author != app.username).then_some(comment.author.as_str()),
-            );
-            for mut comment_line in comment_lines {
-                let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-                comment_line.spans.insert(
-                    0,
-                    Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                );
-                lines.push(comment_line);
-                line_idx += 1;
-            }
-        }
-    }
-
-    // Render remote review-level threads (general MR notes, line: None).
-    {
-        use crate::forge::remote_comments::{PrCommentsVisibility, RemoteCommentSide};
-        let _ = RemoteCommentSide::Right; // ensure import is used
-        let visibility = app.session.remote_comments_visibility;
-        if !matches!(visibility, PrCommentsVisibility::Hide) {
-            for thread in &app.forge_review_threads {
-                if thread.line.is_some() {
-                    continue; // inline threads are rendered in-diff
-                }
-                let Some(muted) = visibility.render_decision(thread) else {
-                    continue;
-                };
-                let thread_lines = comment_panel::format_remote_thread_lines(
-                    &app.theme,
-                    thread,
-                    muted,
-                    app.forge_kind(),
-                );
-                for mut comment_line in thread_lines {
-                    let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-                    comment_line.spans.insert(
-                        0,
-                        Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                    );
-                    lines.push(comment_line);
-                    line_idx += 1;
-                }
-            }
-        }
-    }
-
-    if is_review_comment_mode && app.editing_comment_id.is_none() {
-        let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
-            &app.theme,
-            comment_type_presentation(app, &app.comment_type),
-            &app.comment_buffer,
-            app.comment_cursor,
-            None,
-            false,
-            ctx.panel_width.saturating_sub(1),
-            app.comment_vim_mode_label()
-                .as_ref()
-                .map(|(t, w)| (t.as_str(), *w)),
-            app.supports_keyboard_enhancement,
-        );
-        comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
-        comment_cursor_column = 1 + cursor_info.column;
-        comment_input_box_range = Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-        annotation_offset = Some((line_idx, input_lines.len(), 0));
-
-        for mut input_line in input_lines {
-            let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-            input_line.spans.insert(
-                0,
-                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-            );
-            lines.push(input_line);
-            line_idx += 1;
-        }
-    }
+    let review_section = crate::ui::diff_view::append_review_comments_section(
+        app,
+        &mut lines,
+        &mut line_idx,
+        ctx.current_line_idx,
+        ctx.panel_width,
+        (ctx.visible_start, ctx.visible_end),
+    );
+    let mut comment_cursor_logical_line = review_section.cursor_logical_line;
+    let mut comment_cursor_column = review_section.cursor_column;
+    let mut comment_input_box_range = review_section.input_box_range;
+    let mut annotation_offset = review_section.annotation_offset;
 
     crate::ui::pr_info_panel::append_issue_comments_section(
         app,
@@ -967,15 +807,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
 
         // End-of-file gap (after all hunks, not for deleted files)
         if file.status != FileStatus::Deleted
-            && matches!(
-                app.diff_source,
-                DiffSource::WorkingTree
-                    | DiffSource::Unstaged
-                    | DiffSource::StagedAndUnstaged
-                    | DiffSource::StagedUnstagedAndCommits(_)
-                    | DiffSource::CommitRange(_)
-                    | DiffSource::PullRequest(_)
-            )
+            && app.eof_gap_enabled()
             && let Some(last_hunk) = file.hunks.last()
         {
             let eof_start = last_hunk.new_start + last_hunk.new_count;
@@ -995,14 +827,15 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
 
                 // Render top expanded lines (↓ direction)
                 if let Some(top) = top_lines {
-                    for expanded_line in top {
-                        render_sbs_expanded_context_line(
-                            &mut lines,
-                            &mut line_idx,
-                            expanded_line,
-                            &ctx,
-                        );
-                    }
+                    crate::ui::diff_view::render_culled_run(
+                        &mut lines,
+                        &mut line_idx,
+                        top,
+                        (ctx.visible_start, ctx.visible_end),
+                        |lines, line_idx, expanded_line| {
+                            render_sbs_expanded_context_line(lines, line_idx, expanded_line, &ctx);
+                        },
+                    );
                 }
 
                 // Expander / hidden lines
@@ -1028,14 +861,15 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
 
                 // Render bottom expanded lines
                 if let Some(bot) = bot_lines {
-                    for expanded_line in bot {
-                        render_sbs_expanded_context_line(
-                            &mut lines,
-                            &mut line_idx,
-                            expanded_line,
-                            &ctx,
-                        );
-                    }
+                    crate::ui::diff_view::render_culled_run(
+                        &mut lines,
+                        &mut line_idx,
+                        bot,
+                        (ctx.visible_start, ctx.visible_end),
+                        |lines, line_idx, expanded_line| {
+                            render_sbs_expanded_context_line(lines, line_idx, expanded_line, &ctx);
+                        },
+                    );
                 }
             }
         }
@@ -1262,6 +1096,8 @@ fn render_sbs_expanded_context_line(
     expanded_line: &crate::model::DiffLine,
     ctx: &SideBySideContext,
 ) {
+    #[cfg(test)]
+    crate::ui::diff_view::EXPANDED_ROWS_BUILT.with(|v| v.set(v.get() + 1));
     let theme = ctx.theme;
     let lw = ctx.lineno_width;
     let content_width = ctx.content_width;

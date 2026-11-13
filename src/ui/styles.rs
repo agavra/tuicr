@@ -201,15 +201,6 @@ pub fn author_accent(viewer: &str, author: &str) -> Option<Color> {
     }
 }
 
-/// Border style for a comment box, tinted by author when the comment is not
-/// from the current viewer. Falls back to the neutral header style otherwise.
-pub fn comment_border_style_for_author(theme: &Theme, viewer: &str, author: &str) -> Style {
-    match author_accent(viewer, author) {
-        Some(color) => Style::default().fg(color).add_modifier(Modifier::BOLD),
-        None => file_header_style(theme),
-    }
-}
-
 pub fn visual_selection_style(theme: &Theme) -> Style {
     Style::default().bg(theme.bg_highlight)
 }
