@@ -82,7 +82,11 @@ pub(crate) fn resolve_ssh_hostname_from_config(alias: &str, config: &str) -> Str
 /// Read `~/.ssh/config` and resolve `alias` through it; the alias itself when
 /// the file is unreadable.
 pub(crate) fn read_ssh_hostname(alias: &str) -> String {
-    let Ok(home) = std::env::var("HOME") else {
+    read_ssh_hostname_in(alias, std::env::var("HOME").ok())
+}
+
+fn read_ssh_hostname_in(alias: &str, home: Option<String>) -> String {
+    let Some(home) = home else {
         return alias.to_string();
     };
     let Ok(content) = fs::read_to_string(PathBuf::from(home).join(".ssh/config")) else {
@@ -128,6 +132,41 @@ mod tests {
         assert_eq!(strip_port("h:2222"), "h");
         assert_eq!(strip_port("h:abc"), "h:abc");
         assert_eq!(strip_port("h:"), "h:");
+    }
+
+    #[test]
+    fn scp_remote_without_username_keeps_host() {
+        assert_eq!(
+            parse_scp_like_remote("github.com:o/r.git"),
+            Some(("github.com", "o/r.git"))
+        );
+    }
+
+    #[test]
+    fn read_ssh_hostname_falls_back_to_alias_without_home() {
+        assert_eq!(read_ssh_hostname_in("gh", None), "gh");
+    }
+
+    #[test]
+    fn read_ssh_hostname_falls_back_to_alias_when_config_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory at ~/.ssh/config makes read_to_string fail.
+        fs::create_dir_all(dir.path().join(".ssh/config")).unwrap();
+        let home = Some(dir.path().to_str().unwrap().to_string());
+        assert_eq!(read_ssh_hostname_in("gh", home), "gh");
+    }
+
+    #[test]
+    fn read_ssh_hostname_resolves_through_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".ssh")).unwrap();
+        fs::write(
+            dir.path().join(".ssh/config"),
+            "Host gh\n  HostName github.com\n",
+        )
+        .unwrap();
+        let home = Some(dir.path().to_str().unwrap().to_string());
+        assert_eq!(read_ssh_hostname_in("gh", home), "github.com");
     }
 
     #[test]
