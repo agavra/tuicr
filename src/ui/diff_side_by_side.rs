@@ -1157,13 +1157,19 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             .into_iter()
             .enumerate()
             .map(|(i, line)| {
-                if scroll_x == 0 || comment_box_row(&line).is_some() {
+                if comment_box_row(&line).is_some() {
                     line
                 } else {
                     sbs_meta
                         .get(&(scroll_offset + i))
                         .map(|meta| pan_sbs_row(meta, scroll_x, content_width))
-                        .unwrap_or_else(|| apply_horizontal_scroll(line, scroll_x))
+                        .unwrap_or_else(|| {
+                            if scroll_x == 0 {
+                                line
+                            } else {
+                                apply_horizontal_scroll(line, scroll_x)
+                            }
+                        })
                 }
             })
             .collect(),
@@ -2876,6 +2882,32 @@ mod remote_comments_side_by_side_snapshot_tests {
         let spans = super::plain_cell_spans("界a", style, 8, None);
         let w: usize = spans.iter().map(|s| s.content.width()).sum();
         assert_eq!(w, 8);
+    }
+
+    #[test]
+    fn should_keep_divider_and_right_column_with_vs16_and_cjk_at_zero_scroll() {
+        for glyph in ["\u{2764}\u{FE0F}", "界"] {
+            let mut app = make_pr_app();
+            let left = format!("0000{}", glyph.repeat(60));
+            app.diff_files = vec![diff_file_with_pair(&left, "0000RIGHT")];
+            app.set_diff_wrap(false);
+            app.rebuild_annotations();
+            let buf = draw_sbs(&mut app, 80, 20);
+            assert_eq!(app.diff_state.scroll_x, 0);
+            let row = (0..buf.area.height)
+                .find(|&y| {
+                    (0..buf.area.width)
+                        .map(|x| char_at(&buf, x, y))
+                        .collect::<String>()
+                        .contains("0000RIGHT")
+                })
+                .expect("right column clipped");
+            let lw = app.lineno_width();
+            let content_width = (78 - crate::app::sbs_overhead(lw) as usize) / 2;
+            let left_start = 1 + crate::app::sbs_left_gutter(lw);
+            let divider = left_start + content_width as u16 + 1;
+            assert_eq!(char_at(&buf, divider, row), "│", "{glyph}");
+        }
     }
 
     #[test]
