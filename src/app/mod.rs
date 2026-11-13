@@ -1477,6 +1477,9 @@ pub struct App {
     // Inline commit selector state (shown at top of diff view for multi-commit reviews)
     /// CommitInfo for commits in the current review (display order: newest first)
     pub review_commits: Vec<CommitInfo>,
+    /// The `-r` range as resolved at startup. Reloads of the same commits diff
+    /// from its base, so `A...B` keeps its merge base.
+    pub revision_range: Option<ResolvedRevisionRange<'static>>,
     /// Forge-side commit list for the active PR (display order: newest first).
     /// Empty outside PR mode. Used as the source of truth for resolving a
     /// `commit_selection_range` back to (start_sha, end_sha) when toggling.

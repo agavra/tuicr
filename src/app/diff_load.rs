@@ -575,6 +575,7 @@ impl App {
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             &fetch_source,
+            self.revision_range.as_ref(),
             highlighter,
             self.path_filter.as_deref(),
         )
@@ -704,17 +705,27 @@ impl App {
         vcs: &dyn VcsBackend,
         root_path: &Path,
         diff_source: &DiffSource,
+        revision_range: Option<&ResolvedRevisionRange<'_>>,
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         match diff_source {
-            DiffSource::CommitRange(commit_ids) => Self::get_commit_range_diff_with_ignore(
-                vcs,
-                root_path,
-                &ResolvedRevisionRange::from_commit_ids(commit_ids, RevisionDiffTarget::CommitList),
-                highlighter,
-                path_filter,
-            ),
+            DiffSource::CommitRange(commit_ids) => {
+                // The `-r` range's own base, not the oldest commit's parent,
+                // which differs once the range contains a merge.
+                let diff_target = revision_range
+                    .filter(|range| range.commit_ids.as_ref() == commit_ids.as_slice())
+                    .map_or(RevisionDiffTarget::CommitList, |range| {
+                        range.diff_target.clone()
+                    });
+                Self::get_commit_range_diff_with_ignore(
+                    vcs,
+                    root_path,
+                    &ResolvedRevisionRange::from_commit_ids(commit_ids, diff_target),
+                    highlighter,
+                    path_filter,
+                )
+            }
             DiffSource::StagedUnstagedAndCommits(commit_ids) => {
                 Self::get_working_tree_with_commits_diff_with_ignore(
                     vcs,
@@ -870,6 +881,7 @@ impl App {
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             &fetch_source,
+            self.revision_range.as_ref(),
             self.theme.syntax_highlighter(),
             self.path_filter.as_deref(),
             diff_files_fingerprint(&self.diff_files),
@@ -893,6 +905,7 @@ impl App {
         vcs: &dyn VcsBackend,
         root_path: &Path,
         fetch_source: &DiffSource,
+        revision_range: Option<&ResolvedRevisionRange<'_>>,
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
         current: u64,
@@ -901,6 +914,7 @@ impl App {
             vcs,
             root_path,
             fetch_source,
+            revision_range,
             probe_highlighter(),
             path_filter,
         )?;
@@ -916,6 +930,7 @@ impl App {
             vcs,
             root_path,
             fetch_source,
+            revision_range,
             highlighter,
             path_filter,
         )?;
@@ -1087,6 +1102,7 @@ impl App {
         };
         let current = diff_files_fingerprint(&self.diff_files);
         let review_commits = self.review_commits.clone();
+        let revision_range = self.revision_range.clone();
         let path_filter = self.path_filter.clone();
         let vcs_open_options = self.vcs_open_options.clone();
         let highlighter = self.theme.syntax_highlighter_arc();
@@ -1103,6 +1119,7 @@ impl App {
                 vcs_open_options,
                 &request,
                 &review_commits,
+                revision_range.as_ref(),
                 path_filter.as_deref(),
                 &highlighter,
                 current,
@@ -1126,6 +1143,7 @@ impl App {
         vcs_open_options: VcsOpenOptions,
         request: &DiffWatchReloadRequest,
         review_commits: &[CommitInfo],
+        revision_range: Option<&ResolvedRevisionRange<'_>>,
         path_filter: Option<&str>,
         highlighter: &SyntaxHighlighter,
         current: u64,
@@ -1144,6 +1162,7 @@ impl App {
             vcs.as_ref(),
             root_path,
             &fetch_source,
+            revision_range,
             highlighter,
             path_filter,
             current,
@@ -1879,6 +1898,97 @@ mod tests {
             .find(|file| file.display_path() == Path::new(path))
     }
 
+    /// The repro from #850: `feature` merged `main` after branching.
+    fn merged_feature_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let root = dir.path();
+        git_in(root, &["init", "-q", "-b", "main"]);
+        git_in(root, &["config", "user.name", "Tuicr Test"]);
+        git_in(root, &["config", "user.email", "tuicr@example.com"]);
+        std::fs::write(root.join("base.txt"), "base\n").unwrap();
+        git_in(root, &["add", "."]);
+        git_in(root, &["commit", "-qm", "base"]);
+        git_in(root, &["switch", "-qc", "feature"]);
+        std::fs::write(root.join("feature.txt"), "feature\n").unwrap();
+        git_in(root, &["add", "."]);
+        git_in(root, &["commit", "-qm", "feature: add feature.txt"]);
+        git_in(root, &["switch", "-q", "main"]);
+        std::fs::write(root.join("main-only.txt"), "main\n").unwrap();
+        git_in(root, &["add", "."]);
+        git_in(root, &["commit", "-qm", "main: add main-only.txt"]);
+        git_in(root, &["switch", "-q", "feature"]);
+        git_in(root, &["merge", "-q", "--no-edit", "main"]);
+        std::fs::write(root.join("feature.txt"), "feature\nmore\n").unwrap();
+        git_in(root, &["commit", "-qam", "feature: edit feature.txt"]);
+        dir
+    }
+
+    fn paths(files: &[DiffFile]) -> Vec<String> {
+        let mut paths: Vec<String> = files
+            .iter()
+            .map(|file| file.display_path().to_string_lossy().into_owned())
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    #[test]
+    fn reload_keeps_the_resolved_base_of_a_revision_range() {
+        let dir = merged_feature_repo();
+        let root = dir.path();
+        let highlighter = SyntaxHighlighter::default();
+        for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+            let vcs =
+                crate::vcs::GitBackend::discover_from(root, preference, DiffWhitespaceMode::Normal)
+                    .unwrap();
+            for revisions in ["main...feature", "main..feature"] {
+                let range = vcs.resolve_revision_range(revisions).unwrap();
+                let source = DiffSource::CommitRange(range.commit_ids.to_vec());
+                let reload = |range| {
+                    App::fetch_diff_files_for_source(&vcs, root, &source, range, &highlighter, None)
+                        .unwrap()
+                };
+                assert_eq!(
+                    paths(&reload(Some(&range))),
+                    ["feature.txt"],
+                    "{preference:?} {revisions}"
+                );
+                // Without the resolved base, the merged-in file shows up.
+                assert_eq!(
+                    paths(&reload(None)),
+                    ["feature.txt", "main-only.txt"],
+                    "{preference:?} {revisions}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reload_of_a_narrowed_selection_ignores_the_revision_range() {
+        let dir = merged_feature_repo();
+        let root = dir.path();
+        let vcs = crate::vcs::GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .unwrap();
+        let range = vcs.resolve_revision_range("main...feature").unwrap();
+        let newest = range.commit_ids.last().unwrap().clone();
+        let files = App::fetch_diff_files_for_source(
+            &vcs,
+            root,
+            &DiffSource::CommitRange(vec![newest]),
+            Some(&range),
+            &SyntaxHighlighter::default(),
+            None,
+        )
+        .unwrap();
+        // Only the last commit's own change, diffed from its parent.
+        assert_eq!(paths(&files), ["feature.txt"]);
+        assert_eq!(files[0].status, FileStatus::Modified);
+    }
+
     #[test]
     fn watch_worker_open_options_retain_whitespace_overrides() {
         let mode = DiffWhitespaceMode::Auto(crate::vcs::WhitespaceAutoPolicy::with_overrides([
@@ -1923,6 +2033,7 @@ mod tests {
             &vcs,
             &vcs.info.root_path,
             &DiffSource::WorkingTree,
+            None,
             &highlighter,
             None,
         )
@@ -1950,6 +2061,7 @@ mod tests {
             &vcs,
             &vcs.info.root_path,
             &DiffSource::WorkingTree,
+            None,
             &highlighter,
             None,
             diff_files_fingerprint(&initial),
@@ -1965,6 +2077,7 @@ mod tests {
             &vcs,
             &vcs.info.root_path,
             &DiffSource::WorkingTree,
+            None,
             &highlighter,
             None,
             diff_files_fingerprint(&initial),
@@ -1975,6 +2088,7 @@ mod tests {
             &vcs,
             &vcs.info.root_path,
             &DiffSource::WorkingTree,
+            None,
             &highlighter,
             None,
         )
