@@ -130,7 +130,7 @@ info "  Source:   $URL"
 info "  Dest:     $INSTALL_DIR/$BIN"
 info ""
 
-if [ -z "$TUICR_INSTALL_YES" ] && [ -r /dev/tty ]; then
+if [ -z "${TUICR_INSTALL_YES:-}" ] && [ -t 1 ] && ( : </dev/tty ) 2>/dev/null; then
     printf '%sContinue? [Y/n]%s ' "$BOLD" "$RESET"
     read -r answer </dev/tty
     case "$answer" in
