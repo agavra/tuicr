@@ -363,6 +363,12 @@ comment count, reviewed files, and age. Reviews with no comments and no reviewed
 are omitted; press `a` to show them. Selecting a saved PR review re-fetches it from the
 forge, the same as opening it from the Pull Requests tab.
 
+Opening a different local target (a commit selection on the Local tab, or a saved review
+on the Sessions tab) first saves the review on screen, so its unsaved marks and comments
+are kept. If that save fails, the switch is aborted and the current review stays open
+with its unsaved changes. The commit pane of the replaced review is closed, and focus
+returns to the diff if it was in that pane.
+
 Press `dd` to delete the saved review under the cursor. tuicr asks to confirm first, and
 refuses to delete a review that is open in another tuicr, since that process would write
 it straight back. Combine `a` with `dd` to clear out empty sessions left behind by a

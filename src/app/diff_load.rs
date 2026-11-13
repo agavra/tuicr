@@ -463,6 +463,9 @@ impl App {
         self.visible_commit_count = 0;
         self.has_more_commit = false;
         self.show_commit_selector = false;
+        if self.focused_panel == FocusedPanel::CommitSelector {
+            self.focused_panel = FocusedPanel::Diff;
+        }
         self.commit_diff_cache.clear();
         self.saved_inline_selection = None;
     }

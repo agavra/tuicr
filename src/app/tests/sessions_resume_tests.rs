@@ -39,6 +39,7 @@ struct VcsCalls {
     working_tree: usize,
     unstaged: usize,
     staged: usize,
+    unstaged_changes: bool,
 }
 
 struct RecordingVcs {
@@ -82,7 +83,7 @@ impl VcsBackend for RecordingVcs {
     fn get_change_status(&self) -> Result<crate::vcs::traits::VcsChangeStatus> {
         Ok(crate::vcs::traits::VcsChangeStatus {
             staged: true,
-            unstaged: false,
+            unstaged: self.calls.lock().unwrap().unstaged_changes,
         })
     }
 
@@ -822,6 +823,92 @@ fn should_restore_the_working_tree_rows_when_resuming_a_range_with_working_tree(
         app.session.commit_range,
         Some(vec!["aaa".to_string(), "bbb".to_string()])
     );
+}
+
+#[test]
+fn should_restore_the_unstaged_row_when_resuming_a_range_with_working_tree() {
+    // given — a saved `-r -w` review while the tree has unstaged changes
+    let _reviews = TestReviewsDir::new();
+    let (mut app, calls) = build_app(vec![commit("bbb"), commit("aaa")]);
+    calls.lock().unwrap().unstaged_changes = true;
+    let mut saved = range_session(&["aaa", "bbb"], Some("main"));
+    saved.diff_source = SessionDiffSource::StagedUnstagedAndCommits;
+    stage_session(&mut app, saved);
+
+    // when
+    app.sessions_tab_select().expect("resume");
+
+    // then — both working-tree rows sit above the commits
+    assert_eq!(app.review_commits.len(), 4);
+    assert!(App::is_unstaged_commit(&app.review_commits[0]));
+    assert!(App::is_staged_commit(&app.review_commits[1]));
+}
+
+#[test]
+fn should_keep_the_dirty_review_open_when_the_outgoing_save_fails() {
+    // given — a dirty staged review whose session file became unreadable
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("ccc")]);
+    stage_session(&mut app, working_tree_session(SessionDiffSource::Staged));
+    app.sessions_tab_select().expect("resume staged");
+    let path = app.session_path.clone().expect("session path");
+    app.toggle_reviewed_for_file_idx(0, false);
+    std::fs::write(&path, "not JSON").expect("corrupt");
+
+    // when — another local target is confirmed
+    app.commit_list = vec![commit("ccc")];
+    app.commit_list_cursor = 0;
+    app.commit_selection_range = None;
+    let result = app.confirm_commit_selection();
+
+    // then — the switch aborts and the unsaved mark stays in memory
+    assert!(result.is_err());
+    assert!(app.dirty);
+    assert!(matches!(app.diff_source, DiffSource::Staged));
+    assert!(app.session.files[Path::new("staged.py")].reviewed);
+}
+
+#[test]
+fn should_keep_the_outgoing_mark_when_resuming_the_open_session() {
+    // given — the open staged review has an unsaved reviewed mark
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("ccc")]);
+    stage_session(&mut app, working_tree_session(SessionDiffSource::Staged));
+    app.sessions_tab_select().expect("resume staged");
+    let path = app.session_path.clone().expect("session path");
+    app.toggle_reviewed_for_file_idx(0, false);
+
+    // when — the Sessions row for that same review is selected
+    app.sessions_tab_select().expect("resume same");
+    app.save_current_session_merging_external().expect("save");
+
+    // then — the mark survives in memory and on disk
+    assert!(app.session.files[Path::new("staged.py")].reviewed);
+    let disk = crate::persistence::storage::load_session(&path).expect("load");
+    assert!(disk.files[Path::new("staged.py")].reviewed);
+}
+
+#[test]
+fn should_return_focus_to_the_diff_when_a_local_switch_hides_the_focused_pane() {
+    // given — a range review with keyboard focus on its inline pane
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("ccc"), commit("bbb"), commit("aaa")]);
+    stage_session(
+        &mut app,
+        range_session(&["aaa", "bbb", "ccc"], Some("main")),
+    );
+    app.sessions_tab_select().expect("resume range");
+    app.focused_panel = FocusedPanel::CommitSelector;
+
+    // when — the staged target replaces it
+    app.enter_target_selector(TargetTab::Local)
+        .expect("selector");
+    assert!(App::is_staged_commit(&app.commit_list[0]));
+    app.confirm_commit_selection().expect("confirm");
+
+    // then — keys reach the diff, not the hidden empty selector
+    assert!(!app.has_inline_commit_selector());
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
 }
 
 #[test]

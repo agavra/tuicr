@@ -475,10 +475,13 @@ impl App {
     /// `commit_range`, which is what the user would otherwise have to retype as
     /// `-r` / `-w` flags.
     pub fn sessions_tab_select(&mut self) -> Result<()> {
-        let Some(summary) = self.sessions_tab.cursor_session() else {
+        let Some(summary) = self.sessions_tab.cursor_session().cloned() else {
             return Ok(());
         };
 
+        // Save first: the selected row may be the session on screen, and
+        // loading it before the save would reinstall a stale snapshot.
+        self.save_outgoing_session()?;
         let session = match crate::persistence::storage::load_session(summary.session_ref.path()) {
             Ok(session) => session,
             Err(e) => {
