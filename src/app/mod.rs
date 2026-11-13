@@ -785,6 +785,8 @@ pub struct SubmitState {
     pub resolver_cursor: usize,
     /// Originally-reviewed head SHA — used as `commit_id` in the payload.
     pub commit_id: String,
+    /// Old-side revision of a strict commit subset; `None` for the full PR.
+    pub base_commit_id: Option<String>,
     /// When `true`, the resolver advances directly to the network call
     /// instead of routing through `SubmitConfirm`. Set by the action-picker
     /// path; left `false` for explicit `:submit <event>` invocations.

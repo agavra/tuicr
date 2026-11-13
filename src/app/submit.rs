@@ -55,6 +55,16 @@ impl App {
             _ => pr.key.head_sha.clone(),
         };
 
+        // A strict subset's old side is the parent of its oldest commit.
+        let base_commit_id = match (self.commit_selection_range, self.pr_range_sha_pair()) {
+            (Some((start_idx, end_idx)), Some((parent, _)))
+                if !(start_idx == 0 && end_idx + 1 == self.pr_commits.len()) =>
+            {
+                Some(parent)
+            }
+            _ => None,
+        };
+
         // Map against the displayed diff: a narrowed selection's anchors live
         // there, and `commit_id` above is that selection's head.
         // `range_diff_files` is only the full-range cache, so it is not used.
@@ -177,6 +187,7 @@ impl App {
             resolver_choices,
             resolver_cursor: 0,
             commit_id,
+            base_commit_id,
             skip_confirm,
         });
 
@@ -390,6 +401,7 @@ impl App {
         let event = in_flight.event;
         let mappable = in_flight.mappable.clone();
         let commit_id = state.commit_id.clone();
+        let base_commit_id = state.base_commit_id.clone();
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
 
@@ -413,6 +425,7 @@ impl App {
                     CreateReviewRequest {
                         event,
                         commit_id: &commit_id,
+                        base_commit_id: base_commit_id.as_deref(),
                         body: &body,
                         comments: &mappable,
                     },

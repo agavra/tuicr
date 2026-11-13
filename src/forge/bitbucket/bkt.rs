@@ -1433,6 +1433,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "overall looks fine",
             comments: &comments,
         };
@@ -1461,6 +1462,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "",
             comments: &comments,
         };
@@ -1478,6 +1480,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "",
             comments: &comments,
         };
@@ -1498,6 +1501,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "",
             comments: &comments,
         };
@@ -1518,6 +1522,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "",
             comments: &comments,
         };
@@ -1537,6 +1542,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Approve,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "",
             comments: &comments,
         };
@@ -1568,6 +1574,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "hello",
             comments: &[],
         };
@@ -1589,6 +1596,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Draft,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "draft summary",
             comments: &comments,
         };
@@ -1620,6 +1628,7 @@ mod tests {
             let request = CreateReviewRequest {
                 event,
                 commit_id: &"a".repeat(40),
+                base_commit_id: None,
                 body: "text",
                 comments: &[],
             };
@@ -1640,6 +1649,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::RequestChanges,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "",
             comments: &comments,
         };
@@ -1679,6 +1689,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::RequestChanges,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "text",
             comments: &[],
         };
@@ -1723,6 +1734,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "text",
             comments: &[],
         };
@@ -1754,6 +1766,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Approve,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "text",
             comments: &[],
         };
@@ -2118,6 +2131,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "",
             comments: &[comment],
         };
@@ -2160,6 +2174,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Approve,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "summary",
             comments: &[comment],
         };

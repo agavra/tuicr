@@ -2086,6 +2086,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::Comment,
             commit_id: "headsha1",
+            base_commit_id: None,
             body: "",
             comments: &[inline],
         };
@@ -2148,6 +2149,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::Comment,
             commit_id: "headsha1",
+            base_commit_id: None,
             body: "",
             comments: &[inline],
         };
@@ -2205,6 +2207,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::Comment,
             commit_id: "headsha1",
+            base_commit_id: None,
             body: "",
             comments: &[inline],
         };
@@ -2266,6 +2269,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::Comment,
             commit_id: "headsha1",
+            base_commit_id: None,
             body: "",
             comments: &[inline],
         };
@@ -2309,6 +2313,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::Comment,
             commit_id: "headsha1",
+            base_commit_id: None,
             body: "",
             comments: &[inline],
         };
@@ -2346,6 +2351,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::Comment,
             commit_id: "headsha1",
+            base_commit_id: None,
             body: "",
             comments: &[inline],
         };
@@ -2390,6 +2396,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::Approve,
             commit_id: "headsha1",
+            base_commit_id: None,
             body: "",
             comments: &[inline],
         };
@@ -2436,6 +2443,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::RequestChanges,
             commit_id: "headsha1",
+            base_commit_id: None,
             body: "overall please address the comments",
             comments: &[inline],
         };
@@ -2512,6 +2520,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::RequestChanges,
             commit_id: "headsha1",
+            base_commit_id: None,
             body: "",
             comments: &[inline],
         };
@@ -2579,6 +2588,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::Draft,
             commit_id: "headsha1",
+            base_commit_id: None,
             body: "overall draft",
             comments: &[inline],
         };
@@ -2660,6 +2670,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::Draft,
             commit_id: "headsha1",
+            base_commit_id: None,
             body: "overall draft",
             comments: &[inline],
         };
@@ -2732,6 +2743,7 @@ mod tests {
                 CreateReviewRequest {
                     event: crate::forge::submit::SubmitEvent::Draft,
                     commit_id: "headsha1",
+                    base_commit_id: None,
                     body: "overall draft",
                     comments: &[inline],
                 },
@@ -2865,6 +2877,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::Comment,
             commit_id: "headsha1",
+            base_commit_id: None,
             body: "overall comment",
             comments: &[inline],
         };
@@ -3130,6 +3143,7 @@ mod tests {
                 CreateReviewRequest {
                     event: crate::forge::submit::SubmitEvent::Comment,
                     commit_id: "headsha1",
+                    base_commit_id: None,
                     body: "",
                     comments: &[inline],
                 },
@@ -3195,6 +3209,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::Approve,
             commit_id: "headsha1",
+            base_commit_id: None,
             body: "summary",
             comments: &[comment],
         };
@@ -3238,6 +3253,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::Approve,
             commit_id: "h",
+            base_commit_id: None,
             body: "",
             comments: &[],
         };

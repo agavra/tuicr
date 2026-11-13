@@ -520,6 +520,7 @@ mod tests {
             resolver_choices: vec![ResolverAction::MoveToSummary; n],
             resolver_cursor: n - 1,
             commit_id: "abcdef0123".to_string(),
+            base_commit_id: None,
             skip_confirm: false,
         });
         let text = buffer_text(&draw_resolver(&app));
@@ -552,6 +553,7 @@ mod tests {
             resolver_choices: vec![ResolverAction::MoveToSummary, ResolverAction::MoveToSummary],
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            base_commit_id: None,
             skip_confirm: false,
         });
         let buffer = draw_resolver(&app);
@@ -598,6 +600,7 @@ mod tests {
             resolver_choices: vec![ResolverAction::MoveToSummary, ResolverAction::MoveToSummary],
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            base_commit_id: None,
             skip_confirm: false,
         });
         let text = buffer_text(&draw_resolver(&app));
@@ -625,6 +628,7 @@ mod tests {
             resolver_choices: vec![ResolverAction::Omit],
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            base_commit_id: None,
             skip_confirm: false,
         });
         let buffer = draw_resolver(&app);
@@ -642,6 +646,7 @@ mod tests {
             resolver_choices: Vec::new(),
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            base_commit_id: None,
             skip_confirm: false,
         });
         let buffer = draw_confirm(&app);
@@ -682,6 +687,7 @@ mod tests {
             resolver_choices: Vec::new(),
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            base_commit_id: None,
             skip_confirm: false,
         });
         let buffer = draw_confirm(&app);
@@ -702,6 +708,7 @@ mod tests {
             resolver_choices: Vec::new(),
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            base_commit_id: None,
             skip_confirm: false,
         });
         let buffer = draw_confirm(&app);
@@ -723,6 +730,7 @@ mod tests {
             resolver_choices: Vec::new(),
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            base_commit_id: None,
             skip_confirm: false,
         });
         let buffer = draw_confirm(&app);
@@ -759,6 +767,7 @@ mod tests {
             resolver_choices: vec![ResolverAction::MoveToSummary, ResolverAction::Omit],
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            base_commit_id: None,
             skip_confirm: false,
         });
         let buffer = draw_confirm(&app);
@@ -782,6 +791,7 @@ mod tests {
             resolver_choices: vec![ResolverAction::Omit],
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            base_commit_id: None,
             skip_confirm: false,
         });
         app

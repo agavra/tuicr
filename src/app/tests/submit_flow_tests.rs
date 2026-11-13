@@ -257,6 +257,11 @@ fn should_use_subset_head_sha_as_commit_id_when_inline_selector_is_strict_subset
         state.commit_id, "deadbeef02",
         "subset → commit_id should be the newest selected commit (start_idx), not the PR head",
     );
+    assert_eq!(
+        state.base_commit_id.as_deref(),
+        Some("facecafe01"),
+        "subset → the old side is the parent of the oldest selected commit",
+    );
 }
 
 #[test]
@@ -300,6 +305,50 @@ fn should_use_pr_head_sha_as_commit_id_when_full_commit_range_selected() {
 
     let state = app.submit_state.as_ref().expect("submit state");
     assert_eq!(state.commit_id, "abcdef0123");
+    assert_eq!(
+        state.base_commit_id, None,
+        "full range → merge-base old side"
+    );
+}
+
+#[test]
+fn should_use_pr_base_as_old_side_when_subset_includes_the_oldest_commit() {
+    use crate::forge::traits::PullRequestCommit;
+
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let commit = |oid: &str| PullRequestCommit {
+        oid: oid.to_string(),
+        short_oid: oid[..7].to_string(),
+        summary: oid.to_string(),
+        body: None,
+        author: "me".to_string(),
+        timestamp: None,
+    };
+    app.pr_commits = vec![
+        commit("abcdef0123"),
+        commit("deadbeef02"),
+        commit("facecafe01"),
+    ];
+    app.commit_selection_range = Some((1, 2));
+    let base_sha = match &app.diff_source {
+        DiffSource::PullRequest(pr) => pr.base_sha.clone(),
+        _ => unreachable!(),
+    };
+    add_line_comment(
+        &mut app,
+        "src/lib.rs",
+        11,
+        Comment::new(
+            "comment".to_string(),
+            CommentType::from_id("issue"),
+            Some(LineSide::New),
+        ),
+    );
+
+    app.start_submit(SubmitEvent::Comment);
+
+    let state = app.submit_state.as_ref().expect("submit state");
+    assert_eq!(state.base_commit_id.as_deref(), Some(base_sha.as_str()));
 }
 
 #[test]
