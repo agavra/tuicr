@@ -1719,7 +1719,9 @@ mod tests {
                 }
             }]
         }]);
-        let runner = RecordingRunner::new_with_responses(vec![discussions.to_string()]);
+        // Second response: the (empty) /draft_notes read-back added by #876.
+        let runner =
+            RecordingRunner::new_with_responses(vec![discussions.to_string(), "[]".to_string()]);
         let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
 
         let threads = backend.list_review_threads(&pr).unwrap();
