@@ -52,7 +52,7 @@ const MAX_PR_LIST_PAGE_LEN: usize = 50;
 
 /// Ceiling on pages walked when draining a collection, so a pathological
 /// repository can't spin forever.
-const MAX_PAGES: usize = 10;
+const MAX_PAGES: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BktCommandError {
@@ -246,10 +246,14 @@ where
             let parsed: BbPaged<T> = serde_json::from_str(&output)?;
             all.extend(parsed.values);
             fetched += 1;
-            if fetched >= MAX_PAGES {
-                break;
-            }
             next = parsed.next;
+            if fetched >= MAX_PAGES && next.is_some() {
+                // Returning a prefix would truncate comments or break the
+                // diffstat/patch pairing, so fail loudly instead.
+                return Err(TuicrError::Forge(format!(
+                    "Bitbucket collection exceeds {MAX_PAGES} pages; refusing to use a partial list"
+                )));
+            }
         }
         Ok(all)
     }
@@ -1282,7 +1286,7 @@ mod tests {
     }
 
     #[test]
-    fn should_stop_after_the_page_ceiling_even_if_next_keeps_coming() {
+    fn should_error_rather_than_truncate_when_next_outlives_the_page_ceiling() {
         // given — a server that always advertises another page
         struct AlwaysMore;
         impl BktCommandRunner for AlwaysMore {
@@ -1293,10 +1297,33 @@ mod tests {
             }
         }
         let backend = BitbucketBktBackend::with_runner(Some(repo()), AlwaysMore);
+        // when / then — bounded, and not a silently partial Ok
+        assert!(backend.list_pull_request_commits(&details()).is_err());
+    }
+
+    #[test]
+    fn should_read_more_than_ten_pages_of_commits() {
+        // given — eleven pages, the last without `next`
+        struct Pages(std::cell::Cell<usize>);
+        impl BktCommandRunner for Pages {
+            fn run(&self, _args: &[String]) -> BktCommandResult<String> {
+                let n = self.0.get() + 1;
+                self.0.set(n);
+                let next = if n < 11 {
+                    r#","next":"https://api.bitbucket.org/2.0/next""#
+                } else {
+                    ""
+                };
+                Ok(format!(
+                    r#"{{"values":[{{"hash":"a","message":"m"}}]{next}}}"#
+                ))
+            }
+        }
+        let backend = BitbucketBktBackend::with_runner(Some(repo()), Pages(Default::default()));
         // when
         let commits = backend.list_pull_request_commits(&details()).unwrap();
-        // then — bounded, not an infinite loop
-        assert_eq!(commits.len(), MAX_PAGES);
+        // then
+        assert_eq!(commits.len(), 11);
     }
 
     #[test]
