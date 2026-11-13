@@ -221,7 +221,7 @@ fn parse_hg_diff_metadata(output: &[u8]) -> Result<Vec<FileMetadata>> {
         .filter_map(|entry| entry.copy_source.clone())
         .collect();
 
-    entries
+    let mut metadata = entries
         .into_iter()
         .filter_map(|entry| {
             let metadata = match entry.status {
@@ -256,7 +256,21 @@ fn parse_hg_diff_metadata(output: &[u8]) -> Result<Vec<FileMetadata>> {
             };
             metadata.map(Ok)
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+
+    // `hg status` groups by status class, while `hg diff --git` orders patches
+    // by raw path bytes (destination path, or source path for deletions).
+    // Pairing is positional, so match that order; `Path::cmp` compares by
+    // component and would disagree (`a/x` < `a-b/x`).
+    metadata.sort_by(|left, right| hg_sort_key(left).cmp(&hg_sort_key(right)));
+    Ok(metadata)
+}
+
+fn hg_sort_key(file: &FileMetadata) -> Option<&[u8]> {
+    file.new_path
+        .as_deref()
+        .or(file.old_path.as_deref())
+        .map(|path| path.as_os_str().as_encoded_bytes())
 }
 
 impl VcsBackend for HgBackend {
@@ -772,6 +786,67 @@ mod tests {
             "hello.txt"
         );
         assert_eq!(files[0].status, FileStatus::Modified);
+    }
+
+    #[test]
+    fn test_hg_metadata_is_ordered_like_hg_diff() {
+        let output = b"M z.txt\0A a.txt\0R m.txt\0M a/f.txt\0M a-b/f.txt\0";
+        let paths: Vec<_> = parse_hg_diff_metadata(output)
+            .unwrap()
+            .into_iter()
+            .map(|file| file.new_path.or(file.old_path).unwrap())
+            .collect();
+        let expected: Vec<PathBuf> = ["a-b/f.txt", "a.txt", "a/f.txt", "m.txt", "z.txt"]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(paths, expected);
+    }
+
+    #[test]
+    fn test_hg_pairs_hunks_with_their_own_file_across_status_classes() {
+        let Some(temp) = setup_test_repo() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+        let root = temp.path();
+        let hg = |args: &[&str]| {
+            Command::new("hg")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap();
+        };
+        fs::write(root.join("z.txt"), "z_old\n").unwrap();
+        fs::write(root.join("m.txt"), "m_old\n").unwrap();
+        hg(&["add", "z.txt", "m.txt"]);
+        hg(&["commit", "-m", "more files"]);
+        fs::write(root.join("z.txt"), "z_new\n").unwrap();
+        fs::write(root.join("a.txt"), "a_added\n").unwrap();
+        hg(&["add", "a.txt"]);
+        hg(&["rm", "-f", "m.txt"]);
+
+        let backend = HgBackend::from_path(root.to_path_buf(), DiffWhitespaceMode::Normal).unwrap();
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .unwrap();
+
+        let body = |name: &str| -> (FileStatus, String) {
+            let file = files
+                .iter()
+                .find(|f| f.display_path().to_str() == Some(name))
+                .unwrap();
+            let text = file
+                .hunks
+                .iter()
+                .flat_map(|h| h.lines.iter().map(|l| l.content.as_str()))
+                .collect::<Vec<_>>()
+                .join("|");
+            (file.status, text)
+        };
+        assert_eq!(body("a.txt"), (FileStatus::Added, "a_added".into()));
+        assert_eq!(body("m.txt"), (FileStatus::Deleted, "m_old".into()));
+        assert_eq!(body("z.txt"), (FileStatus::Modified, "z_old|z_new".into()));
     }
 
     #[test]
