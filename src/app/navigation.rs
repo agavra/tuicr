@@ -493,8 +493,12 @@ impl App {
     pub fn go_to_source_line(&mut self, target_lineno: u32, side: LineSide) {
         let current_file = self.diff_state.current_file_idx;
         // A collapsed file has no line rows to land on, so open it first,
-        // the way a summary jump does.
-        if self.reveal_file_if_collapsed(current_file) {
+        // the way a summary jump does. Reviewed files stay shut.
+        let reviewed = self
+            .diff_files
+            .get(current_file)
+            .is_some_and(|file| self.session.is_file_reviewed(file.display_path()));
+        if !reviewed && self.reveal_file_if_collapsed(current_file) {
             self.rebuild_annotations();
         }
         let mut result = self.find_source_line_in_diff(target_lineno, side);
