@@ -106,7 +106,8 @@ Reviewing a commit range within an MR requires a local checkout of the branch.
 A remote-only commit-range diff returns a "not yet supported" error.
 
 For verbose tracing of the `glab` calls tuicr makes, set `TUICR_GLAB_DEBUG=1`.
-tuicr appends each interaction to `/tmp/tuicr-glab-debug.log`.
+tuicr appends each interaction to `glab-debug.log` in its per-user cache
+directory (`~/.cache/tuicr/` on Linux), readable only by you.
 
 Common errors:
 

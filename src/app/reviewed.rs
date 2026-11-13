@@ -304,13 +304,14 @@ impl App {
             });
         }
 
-        let root = snapshot_root(&pr.key);
+        let root = snapshot_root(&pr.key, &sha)
+            .map_err(|err| format!("Cannot write a {short} copy of {display_path}: {err}"))?;
         let Some(path) = snapshot_path(&root, &revision_path) else {
             return Err(format!(
                 "Cannot open {display_path}: the path escapes the snapshot directory"
             ));
         };
-        materialize(&path, &content)
+        materialize(&root, &path, &content)
             .map_err(|err| format!("Cannot write a {short} copy of {display_path}: {err}"))?;
         Ok(EditorTarget {
             path,

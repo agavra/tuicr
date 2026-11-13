@@ -1371,17 +1371,35 @@ fn malformed_target<T>(input: &str) -> Result<T> {
     )))
 }
 
-/// Append `msg` to `/tmp/tuicr-glab-debug.log` when `TUICR_GLAB_DEBUG` is set.
+/// Per-user location of the `TUICR_GLAB_DEBUG` log.
+fn glab_debug_log_path() -> Option<std::path::PathBuf> {
+    let dirs = directories::ProjectDirs::from("", "", "tuicr")?;
+    Some(dirs.cache_dir().join("glab-debug.log"))
+}
+
+/// Append `msg` to the debug log when `TUICR_GLAB_DEBUG` is set.
 /// Uses a file so the TUI doesn't swallow the output.
 fn glab_debug_log(msg: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/tuicr-glab-debug.log")
-    {
-        let _ = f.write_all(msg.as_bytes());
+    if let Some(path) = glab_debug_log_path() {
+        let _ = append_private(&path, msg);
     }
+}
+
+/// Append to `path`, creating it `0600` and refusing to follow a symlink: the
+/// log holds full API responses and comment bodies.
+fn append_private(path: &std::path::Path, msg: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)?.write_all(msg.as_bytes())
 }
 
 #[cfg(test)]
@@ -1390,6 +1408,30 @@ mod tests {
 
     use super::*;
     use crate::forge::remote_comments::RemoteReviewState;
+
+    #[cfg(unix)]
+    #[test]
+    fn append_private_creates_an_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        append_private(&path, "a\n").unwrap();
+        append_private(&path, "b\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nb\n");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_private_does_not_follow_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let path = dir.path().join("log");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(append_private(&path, "secret").is_err());
+        assert!(!target.exists());
+    }
     use crate::forge::submit::{DiffAnchor, GhSide, InlineComment, RangeAnchors};
     use crate::forge::traits::{
         CreateReviewRequest, ForgeRepository, PullRequestDetails, PullRequestListQuery,
