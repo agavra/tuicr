@@ -695,3 +695,120 @@ fn should_not_hide_a_file_whose_hunks_are_merely_all_hunk_reviewed() {
 
     assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs"]);
 }
+
+#[test]
+fn should_keep_routing_keys_to_the_open_prompt_after_focus_moves_to_the_diff() {
+    use crate::handler::handle_normal_action;
+    let mut app = app_with(&["src/main.rs", "README.md"]);
+    app.focused_panel = FocusedPanel::FileList;
+    app.begin_file_tree_prompt(FileTreePrompt::Include);
+    // A mouse click on the diff (or a tree file row) moves focus off the tree.
+    app.focused_panel = FocusedPanel::Diff;
+
+    handle_normal_action(&mut app, Action::InsertChar('x'));
+    handle_normal_action(&mut app, Action::ExitMode);
+
+    // Esc cancelled the prompt rather than hiding the sidebar.
+    assert!(!app.file_tree_prompt_editing());
+    assert!(app.show_file_list);
+}
+
+#[test]
+fn should_paste_into_the_open_file_tree_prompt() {
+    let mut app = app_with(&["src/main.rs"]);
+    app.begin_file_tree_prompt(FileTreePrompt::Include);
+
+    crate::handler::handle_paste(&mut app, "ma\nin".into());
+
+    assert_eq!(app.file_tree_draft().unwrap().buffer, "main");
+}
+
+/// Drive input the way `main.rs` does: key -> `map_normal_path_key` ->
+/// `dispatch_action`, and mouse events through `handle_mouse_event`.
+fn press(app: &mut App, code: crossterm::event::KeyCode) {
+    let key = crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE);
+    let action = crate::handler::map_normal_path_key(app, key);
+    crate::handler::dispatch_action(app, action);
+}
+
+fn mouse(app: &mut App, kind: crossterm::event::MouseEventKind, column: u16, row: u16) {
+    crate::handler::handle_mouse_event(
+        app,
+        crossterm::event::MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        },
+    );
+}
+
+/// Lay out a tree on the left and a diff on the right, with each diff row
+/// resolving to its own annotation so clicks and drags have a target.
+fn lay_out_panes(app: &mut App) {
+    use ratatui::layout::Rect;
+    app.file_list_area = Some(Rect::new(0, 0, 30, 20));
+    app.diff_area = Some(Rect::new(30, 0, 50, 20));
+    app.diff_inner_area = Some(Rect::new(31, 1, 48, 18));
+    let n = app.line_annotations.len();
+    assert!(n >= 3, "fixture needs a few annotation rows");
+    app.diff_row_to_annotation = (0..18).map(|r| r.min(n - 1)).collect();
+}
+
+#[test]
+fn should_keep_the_prompt_owning_keys_after_a_real_click_on_the_diff() {
+    use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
+    let mut app = app_with(&["src/main.rs", "README.md"]);
+    lay_out_panes(&mut app);
+    app.focused_panel = FocusedPanel::FileList;
+    app.begin_file_tree_prompt(FileTreePrompt::Include);
+
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 40, 5);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 40, 5);
+    assert_eq!(app.focused_panel, FocusedPanel::Diff, "click moved focus");
+    assert!(
+        app.file_tree_prompt_editing(),
+        "click keeps the prompt open"
+    );
+
+    // `i` is "edit comment" in the diff; with the prompt open it is text.
+    press(&mut app, KeyCode::Char('i'));
+    assert_eq!(app.file_tree_draft().unwrap().buffer, "i");
+    assert_eq!(app.input_mode, InputMode::Normal);
+
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.file_tree_prompt_editing());
+    assert!(
+        app.show_file_list,
+        "Esc cancels the prompt, not the sidebar"
+    );
+}
+
+#[test]
+fn should_not_start_a_visual_selection_when_dragging_on_the_diff_with_the_prompt_open() {
+    use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
+    let mut app = app_with(&["src/main.rs"]);
+    lay_out_panes(&mut app);
+    app.begin_file_tree_prompt(FileTreePrompt::Search);
+
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 40, 2);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 40, 3);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 40, 3);
+
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.file_tree_prompt_editing());
+    crate::handler::handle_paste(&mut app, "ma".into());
+    assert_eq!(app.file_tree_draft().unwrap().buffer, "ma");
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.file_tree_prompt_editing());
+}
+
+#[test]
+fn should_drop_bare_carriage_returns_when_pasting_into_the_prompt() {
+    let mut app = app_with(&["src/main.rs"]);
+    app.begin_file_tree_prompt(FileTreePrompt::Include);
+
+    crate::handler::handle_paste(&mut app, "ma\r\ni\rn".into());
+
+    assert_eq!(app.file_tree_draft().unwrap().buffer, "main");
+}

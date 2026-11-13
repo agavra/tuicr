@@ -484,3 +484,25 @@ fn selection_marker_follows_the_theme_and_cancel_restores_it() {
     app.apply_theme("github-dark");
     assert_eq!(app.theme.selection_marker, None);
 }
+
+#[test]
+fn should_paste_into_the_filter_draft_as_one_line() {
+    let mut app = app();
+    app.enter_theme_picker_mode();
+    handle_theme_picker_action(&mut app, Action::ThemePickerFilter);
+
+    crate::handler::handle_paste(&mut app, "da\nrk".into());
+
+    assert_eq!(app.theme_picker.draft.as_deref(), Some("dark"));
+}
+
+#[test]
+fn should_drop_carriage_returns_when_pasting_into_the_filter_draft() {
+    let mut app = app();
+    app.enter_theme_picker_mode();
+    handle_theme_picker_action(&mut app, Action::ThemePickerFilter);
+
+    crate::handler::handle_paste(&mut app, "da\r\nr\rk".into());
+
+    assert_eq!(app.theme_picker.draft.as_deref(), Some("dark"));
+}
