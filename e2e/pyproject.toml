@@ -1,9 +1,10 @@
 # Config for the repo's Python only (the e2e suite, its fake forges, scripts/demo); not a package.
 # A standalone file under e2e/ keeps the Rust root free of Python packaging metadata. Ruff does not discover it
 # for scripts/demo and ty only from its cwd, so always run them like this (see CONTRIBUTING.md#python-checks):
-#   uvx ruff@0.15.16 format --check --config e2e/pyproject.toml e2e scripts/demo
-#   uvx ruff@0.15.16 check --config e2e/pyproject.toml e2e scripts/demo
-#   (cd e2e && uvx ty@0.0.44 check . ../scripts/demo)   # ty reads [tool.ty] from the directory it runs in
+#   uvx ruff@0.15.16 format --check --config e2e/pyproject.toml e2e e2e/bin/* scripts/demo
+#   uvx ruff@0.15.16 check --config e2e/pyproject.toml e2e e2e/bin/* scripts/demo
+#   (cd e2e && uvx ty@0.0.44 check . bin/* ../scripts/demo)   # ty reads [tool.ty] from the directory it runs in
+# (e2e/bin/* are the extensionless fake-CLI shims: tools skip them unless named, hence the explicit glob)
 [tool.ruff]
 target-version = "py311"
 line-length = 120

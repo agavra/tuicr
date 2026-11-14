@@ -40,9 +40,9 @@ All Python in the repo (the e2e suite, its fake forges, `scripts/`) is linted, f
 versions are pinned to match CI (`RUFF_VERSION` / `TY_VERSION` in `.github/workflows/ci.yml`; bump both together):
 
 ```bash
-uvx ruff@0.15.16 format --check --config e2e/pyproject.toml e2e scripts/demo   # drop --check to rewrite
-uvx ruff@0.15.16 check --config e2e/pyproject.toml e2e scripts/demo           # add --fix for safe autofixes
-(cd e2e && uvx ty@0.0.44 check . ../scripts/demo)
+uvx ruff@0.15.16 format --check --config e2e/pyproject.toml e2e e2e/bin/* scripts/demo   # drop --check to rewrite
+uvx ruff@0.15.16 check --config e2e/pyproject.toml e2e e2e/bin/* scripts/demo           # add --fix for safe autofixes
+(cd e2e && uvx ty@0.0.44 check . bin/* ../scripts/demo)
 ```
 
 CI runs `format --check` in the Format job and `check` plus `ty check` in the Clippy job.

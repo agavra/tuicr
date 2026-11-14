@@ -45,9 +45,16 @@ def config() -> dict[str, Any]:
 
 def metadata(script: Path, name: str) -> str | None:
     """A module-level string constant of a scenario (QUARANTINE, EXPECTED), read without running the scenario."""
-    for node in ast.parse(script.read_text()).body:
+    try:
+        body = ast.parse(script.read_text()).body
+    except (SyntaxError, ValueError):
+        return None  # the scenario itself will fail to start and be reported FAIL; never abort the run
+    for node in body:
         if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
-            value = ast.literal_eval(node.value)
+            try:
+                value = ast.literal_eval(node.value)
+            except ValueError:
+                return None
             if isinstance(value, str):
                 return value
     return None
@@ -115,13 +122,17 @@ def main(argv: list[str]) -> int:
 
     cfg = config()
     timeout = float(os.environ.get("E2E_SCENARIO_TIMEOUT") or cfg.get("scenario_timeout", 120))
-    os.environ.setdefault("E2E_SETTLE_QUIET", str(cfg.get("settle_quiet", 0.25)))
+    os.environ["E2E_SETTLE_QUIET"] = os.environ.get("E2E_SETTLE_QUIET") or str(cfg.get("settle_quiet", 0.25))
     own_root = not os.environ.get("E2E_ROOT")
     if own_root:
         os.environ["E2E_ROOT"] = tempfile.mkdtemp(prefix="tuicr-e2e.", dir=os.environ.get("TMPDIR", "/tmp"))
     root = Path(os.environ["E2E_ROOT"])
-    socket = os.environ.setdefault("E2E_SOCKET", f"{cfg.get('socket_prefix', 'tuicr-e2e')}-{os.getpid()}")
-    out_dir = Path(os.environ.setdefault("E2E_OUT", str(root / "out")))
+    # empty counts as unset, as in run.sh
+    socket = os.environ["E2E_SOCKET"] = (
+        os.environ.get("E2E_SOCKET") or f"{cfg.get('socket_prefix', 'tuicr-e2e')}-{os.getpid()}"
+    )
+    out_dir = Path(os.environ.get("E2E_OUT") or root / "out")
+    os.environ["E2E_OUT"] = str(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     counts = dict.fromkeys(("PASS", "FAIL", "SKIP", "QPASS", "QFAIL"), 0)

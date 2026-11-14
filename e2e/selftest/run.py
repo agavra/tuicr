@@ -16,6 +16,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 from typing import IO
 
@@ -161,6 +162,37 @@ def main() -> None:
         1,
         run({**scen("scenarios"), **sub("s2"), "E2E_REQUIRE_SKIPS_ZERO": "1"}, "skip_is_reported"),
     )
+
+    print("-- a scenario with a syntax error is reported FAIL and the run continues")
+    bad_dir = root / "bad-scen"
+    (bad_dir / "d").mkdir(parents=True)
+    (bad_dir / "d/a_broken.py").write_text("def (:\n")
+    (bad_dir / "d/b_good.py").write_text(
+        "from e2e import Scenario, scenario\n\n\n@scenario\ndef main(s: Scenario) -> None:\n    pass\n"
+    )
+    bad_env = {"E2E_SCENARIO_DIR": str(bad_dir), **sub("bad")}
+    check("syntax-error run exits 1", 1, run(bad_env))
+    got = {e["name"]: e["result"] for e in json.loads((root / "bad/out/results.json").read_text())}
+    check("syntax-error scenario FAILs, later one still PASSes", {"d/a_broken": "FAIL", "d/b_good": "PASS"}, got)
+
+    print("-- empty E2E_SOCKET/E2E_OUT fall back to their defaults")
+    check(
+        "empty socket/out exit 0",
+        0,
+        run({**scen("scenarios"), **sub("e"), "E2E_SOCKET": "", "E2E_OUT": ""}, "exit_status"),
+    )
+    check("results land in <root>/out", True, (root / "e/out/results.json").is_file())
+
+    print("-- settle quiet period: TOML default and E2E_SETTLE_QUIET override reach Tui.settle")
+    toml_default = tomllib.loads((here / ".." / "pyproject.toml").read_text())["tool"]["tuicr-e2e"]["settle_quiet"]
+    settle = {**scen("scenarios-settle"), "E2E_SETTLE_QUIET": ""}  # empty = use the TOML default
+    check("settle default comes from TOML", 0, run({**settle, **sub("t1"), "SETTLE_EXPECT": str(toml_default)}))
+    check(
+        "E2E_SETTLE_QUIET overrides it",
+        0,
+        run({**settle, **sub("t2"), "E2E_SETTLE_QUIET": "0.6", "SETTLE_EXPECT": "0.6"}),
+    )
+    check("a wrong expectation fails (probe is live)", 1, run({**settle, **sub("t3"), "SETTLE_EXPECT": "0.123"}))
 
     print("-- tracked e2e/ file names must be valid on Windows")
     listing = subprocess.run(

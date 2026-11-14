@@ -32,7 +32,7 @@ jobs:
       - run: cargo fmt --all --check
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - name: Python format (ruff)
-        run: uvx ruff@${{ env.RUFF_VERSION }} format --check --config e2e/pyproject.toml e2e scripts/demo
+        run: uvx ruff@${{ env.RUFF_VERSION }} format --check --config e2e/pyproject.toml e2e e2e/bin/* scripts/demo
 
   clippy:
     name: Clippy
@@ -47,10 +47,10 @@ jobs:
       - run: cargo clippy -- -D warnings
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - name: Python lint (ruff)
-        run: uvx ruff@${{ env.RUFF_VERSION }} check --config e2e/pyproject.toml e2e scripts/demo
+        run: uvx ruff@${{ env.RUFF_VERSION }} check --config e2e/pyproject.toml e2e e2e/bin/* scripts/demo
       - name: Python types (ty)
         working-directory: e2e # ty reads [tool.ty] from its cwd
-        run: uvx ty@${{ env.TY_VERSION }} check . ../scripts/demo
+        run: uvx ty@${{ env.TY_VERSION }} check . bin/* ../scripts/demo
 
   static-linux:
     name: Static Linux binary
