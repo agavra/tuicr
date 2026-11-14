@@ -1147,7 +1147,7 @@ pub enum CommentVimPending {
 }
 
 /// One entry per line of a hunk; see `word_diff::hunk_changed_ranges`.
-pub type HunkChangedRanges = Arc<[Option<ChangedRanges>]>;
+pub(crate) type HunkChangedRanges = Arc<[Option<ChangedRanges>]>;
 
 pub struct App {
     pub theme: Theme,
@@ -1482,7 +1482,7 @@ pub struct App {
     /// from and is ignored once that no longer matches. It is not cleared by
     /// `rebuild_annotations`: renderers call that mid-frame on a width change
     /// (`sync_viewport_width`), which would drop the ranges for that frame.
-    pub word_diff_ranges: HashMap<(usize, usize), (u64, HunkChangedRanges)>,
+    pub(crate) word_diff_ranges: HashMap<(usize, usize), (u64, HunkChangedRanges)>,
     /// Output to stdout instead of clipboard when exporting
     pub output_to_stdout: bool,
     /// Pending output to print to stdout after TUI exits
