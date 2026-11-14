@@ -48,8 +48,8 @@ mod path_codec {
         }
         #[cfg(unix)]
         {
-            use std::os::unix::ffi::OsStrExt;
             use std::fmt::Write;
+            use std::os::unix::ffi::OsStrExt;
             let mut out = String::from(TAG);
             for b in path.as_os_str().as_bytes() {
                 let _ = write!(out, "{b:02x}");
@@ -67,7 +67,10 @@ mod path_codec {
         if let Some(hex) = s.strip_prefix(TAG) {
             use std::os::unix::ffi::OsStringExt;
             let bytes: Option<Vec<u8>> = (0..hex.len() / 2)
-                .map(|i| hex.get(2 * i..2 * i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+                .map(|i| {
+                    hex.get(2 * i..2 * i + 2)
+                        .and_then(|h| u8::from_str_radix(h, 16).ok())
+                })
                 .collect();
             if let Some(bytes) = bytes {
                 return PathBuf::from(std::ffi::OsString::from_vec(bytes));
