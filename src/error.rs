@@ -23,6 +23,12 @@ pub enum TuicrError {
     #[error("Review session corrupted: {0}")]
     CorruptedSession(String),
 
+    /// The session file a cached path or `SessionRef` pointed at is no longer
+    /// the one identity resolution picks (another file appeared). Nothing was
+    /// written; reload the session.
+    #[error("Review session target changed: {0}")]
+    SessionTargetChanged(String),
+
     #[error("Clipboard error: {0}")]
     Clipboard(String),
 

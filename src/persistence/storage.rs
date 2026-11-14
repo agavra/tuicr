@@ -37,7 +37,9 @@ use crate::model::review::SessionDiffSource;
 use crate::persistence::manifest::{
     self, MANIFEST_FILENAME, ManifestEntry, ManifestKind, SESSIONS_DIRNAME,
 };
-use crate::slug::{self, RepoCoordinate, Slug};
+use crate::slug::{
+    self, PrSlug, RepoCoordinate, Slug, default_host, forge_code, normalized_host, same_pr_identity,
+};
 
 const STORAGE_LOCK_FILENAME: &str = ".tuicr.lock";
 const STORAGE_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -66,23 +68,40 @@ pub(crate) fn save_session_in_dir(session: &ReviewSession, reviews_dir: &Path) -
     })
 }
 
-pub(crate) fn reindex_session(session: &ReviewSession) -> Result<()> {
+/// Re-register the session file at `path` in the manifest (used when the file
+/// exists but its manifest entry may be missing). `path` must be one of the
+/// files this session's identity resolves to.
+pub(crate) fn reindex_session(session: &ReviewSession, path: &Path) -> Result<()> {
     let reviews_dir = get_reviews_dir()?;
     maybe_migrate(&reviews_dir)?;
     with_reviews_dir_lock(&reviews_dir, || {
-        let slug = slug_for_session(session)?;
-        let relative = relative_path_for_slug(&slug, session)?;
-        let full_path = reviews_dir.join(&relative);
+        let target = match session.pr_session_key.as_ref() {
+            Some(key) => pr_target_for_path(&reviews_dir, key, path).ok_or_else(|| {
+                TuicrError::SessionTargetChanged(format!(
+                    "{} is not this review's session file",
+                    path.display()
+                ))
+            })?,
+            None => target_for_session(session, &reviews_dir)?,
+        };
+        let full_path = reviews_dir.join(&target.relative);
         if !full_path.is_file() {
             return Err(TuicrError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("session file not found: {}", full_path.display()),
             )));
         }
-        upsert_session_manifest(session, &reviews_dir, &slug, relative)
+        if let Some(key) = session.pr_session_key.as_ref() {
+            verify_occupant(&full_path, key)?;
+        }
+        upsert_session_manifest(session, &reviews_dir, &target)
     })
 }
 
+/// Update the session behind `session_ref`. A PR session is written back to
+/// the verified ref path or not at all: when identity resolution now names a
+/// different file, this returns [`TuicrError::SessionTargetChanged`] and
+/// writes nothing.
 pub(crate) fn update_session_in_dir<T>(
     session_ref: &Path,
     reviews_dir: &Path,
@@ -92,22 +111,28 @@ pub(crate) fn update_session_in_dir<T>(
     with_reviews_dir_lock(reviews_dir, || {
         let mut session = load_session(session_ref)?;
         let output = update(&mut session)?;
-        save_session_in_dir_unlocked(&session, reviews_dir)?;
+        save_session_at_unlocked(&session, reviews_dir, Some(session_ref))?;
         Ok((session, output))
     })
 }
 
+/// Load-merge-save keyed by session identity. `cached` is the path the caller
+/// already holds for this session; when it exists but identity resolution now
+/// names another file, the save fails with
+/// [`TuicrError::SessionTargetChanged`] instead of silently switching files.
 pub(crate) fn save_session_by_identity<T>(
     identity: &ReviewSession,
+    cached: Option<&Path>,
     update: impl FnOnce(Option<ReviewSession>) -> Result<(ReviewSession, T)>,
 ) -> Result<(PathBuf, ReviewSession, T)> {
     let reviews_dir = get_reviews_dir()?;
-    save_session_by_identity_in_dir(identity, &reviews_dir, update)
+    save_session_by_identity_in_dir(identity, &reviews_dir, cached, update)
 }
 
 pub(crate) fn save_session_by_identity_in_dir<T>(
     identity: &ReviewSession,
     reviews_dir: &Path,
+    cached: Option<&Path>,
     update: impl FnOnce(Option<ReviewSession>) -> Result<(ReviewSession, T)>,
 ) -> Result<(PathBuf, ReviewSession, T)> {
     maybe_migrate(reviews_dir)?;
@@ -119,7 +144,7 @@ pub(crate) fn save_session_by_identity_in_dir<T>(
             None
         };
         let (session, output) = update(persisted)?;
-        let saved_path = save_session_in_dir_unlocked(&session, reviews_dir)?;
+        let saved_path = save_session_at_unlocked(&session, reviews_dir, cached)?;
         Ok((saved_path, session, output))
     })
 }
@@ -130,9 +155,19 @@ pub(crate) fn session_path(session: &ReviewSession) -> Result<PathBuf> {
 }
 
 pub(crate) fn session_path_in_dir(session: &ReviewSession, reviews_dir: &Path) -> Result<PathBuf> {
-    let slug = slug_for_session(session)?;
-    let relative = relative_path_for_slug(&slug, session)?;
-    Ok(reviews_dir.join(relative))
+    Ok(reviews_dir.join(target_for_session(session, reviews_dir)?.relative))
+}
+
+/// The slug tuicr announces for a session (startup marker, registry). For a
+/// PR session it is derived from the key: unqualified on the forge's default
+/// host, `@<host>` elsewhere. That is also the marker a legacy session of a
+/// non-default host needs, because its hostless manifest key must never be
+/// reachable by a hostless selector (see [`pr_session_path_in_dir`]).
+pub(crate) fn session_marker_slug(session: &ReviewSession) -> Result<String> {
+    match session.pr_session_key.as_ref() {
+        Some(key) => Ok(Slug::from(key).to_string()),
+        None => Ok(slug_for_session(session)?.to_string()),
+    }
 }
 
 pub(crate) fn delete_session_if_empty(path: &Path) -> Result<bool> {
@@ -177,7 +212,7 @@ fn delete_session_if_empty_unlocked(path: &Path, reviews_dir: &Path) -> Result<b
     if session.has_comments() || session.has_reviewed_state() {
         return Ok(false);
     }
-    remove_session_at(path, reviews_dir, &session)?;
+    remove_session_at(path, reviews_dir)?;
     Ok(true)
 }
 
@@ -252,8 +287,8 @@ fn delete_session_unlocked(path: &Path, reviews_dir: &Path) -> Result<bool> {
         prune_manifest_path(reviews_dir, path)?;
         return Ok(false);
     }
-    let session = load_session(path)?;
-    remove_session_at(path, reviews_dir, &session)?;
+    load_session(path)?;
+    remove_session_at(path, reviews_dir)?;
     Ok(true)
 }
 
@@ -281,23 +316,11 @@ fn manifest_relative_path(path: &Path, reviews_dir: &Path) -> PathBuf {
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Remove `path` and prune its manifest entry. The caller must already hold
-/// the reviews-dir lock and have loaded `session` from `path`.
-fn remove_session_at(path: &Path, reviews_dir: &Path, session: &ReviewSession) -> Result<()> {
-    let slug = slug_for_session(session)?.to_string();
-    let relative = manifest_relative_path(path, reviews_dir);
-
-    let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
-    if let Some(bucket) = manifest.entries.get_mut(&slug) {
-        bucket.retain(|entry| entry.path != relative);
-        if bucket.is_empty() {
-            manifest.entries.remove(&slug);
-        }
-        manifest::save_manifest(reviews_dir, &manifest)?;
-    }
-
+/// Remove `path` and prune its manifest entries (whichever bucket holds
+/// them). The caller must already hold the reviews-dir lock.
+fn remove_session_at(path: &Path, reviews_dir: &Path) -> Result<()> {
+    prune_manifest_path(reviews_dir, path)?;
     fs::remove_file(path)?;
-
     Ok(())
 }
 
@@ -312,7 +335,7 @@ pub(crate) fn mark_session_active_in_dir(
     reviews_dir: &Path,
 ) -> Result<()> {
     maybe_migrate(reviews_dir)?;
-    let slug = slug_for_session(session)?.to_string();
+    let slug = session_marker_slug(session)?;
     let path = normalize_active_path(path);
     with_reviews_dir_lock(reviews_dir, || {
         let mut active = load_active_sessions_unlocked(reviews_dir).unwrap_or_default();
@@ -447,9 +470,25 @@ pub(crate) fn normalize_path_for_comparison(path: &Path) -> PathBuf {
 }
 
 fn save_session_in_dir_unlocked(session: &ReviewSession, reviews_dir: &Path) -> Result<PathBuf> {
-    let slug = slug_for_session(session)?;
-    let relative = relative_path_for_slug(&slug, session)?;
-    let full_path = reviews_dir.join(&relative);
+    save_session_at_unlocked(session, reviews_dir, None)
+}
+
+fn save_session_at_unlocked(
+    session: &ReviewSession,
+    reviews_dir: &Path,
+    cached: Option<&Path>,
+) -> Result<PathBuf> {
+    let target = target_for_session(session, reviews_dir)?;
+    let full_path = reviews_dir.join(&target.relative);
+
+    if let Some(key) = session.pr_session_key.as_ref() {
+        ensure_cached_target(cached, &full_path)?;
+        // Never overwrite a file that holds anything but this very session
+        // (a hash collision or a corrupt file fails closed).
+        if path_exists(&full_path)? {
+            verify_occupant(&full_path, key)?;
+        }
+    }
 
     if let Some(parent) = full_path.parent() {
         fs::create_dir_all(parent)?;
@@ -457,7 +496,7 @@ fn save_session_in_dir_unlocked(session: &ReviewSession, reviews_dir: &Path) -> 
     let json = serde_json::to_string_pretty(session)?;
     write_atomic(&full_path, json.as_bytes())?;
 
-    upsert_session_manifest(session, reviews_dir, &slug, relative)?;
+    upsert_session_manifest(session, reviews_dir, &target)?;
 
     Ok(full_path)
 }
@@ -465,13 +504,15 @@ fn save_session_in_dir_unlocked(session: &ReviewSession, reviews_dir: &Path) -> 
 fn upsert_session_manifest(
     session: &ReviewSession,
     reviews_dir: &Path,
-    slug: &Slug,
-    relative: PathBuf,
+    target: &SessionTarget,
 ) -> Result<()> {
     let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
-    let anchor = manifest_anchor_for(slug);
-    let entry = manifest::entry_from_session(session, relative, anchor);
-    manifest.upsert(slug.to_string(), entry);
+    let mut entry =
+        manifest::entry_from_session(session, target.relative.clone(), target.anchor.clone());
+    if let ManifestKind::Pr { host, .. } = &mut entry.kind {
+        host.clone_from(&target.host);
+    }
+    manifest.upsert(target.manifest_slug.clone(), entry);
     manifest::save_manifest(reviews_dir, &manifest)
 }
 
@@ -726,61 +767,145 @@ pub(crate) fn list_all_sessions_in_dir(reviews_dir: &Path) -> Result<Vec<(String
 /// Returns `None` when no PR entry exists for the slug. Unlike
 /// [`load_pr_session`], the caller does not need to know the head SHA: the
 /// manifest holds a single entry per PR slug (the current head's session).
+///
+/// A hostless slug reaches only sessions of the forge's default host; an
+/// `@host` slug reaches that host's sessions. Legacy hostless entries are
+/// trusted only after the file's own host matches (head is not compared).
 pub(crate) fn pr_session_path_in_dir(reviews_dir: &Path, slug: &str) -> Result<Option<PathBuf>> {
     maybe_migrate(reviews_dir)?;
 
-    let manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
-    Ok(manifest
-        .get_pr(slug)
-        .map(|entry| reviews_dir.join(&entry.path)))
+    let Ok(Slug::Pr(slug)) = slug.parse::<Slug>() else {
+        return Ok(None);
+    };
+    let Some(host) = slug
+        .host
+        .clone()
+        .or_else(|| default_host(slug.forge).map(str::to_string))
+    else {
+        return Ok(None);
+    };
+    let found = find_pr_session(
+        reviews_dir,
+        &slug,
+        &host,
+        |_head| true,
+        |found| {
+            found.repository.kind == slug.forge
+                && found.repository.owner == slug.owner
+                && found.repository.name == slug.repo
+                && found.number == slug.number
+                && normalized_host(&found.repository.host) == host
+        },
+    )?;
+    Ok(found.map(|(path, _)| path))
 }
 
 /// Look up the persisted PR session for a key. Returns `None` if no entry
 /// exists for the slug, or if the manifest's current head differs from the
 /// requested head (the old head's file may still be on disk but is not
-/// surfaced).
+/// surfaced). When the manifest has no usable entry, the session file the
+/// key resolves to is loaded directly (crash between file write and manifest
+/// upsert) and re-indexed.
 pub fn load_pr_session(key: &PrSessionKey) -> Result<Option<(PathBuf, ReviewSession)>> {
-    load_manifest_pr_session(key, |head_sha| head_sha == key.head_sha)
+    let reviews_dir = get_reviews_dir()?;
+    maybe_migrate(&reviews_dir)?;
+    if let Some(found) = load_manifest_pr_session(&reviews_dir, key, |head| head == key.head_sha)? {
+        return Ok(Some(found));
+    }
+    with_reviews_dir_lock(&reviews_dir, || {
+        let target = resolve_pr_target(&reviews_dir, key)?;
+        let full_path = reviews_dir.join(&target.relative);
+        if !path_exists(&full_path)? {
+            return Ok(None);
+        }
+        let session = load_session(&full_path).map_err(|e| {
+            TuicrError::CorruptedSession(format!(
+                "failed to load PR session {}: {e}",
+                full_path.display()
+            ))
+        })?;
+        if !same_full_key(session.pr_session_key.as_ref(), key) {
+            return Ok(None);
+        }
+        upsert_session_manifest(&session, &reviews_dir, &target)?;
+        Ok(Some((full_path, session)))
+    })
 }
 
 /// Look up the persisted session this PR was last reviewed at when that was
 /// a different head (the PR was pushed to or rebased since). Returns `None`
 /// if no entry exists for the slug, the entry is already at `key`'s head, or
-/// it belongs to another repository or PR: slugs leave out the host, so the
-/// same `owner/repo#N` on two hosts shares an entry.
+/// it belongs to another repository, host or PR.
 pub fn load_previous_head_pr_session(key: &PrSessionKey) -> Result<Option<ReviewSession>> {
+    let reviews_dir = get_reviews_dir()?;
+    maybe_migrate(&reviews_dir)?;
     Ok(
-        load_manifest_pr_session(key, |head_sha| head_sha != key.head_sha)?
-            .map(|(_path, session)| session)
-            .filter(|session| {
-                session.pr_session_key.as_ref().is_some_and(|previous| {
-                    previous.repository == key.repository && previous.number == key.number
-                })
-            }),
+        load_manifest_pr_session(&reviews_dir, key, |head| head != key.head_sha)?
+            .map(|(_path, session)| session),
     )
 }
 
 fn load_manifest_pr_session(
+    reviews_dir: &Path,
     key: &PrSessionKey,
     head_matches: impl Fn(&str) -> bool,
 ) -> Result<Option<(PathBuf, ReviewSession)>> {
-    let reviews_dir = get_reviews_dir()?;
-    maybe_migrate(&reviews_dir)?;
-
-    let slug: Slug = key.into();
-    let manifest = manifest::load_manifest(&reviews_dir).unwrap_or_default();
-    let Some(entry) = manifest.get_pr(&slug.to_string()) else {
+    let Slug::Pr(slug) = Slug::from(key) else {
         return Ok(None);
     };
+    find_pr_session(
+        reviews_dir,
+        &slug,
+        &normalized_host(&key.repository.host),
+        head_matches,
+        |found| same_pr_identity(found, key),
+    )
+}
 
-    match &entry.kind {
-        ManifestKind::Pr { head_sha, .. } if head_matches(head_sha) => {
-            let full_path = reviews_dir.join(&entry.path);
-            let session = load_session(&full_path)?;
-            Ok(Some((full_path, session)))
-        }
-        _ => Ok(None),
+/// Walk the manifest candidates for `slug` and host `host` (explicit host
+/// entries first, legacy hostless entries after) and return the first whose
+/// file passes `identity`. Legacy files are read through
+/// [`read_legacy_holder`]: a corrupt one is skipped, an I/O error propagates.
+fn find_pr_session(
+    reviews_dir: &Path,
+    slug: &PrSlug,
+    host: &str,
+    head_matches: impl Fn(&str) -> bool,
+    identity: impl Fn(&PrSessionKey) -> bool,
+) -> Result<Option<(PathBuf, ReviewSession)>> {
+    let manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
+    let qualified = slug.to_string();
+    let hostless = slug.hostless().to_string();
+    let mut buckets = vec![qualified.as_str()];
+    if hostless != qualified {
+        buckets.push(hostless.as_str());
     }
+    for entry in manifest.pr_candidates(&buckets, Some(host)) {
+        let ManifestKind::Pr {
+            head_sha,
+            host: entry_host,
+            ..
+        } = &entry.kind
+        else {
+            continue;
+        };
+        if !head_matches(head_sha) {
+            continue;
+        }
+        let full_path = reviews_dir.join(&entry.path);
+        let session = if entry_host.is_some() {
+            load_session(&full_path)?
+        } else {
+            match read_legacy_holder(&full_path)? {
+                Some(session) => session,
+                None => continue,
+            }
+        };
+        if session.pr_session_key.as_ref().is_some_and(&identity) {
+            return Ok(Some((full_path, session)));
+        }
+    }
+    Ok(None)
 }
 
 /// Derive the slug for a session from its embedded fields. Local sessions
@@ -894,46 +1019,185 @@ fn maybe_migrate(reviews_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Compute the relative path of a session's JSON file under `reviews/`.
+/// Compute the relative path of a local session's JSON file under `reviews/`.
 ///
 /// Files live in a single flat `sessions/` directory; their name is the FNV-1a
-/// hash of identity-defining inputs, so the same logical session always lands
-/// at the same path and no manifest lookup is needed to construct it:
-///
-/// - **Local**: hash of `slug || canonical_repo_path`. Two checkouts of the
-///   same repo produce distinct hashes because their canonical paths differ.
-/// - **PR**: hash of `slug || head_sha`. A new head produces a new file.
-fn relative_path_for_slug(slug: &Slug, session: &ReviewSession) -> Result<PathBuf> {
+/// hash of `slug || canonical_repo_path`, so the same logical session always
+/// lands at the same path and no manifest lookup is needed to construct it.
+/// Two checkouts of the same repo produce distinct hashes because their
+/// canonical paths differ. PR sessions use [`resolve_pr_target`] instead.
+fn relative_path_for_local(slug: &Slug, session: &ReviewSession) -> PathBuf {
     let mut hasher = Fnv1aHasher::new();
-    match slug {
-        Slug::Local(_) => {
-            hasher.write(b"local|");
-            hasher.write(slug.to_string().as_bytes());
-            hasher.write(b"|");
-            let canonical =
-                fs::canonicalize(&session.repo_path).unwrap_or_else(|_| session.repo_path.clone());
-            let normalized = canonical.to_string_lossy().to_string();
-            let normalized = if cfg!(windows) {
-                normalized.to_lowercase()
-            } else {
-                normalized
-            };
-            hasher.write(normalized.as_bytes());
-        }
-        Slug::Pr(_) => {
-            let key = session.pr_session_key.as_ref().ok_or_else(|| {
-                TuicrError::CorruptedSession(
-                    "PR slug requires session.pr_session_key to be populated".to_string(),
-                )
-            })?;
-            hasher.write(b"pr|");
-            hasher.write(slug.to_string().as_bytes());
-            hasher.write(b"|");
-            hasher.write(key.head_sha.as_bytes());
-        }
-    }
+    hasher.write(b"local|");
+    hasher.write(slug.to_string().as_bytes());
+    hasher.write(b"|");
+    let canonical =
+        fs::canonicalize(&session.repo_path).unwrap_or_else(|_| session.repo_path.clone());
+    let normalized = canonical.to_string_lossy().to_string();
+    let normalized = if cfg!(windows) {
+        normalized.to_lowercase()
+    } else {
+        normalized
+    };
+    hasher.write(normalized.as_bytes());
+    hashed_session_path(hasher)
+}
+
+fn hashed_session_path(hasher: Fnv1aHasher) -> PathBuf {
     let hex = format!("{:016x}", hasher.finish());
-    Ok(PathBuf::from(SESSIONS_DIRNAME).join(format!("{hex}.json")))
+    PathBuf::from(SESSIONS_DIRNAME).join(format!("{hex}.json"))
+}
+
+/// Where a session lives and how it is indexed.
+#[derive(Debug, Clone)]
+pub(crate) struct SessionTarget {
+    /// File path relative to the reviews dir.
+    pub(crate) relative: PathBuf,
+    pub(crate) manifest_slug: String,
+    pub(crate) anchor: String,
+    /// Manifest `host` field (`None` for local and legacy sessions).
+    pub(crate) host: Option<String>,
+}
+
+fn target_for_session(session: &ReviewSession, reviews_dir: &Path) -> Result<SessionTarget> {
+    if let Some(key) = session.pr_session_key.as_ref() {
+        return resolve_pr_target(reviews_dir, key);
+    }
+    let slug = slug_for_session(session)?;
+    Ok(SessionTarget {
+        relative: relative_path_for_local(&slug, session),
+        manifest_slug: slug.to_string(),
+        anchor: manifest_anchor_for(&slug),
+        host: None,
+    })
+}
+
+/// New (host-aware) file for a PR key: `pr2|<forge>|<host>|<owner>/<repo>|<n>|<head>`.
+fn new_pr_target(key: &PrSessionKey) -> SessionTarget {
+    let host = normalized_host(&key.repository.host);
+    let mut hasher = Fnv1aHasher::new();
+    let input = format!(
+        "pr2|{}|{}|{}/{}|{}|{}",
+        forge_code(key.repository.kind),
+        host,
+        key.repository.owner,
+        key.repository.name,
+        key.number,
+        key.head_sha
+    );
+    hasher.write(input.as_bytes());
+    let slug = Slug::from(key);
+    SessionTarget {
+        relative: hashed_session_path(hasher),
+        manifest_slug: slug.to_string(),
+        anchor: manifest_anchor_for(&slug),
+        host: Some(host),
+    }
+}
+
+/// Legacy (hostless) file for a PR key: `pr|<hostless slug>|<head>`. Kept
+/// bit-for-bit so existing sessions are found where they always were.
+pub(crate) fn legacy_pr_target(key: &PrSessionKey) -> SessionTarget {
+    let Slug::Pr(slug) = Slug::from(key) else {
+        unreachable!("a PR key always derives a PR slug")
+    };
+    let hostless = slug.hostless().to_string();
+    let mut hasher = Fnv1aHasher::new();
+    hasher.write(b"pr|");
+    hasher.write(hostless.as_bytes());
+    hasher.write(b"|");
+    hasher.write(key.head_sha.as_bytes());
+    SessionTarget {
+        relative: hashed_session_path(hasher),
+        manifest_slug: hostless,
+        anchor: format!("pr/{}", key.number),
+        host: None,
+    }
+}
+
+/// The one reader of legacy files. A missing file or one that does not parse
+/// as a session holds nothing of ours (`None`): never modified, never deleted,
+/// the new file is used. Any other I/O error propagates, so a transient
+/// failure cannot fork the session into a second file.
+fn read_legacy_holder(path: &Path) -> Result<Option<ReviewSession>> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(TuicrError::Io(e)),
+    };
+    Ok(serde_json::from_str::<ReviewSession>(&contents).ok())
+}
+
+fn path_exists(path: &Path) -> Result<bool> {
+    match fs::metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(TuicrError::Io(e)),
+    }
+}
+
+/// Full key equality: identity (normalized host) plus head.
+fn same_full_key(found: Option<&PrSessionKey>, key: &PrSessionKey) -> bool {
+    found.is_some_and(|found| same_pr_identity(found, key) && found.head_sha == key.head_sha)
+}
+
+/// The only place deciding which file holds a PR session. The new
+/// host-aware file wins when present; otherwise a readable legacy file with
+/// an equal key keeps being used (same path, same manifest slug); otherwise
+/// the new file is created. Legacy bytes are never touched by this choice.
+fn resolve_pr_target(reviews_dir: &Path, key: &PrSessionKey) -> Result<SessionTarget> {
+    let new = new_pr_target(key);
+    if path_exists(&reviews_dir.join(&new.relative))? {
+        return Ok(new);
+    }
+    let legacy = legacy_pr_target(key);
+    match read_legacy_holder(&reviews_dir.join(&legacy.relative))? {
+        Some(holder) if same_full_key(holder.pr_session_key.as_ref(), key) => Ok(legacy),
+        _ => Ok(new),
+    }
+}
+
+/// The identity tuple of the file at `path`, when it is one of the two files
+/// `key` can live in. Pure (no I/O beyond canonicalizing).
+fn pr_target_for_path(
+    reviews_dir: &Path,
+    key: &PrSessionKey,
+    path: &Path,
+) -> Option<SessionTarget> {
+    [new_pr_target(key), legacy_pr_target(key)]
+        .into_iter()
+        .find(|target| same_file(&reviews_dir.join(&target.relative), path))
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    a == b || normalize_active_path(a) == normalize_active_path(b)
+}
+
+/// The existing file at `path` must hold exactly this session.
+fn verify_occupant(path: &Path, key: &PrSessionKey) -> Result<()> {
+    let occupant = load_session(path)?;
+    if same_full_key(occupant.pr_session_key.as_ref(), key) {
+        Ok(())
+    } else {
+        Err(TuicrError::CorruptedSession(format!(
+            "{} holds a different review session",
+            path.display()
+        )))
+    }
+}
+
+/// A cached path that exists must still be the file resolution names.
+fn ensure_cached_target(cached: Option<&Path>, resolved: &Path) -> Result<()> {
+    match cached {
+        Some(cached) if path_exists(cached)? && !same_file(cached, resolved) => {
+            Err(TuicrError::SessionTargetChanged(format!(
+                "{} is now stored at {}",
+                cached.display(),
+                resolved.display()
+            )))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn manifest_anchor_for(slug: &Slug) -> String {
@@ -949,6 +1213,9 @@ pub(crate) fn manifest_path_for(reviews_dir: &Path) -> PathBuf {
 }
 
 // ---------- Tests ----------
+
+#[cfg(test)]
+mod pr_identity_tests;
 
 #[cfg(test)]
 mod tests {

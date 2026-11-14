@@ -169,7 +169,9 @@ tuicr-summary: reviewed 3/3 files, 2 comments added
 `tuicr-session:` is printed once at startup, before the alternate screen is
 entered, and names the session slug. Pass it straight to
 `tuicr review comments --session <slug>` to read comments while the TUI is
-still open, or after it exits. `tuicr-summary:` is printed on exit, always —
+still open, or after it exits. A PR session on a forge's default host is
+`gh:owner/repo/pr/N`; on any other host (and always for Gerrit) the slug ends
+in `@<host>`, e.g. `gh:owner/repo/pr/N@ghe.example.com`. `tuicr-summary:` is printed on exit, always —
 including with zero comments, so a watcher can tell "reviewed everything, found
 nothing" apart from "quit without looking".
 
