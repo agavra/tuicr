@@ -4,7 +4,7 @@ set -euo pipefail
 # paths with # ? % and a Unix backslash must reach the forge intact. Before, the REST
 # contents URL carried them raw (`#`/`?` cut the URL, `\` was rewritten to `/`), so the file could not be
 # fetched and the end-of-file/expand rows were wrong.
-n=$(e2e_name); sc_pr_open $n paths
+n=$(e2e_name); sc_pr_open $n special_char_paths
 e2e_wait_for $n 'a\?b%\.cs|C#' 10
 e2e_wait_forge_log 'contents/src/a%5Cb\.rs' 10; e2e_wait_forge_log 'contents/src/C%23/a%3Fb%25\.cs' 10
 log=$(e2e_forge_log)

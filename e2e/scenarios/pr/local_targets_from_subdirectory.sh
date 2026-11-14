@@ -10,7 +10,7 @@ e2e_wait_for $n 'Unstaged changes'; e2e_keys $n Enter; e2e_wait_for $n 'unstaged
 sc_cursor_on $n 'unstaged line'; e2e_keys $n c; e2e_wait_for $n COMMENT; e2e_keys $n -l 'root-session-comment'; e2e_keys $n Enter; e2e_wait_for $n 'root-session-comment'
 sc_save $n; sc_cmd $n 'q!'; e2e_wait_exit $n
 # 2. PR from src/, then the Sessions tab
-E2E_KEEP=1 E2E_ENV="E2E_VARIANT=rich" E2E_CWD=$d/repo/src e2e_start $n "$TUICR_BIN" --no-update-check pr 1
+E2E_KEEP=1 E2E_ENV="E2E_VARIANT=threads_and_commits" E2E_CWD=$d/repo/src e2e_start $n "$TUICR_BIN" --no-update-check pr 1
 e2e_wait_for $n 'PR Description' 20
 sc_cmd $n commits; e2e_wait_for $n 'Unstaged changes'
 e2e_keys $n Tab; e2e_keys $n Tab

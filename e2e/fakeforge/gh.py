@@ -85,6 +85,11 @@ def pr_view(f):
     f.out(json.dumps(body) + "\n")
 
 
+def fixture_name(rel):
+    """Fixture files are stored under Windows-safe names: `\\` -> _BACKSLASH_, `?` -> _QUESTION_ (see e2e/selftest/run.sh)."""
+    return rel.replace("\\", "_BACKSLASH_").replace("?", "_QUESTION_")
+
+
 def graphql(f, fields):
     q = fields.get("query", "")
     if "committedDate" in q:
@@ -96,7 +101,7 @@ def graphql(f, fields):
         for k, v in fields.items():
             m = re.fullmatch(r"e(\d+)", k)
             if m:
-                p = os.path.join(f.data_dir, "contents", v.split(":", 1)[1])
+                p = os.path.join(f.data_dir, "contents", fixture_name(v.split(":", 1)[1]))
                 repo[f"f{m.group(1)}"] = {"text": open(p).read(), "isTruncated": False} if os.path.exists(p) else None
         f.out(json.dumps({"data": {"repository": repo}}) + "\n")
     if "reviewThreads" in q:
@@ -134,5 +139,5 @@ def rest(f, endpoint):
             f.serve(rel)
         f.serve("pr_diff.patch" if diff_req else "compare.json")
     if base.startswith("contents/"):
-        f.serve("contents/" + urllib.parse.unquote(base[len("contents/"):]))
+        f.serve("contents/" + fixture_name(urllib.parse.unquote(base[len("contents/"):])))
     f.unexpected("unrecognised REST endpoint " + path)

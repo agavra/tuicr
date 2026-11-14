@@ -7,8 +7,8 @@ sc_forge_open() {
   E2E_ENV="${3:+E2E_VARIANT=$3 }${E2E_ENV:-}" E2E_CWD="$d/repo" e2e_start "$n" "$TUICR_BIN" --no-update-check pr 1
   e2e_wait_for "$n" 'PR Description|Merge Request|!1' 20
 }
-# sc_pr_open <name> [variant]: GitHub PR #1 via fake gh with fixture variant (data/github/<variant>/, default: rich).
-sc_pr_open() { sc_forge_open "$1" https://github.com/octo/demo.git "${2:-rich}"; }
+# sc_pr_open <name> [variant]: GitHub PR #1 via fake gh with fixture variant (data/github/<variant>/, default: threads_and_commits).
+sc_pr_open() { sc_forge_open "$1" https://github.com/octo/demo.git "${2:-threads_and_commits}"; }
 # sc_posts <name>: print the stdin payload of every review POST in the fake-gh log, one JSON per line.
 sc_posts() {
   python3 - "$E2E_FORGE_LOG" <<'PY'
@@ -46,7 +46,7 @@ sc_pr_comment() {
 sc_pr_editor_snapshot() {
   local n=$1 url=${2:-https://github.com/octo/demo.git}; d=$(e2e_dir "$n"); mkdir -p "$d"; rm -f "$d/editor.argv"
   cp "$E2E_DIR/data/fake_editor.py" "$d/editor.sh"; chmod +x "$d/editor.sh"
-  E2E_ENV="EDITOR=$d/editor.sh" sc_forge_open "$n" "$url" rich
+  E2E_ENV="EDITOR=$d/editor.sh" sc_forge_open "$n" "$url" threads_and_commits
   e2e_keys "$n" '}'; sc_cursor_on "$n" '1[╭ ]▌ pub fn greet'
   e2e_keys "$n" e
   e2e_wait_file "$d/editor.argv" 10 || { echo "fake editor was not run"; e2e_screen "$n"; return 1; }

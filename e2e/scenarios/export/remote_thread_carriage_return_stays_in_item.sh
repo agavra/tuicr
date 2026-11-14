@@ -5,7 +5,7 @@ set -euo pipefail
 # exported markdown (forged top-level `1. **[ISSUE]**` / `## Local tuicr Comments`). Baseline wrote the body raw (CRs kept).
 n=$(e2e_name); d=$(e2e_dir $n); mkdir -p $d; fx_pr_repo $d/repo
 out=$d/stdout.txt; err=$d/stderr.txt; rm -f $out $err
-E2E_ENV="E2E_VARIANT=crbody" E2E_CWD=$d/repo e2e_start $n sh -c "exec '$TUICR_BIN' --no-update-check --stdout pr 1 >'$out' 2>'$err'"
+E2E_ENV="E2E_VARIANT=carriage_return_body" E2E_CWD=$d/repo e2e_start $n sh -c "exec '$TUICR_BIN' --no-update-check --stdout pr 1 >'$out' 2>'$err'"
 e2e_wait_for $n 'PR Description' 20
 e2e_wait_for $n 'first line'
 sc_cmd $n clip

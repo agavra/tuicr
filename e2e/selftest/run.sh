@@ -40,5 +40,13 @@ check "a skip alone exits 0" 0 "$?"
 E2E_REQUIRE_SKIPS_ZERO=1 E2E_ROOT="$root/s2" E2E_OUT="$root/s2/out" E2E_SCENARIO_DIR="$here/scenarios" E2E_QUARANTINE_FILE="$here/quarantine.tsv" "$here/../run.sh" skip_is_reported >/dev/null 2>&1
 check "a skip with E2E_REQUIRE_SKIPS_ZERO=1 exits 1" 1 "$?"
 
+echo "-- tracked e2e/ file names must be valid on Windows"
+bad=$(git -C "$here/.." ls-files -z -- . | python3 -c '
+import re, sys
+for p in sys.stdin.read().split("\0"):
+    if any(re.search(r"[<>:\"\\|?*\x00-\x1f]|[. ]$", part) for part in p.split("/")):
+        print(p)')
+if [ -z "$bad" ]; then echo "ok   no tracked e2e/ name has Windows-invalid characters"; else echo "FAIL Windows-invalid file names:"; echo "$bad"; fail=1; fi
+
 [ $fail -eq 0 ] && echo "selftest: all checks passed" || echo "selftest: FAILED"
 exit $fail
