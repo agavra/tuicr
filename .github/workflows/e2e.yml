@@ -1,0 +1,75 @@
+# End-to-end suite (see e2e/README.md): drives the real binary in tmux against fake forges.
+# Needs no secrets, display server or forge access.
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  JJ_VERSION: 0.47.0
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the installer scenario reads install.sh from the site branch
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux python3 git mercurial locales
+          sudo locale-gen en_US.UTF-8
+      - name: Tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tmux mercurial
+      - name: Jujutsu
+        # Linux: the musl release binary panics on startup in some environments (pest stack check), so build the gnu one.
+        run: |
+          mkdir -p "$RUNNER_TEMP/jj"
+          if [ "$RUNNER_OS" = Linux ]; then
+            cargo install --locked --root "$RUNNER_TEMP/jjroot" jj-cli --version "$JJ_VERSION"
+            echo "E2E_JJ_DIR=$RUNNER_TEMP/jjroot/bin" >> "$GITHUB_ENV"
+          else
+            case "$(uname -m)" in arm64) t=aarch64-apple-darwin ;; *) t=x86_64-apple-darwin ;; esac
+            curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-$t.tar.gz" | tar -xz -C "$RUNNER_TEMP/jj"
+            echo "E2E_JJ_DIR=$RUNNER_TEMP/jj" >> "$GITHUB_ENV"
+          fi
+      - name: Versions
+        run: |
+          tmux -V
+          hg --version | head -1
+          "$E2E_JJ_DIR/jj" --version
+          git fetch --no-tags origin site:refs/remotes/origin/site || true
+      - run: cargo build --locked --release
+      - name: Harness self-test
+        run: e2e/selftest/run.sh
+      - name: E2E
+        env:
+          TUICR_BIN: target/release/tuicr
+          E2E_ROOT: ${{ runner.temp }}/tuicr-e2e
+          E2E_REQUIRE_HG: "1"
+          E2E_REQUIRE_JJ: "1"
+          E2E_REQUIRE_SKIPS_ZERO: "1"
+        run: e2e/run.sh
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-diagnostics-${{ matrix.os }}
+          path: ${{ runner.temp }}/tuicr-e2e/out

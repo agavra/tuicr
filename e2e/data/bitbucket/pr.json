@@ -1,0 +1,33 @@
+{
+ "id": 1,
+ "title": "Add greeting",
+ "description": "Adds greet.",
+ "state": "OPEN",
+ "author": {
+  "display_name": "alice",
+  "uuid": "{a}"
+ },
+ "source": {
+  "branch": {
+   "name": "feature/greet"
+  },
+  "commit": {
+   "hash": "2222222222222222222222222222222222222222"
+  }
+ },
+ "destination": {
+  "branch": {
+   "name": "main"
+  },
+  "commit": {
+   "hash": "1111111111111111111111111111111111111111"
+  }
+ },
+ "links": {
+  "html": {
+   "href": "https://bitbucket.org/octo/demo/pull-requests/1"
+  }
+ },
+ "updated_on": "2026-01-02T03:04:05Z",
+ "participants": []
+}

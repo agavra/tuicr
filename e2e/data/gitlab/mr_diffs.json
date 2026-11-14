@@ -1,0 +1,10 @@
+[
+ {
+  "old_path": "src/greet.rs",
+  "new_path": "src/greet.rs",
+  "new_file": true,
+  "renamed_file": false,
+  "deleted_file": false,
+  "diff": "@@ -0,0 +1,3 @@\n+pub fn greet() {\n+    println!(\"hello from the MR\");\n+}\n"
+ }
+]
