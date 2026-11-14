@@ -30,7 +30,7 @@ pub const SESSIONS_DIRNAME: &str = "sessions";
 /// of the same repo are both under review (same slug, different canonical
 /// paths). PR slugs always have at most one entry — the current head's
 /// session. Lookups disambiguate by canonical path (local) or kind (PR).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     pub version: String,
     pub entries: HashMap<String, Vec<ManifestEntry>>,
@@ -72,6 +72,12 @@ pub struct DisplayMetadata {
     /// Slug anchor segment as it appears in the slug (branch name or short
     /// SHA). Cached so listings don't need to re-parse the slug.
     pub anchor: String,
+}
+
+impl Default for Manifest {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Manifest {
@@ -252,11 +258,14 @@ where
     if !reviews_dir.exists() {
         return Ok(manifest);
     }
-    walk_json(reviews_dir, &mut |path| {
-        if let Some((slug, entry)) = extract(path) {
-            manifest.upsert(slug, entry);
-        }
-    })?;
+    let mut found = Vec::new();
+    walk_json(reviews_dir, &mut |path| found.extend(extract(path)))?;
+    // Directory order is arbitrary and upsert keeps the last entry, so apply
+    // oldest first: the newest of two files for one slot wins.
+    found.sort_by_key(|(_, entry)| entry.updated_at);
+    for (slug, entry) in found {
+        manifest.upsert(slug, entry);
+    }
     Ok(manifest)
 }
 
@@ -637,5 +646,28 @@ mod tests {
             _ => panic!("expected Pr kind, got {:?}", entry.kind),
         }
         assert_eq!(entry.canonical_repo_path, None);
+    }
+
+    #[test]
+    fn should_rebuild_with_the_newest_file_winning_a_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Utc::now();
+        // Many files so an unsorted directory walk is all but certain to end
+        // on a file that is not the newest.
+        for n in 0..40 {
+            fs::write(dir.path().join(format!("f{n}.json")), n.to_string()).unwrap();
+        }
+        let manifest = rebuild_from_files(dir.path(), |path| {
+            let n: i64 = fs::read_to_string(path).ok()?.parse().ok()?;
+            // Newest is f17, not the last number.
+            let age = if n == 17 { 1000 } else { n };
+            let mut e = entry(base + chrono::Duration::seconds(age), "a");
+            e.path = path.to_path_buf();
+            Some(("slug".to_string(), e))
+        })
+        .unwrap();
+        let bucket = &manifest.entries["slug"];
+        assert_eq!(bucket.len(), 1);
+        assert!(bucket[0].path.ends_with("f17.json"), "{:?}", bucket[0].path);
     }
 }

@@ -111,7 +111,11 @@ pub(crate) fn update_session_in_dir<T>(
     with_reviews_dir_lock(reviews_dir, || {
         let mut session = load_session(session_ref)?;
         let output = update(&mut session)?;
-        save_session_at_unlocked(&session, reviews_dir, Some(session_ref))?;
+        if session.pr_session_key.is_some() {
+            save_session_at_unlocked(&session, reviews_dir, Some(session_ref))?;
+        } else {
+            write_back_local_unlocked(&session, reviews_dir, session_ref)?;
+        }
         Ok((session, output))
     })
 }
@@ -296,14 +300,9 @@ fn delete_session_unlocked(path: &Path, reviews_dir: &Path) -> Result<bool> {
 /// the file is gone and its slug can no longer be read from it.
 fn prune_manifest_path(reviews_dir: &Path, path: &Path) -> Result<()> {
     let relative = manifest_relative_path(path, reviews_dir);
-    let Ok(mut manifest) = manifest::load_manifest(reviews_dir) else {
-        return Ok(());
-    };
+    let mut manifest = manifest_for_update(reviews_dir)?;
     let before = manifest.len();
-    for bucket in manifest.entries.values_mut() {
-        bucket.retain(|entry| entry.path != relative);
-    }
-    manifest.entries.retain(|_, bucket| !bucket.is_empty());
+    remove_path_entries(&mut manifest, &relative);
     if manifest.len() != before {
         manifest::save_manifest(reviews_dir, &manifest)?;
     }
@@ -341,9 +340,9 @@ pub(crate) fn mark_session_active_in_dir(
         let mut active = load_active_sessions_unlocked(reviews_dir).unwrap_or_default();
         active.prune_stale();
         let pid = std::process::id();
-        active
-            .sessions
-            .retain(|entry| entry.pid != pid && entry.path != path);
+        // Only this process's own entry: another live tuicr may have the same
+        // session open, and its entry is what keeps a delete from running.
+        active.sessions.retain(|entry| entry.pid != pid);
         active.sessions.push(ActiveSessionEntry {
             pid,
             slug,
@@ -364,7 +363,12 @@ pub(crate) fn clear_active_session_for_pid_in_dir(reviews_dir: &Path) -> Result<
     with_reviews_dir_lock(reviews_dir, || {
         let mut active = load_active_sessions_unlocked(reviews_dir).unwrap_or_default();
         let pid = std::process::id();
+        let before = active.sessions.len();
         active.sessions.retain(|entry| entry.pid != pid);
+        if active.sessions.len() == before {
+            // Nothing to clear: do not create the registry file just to exit.
+            return Ok(());
+        }
         save_active_sessions_unlocked(reviews_dir, &active)
     })
 }
@@ -437,7 +441,37 @@ fn process_is_running(pid: u32) -> bool {
     std::io::Error::last_os_error().kind() == std::io::ErrorKind::PermissionDenied
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn process_is_running(pid: u32) -> bool {
+    use std::ffi::c_void;
+
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn GetExitCodeProcess(process: *mut c_void, code: *mut u32) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    if pid == 0 {
+        return false;
+    }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED);
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        CloseHandle(handle);
+        ok == 0 || code == STILL_ACTIVE
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn process_is_running(_pid: u32) -> bool {
     true
 }
@@ -501,19 +535,169 @@ fn save_session_at_unlocked(
     Ok(full_path)
 }
 
-fn upsert_session_manifest(
+/// Write a local session back to the file it was loaded from, whatever its
+/// identity now derives (the `origin` changed, the checkout moved, or the
+/// caller named a JSON path directly). The caller must hold the lock. A file
+/// inside the reviews dir is re-indexed at that exact path, replacing any
+/// entry under a stale slug; a file outside it is never indexed.
+fn write_back_local_unlocked(
     session: &ReviewSession,
     reviews_dir: &Path,
-    target: &SessionTarget,
+    path: &Path,
 ) -> Result<()> {
-    let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
+    let json = serde_json::to_string_pretty(session)?;
+    write_atomic(path, json.as_bytes())?;
+
+    let (Ok(canonical), Ok(root)) = (fs::canonicalize(path), fs::canonicalize(reviews_dir)) else {
+        return Ok(());
+    };
+    let Ok(relative) = canonical.strip_prefix(&root) else {
+        return Ok(());
+    };
+    let Ok(mut target) = target_for_session(session, reviews_dir) else {
+        return Ok(());
+    };
+    target.relative = relative.to_path_buf();
+    let mut manifest = manifest_for_update(reviews_dir)?;
+    if slot_held_by_other_file(&manifest, session, &target, reviews_dir) {
+        // The session's current identity already names a live file (the TUI
+        // saved it after `origin` changed). Keep that entry and refresh this
+        // file's own entries in place, so neither file leaves the index.
+        let fresh =
+            manifest::entry_from_session(session, target.relative.clone(), target.anchor.clone());
+        for entry in manifest.entries.values_mut().flatten() {
+            if entry.path == target.relative {
+                let kind = entry.kind.clone();
+                *entry = fresh.clone();
+                entry.kind = kind;
+            }
+        }
+    } else {
+        remove_path_entries(&mut manifest, &target.relative);
+        insert_session_entry(&mut manifest, session, &target);
+    }
+    manifest::save_manifest(reviews_dir, &manifest)
+}
+
+/// True when `target`'s manifest slot holds a different, existing session file.
+fn slot_held_by_other_file(
+    manifest: &manifest::Manifest,
+    session: &ReviewSession,
+    target: &SessionTarget,
+    reviews_dir: &Path,
+) -> bool {
+    let canonical = fs::canonicalize(&session.repo_path)
+        .ok()
+        .or_else(|| Some(session.repo_path.clone()));
+    manifest
+        .entries
+        .get(&target.manifest_slug)
+        .is_some_and(|bucket| {
+            bucket.iter().any(|e| {
+                matches!(e.kind, ManifestKind::Local)
+                    && e.canonical_repo_path == canonical
+                    && e.path != target.relative
+                    && reviews_dir.join(&e.path).exists()
+            })
+        })
+}
+
+fn remove_path_entries(manifest: &mut manifest::Manifest, relative: &Path) {
+    for bucket in manifest.entries.values_mut() {
+        bucket.retain(|entry| entry.path != relative);
+    }
+    manifest.entries.retain(|_, bucket| !bucket.is_empty());
+}
+
+fn insert_session_entry(
+    manifest: &mut manifest::Manifest,
+    session: &ReviewSession,
+    target: &SessionTarget,
+) {
     let mut entry =
         manifest::entry_from_session(session, target.relative.clone(), target.anchor.clone());
     if let ManifestKind::Pr { host, .. } = &mut entry.kind {
         host.clone_from(&target.host);
     }
     manifest.upsert(target.manifest_slug.clone(), entry);
+}
+
+fn upsert_session_manifest(
+    session: &ReviewSession,
+    reviews_dir: &Path,
+    target: &SessionTarget,
+) -> Result<()> {
+    let mut manifest = manifest_for_update(reviews_dir)?;
+    insert_session_entry(&mut manifest, session, target);
     manifest::save_manifest(reviews_dir, &manifest)
+}
+
+/// Read the manifest for a lookup or listing. A corrupt `index.json` is
+/// recovered (under the lock) instead of reading as empty.
+fn read_manifest(reviews_dir: &Path) -> Result<manifest::Manifest> {
+    match manifest::load_manifest(reviews_dir) {
+        Ok(_) if index_missing_with_sessions(reviews_dir) => {
+            with_reviews_dir_lock(reviews_dir, || manifest_for_update(reviews_dir))
+        }
+        Err(TuicrError::CorruptedSession(_)) => {
+            with_reviews_dir_lock(reviews_dir, || manifest_for_update(reviews_dir))
+        }
+        other => other,
+    }
+}
+
+/// Load the manifest for a read-modify-write. The caller must hold the lock.
+/// A corrupt `index.json` is moved to `index.json.corrupt` and rebuilt from
+/// `sessions/`, so the next save does not drop every other session.
+fn manifest_for_update(reviews_dir: &Path) -> Result<manifest::Manifest> {
+    match manifest::load_manifest(reviews_dir) {
+        Ok(_) if index_missing_with_sessions(reviews_dir) => {
+            let rebuilt = rebuild_manifest(reviews_dir)?;
+            manifest::save_manifest(reviews_dir, &rebuilt)?;
+            Ok(rebuilt)
+        }
+        Err(TuicrError::CorruptedSession(_)) => {
+            let index = reviews_dir.join(MANIFEST_FILENAME);
+            let _ = fs::rename(
+                &index,
+                reviews_dir.join(format!("{MANIFEST_FILENAME}.corrupt")),
+            );
+            let rebuilt = rebuild_manifest(reviews_dir)?;
+            manifest::save_manifest(reviews_dir, &rebuilt)?;
+            Ok(rebuilt)
+        }
+        other => other,
+    }
+}
+
+/// `index.json` is absent while `sessions/` already holds session files
+/// (deleted by hand, or lost): reading it as empty would make the next save
+/// overwrite it with a single entry.
+fn index_missing_with_sessions(reviews_dir: &Path) -> bool {
+    !reviews_dir.join(MANIFEST_FILENAME).exists()
+        && fs::read_dir(reviews_dir.join(SESSIONS_DIRNAME)).is_ok_and(|mut d| {
+            d.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".json")))
+        })
+}
+
+/// Re-index every readable session file under `sessions/`.
+fn rebuild_manifest(reviews_dir: &Path) -> Result<manifest::Manifest> {
+    manifest::rebuild_from_files(&reviews_dir.join(SESSIONS_DIRNAME), |path| {
+        let session = load_session(path).ok()?;
+        let relative = manifest_relative_path(path, reviews_dir);
+        let mut target = match session.pr_session_key.as_ref() {
+            Some(key) => pr_target_for_path(reviews_dir, key, path)?,
+            None => target_for_session(&session, reviews_dir).ok()?,
+        };
+        target.relative = relative;
+        let mut manifest = manifest::Manifest::new();
+        insert_session_entry(&mut manifest, &session, &target);
+        manifest
+            .entries
+            .remove(&target.manifest_slug)?
+            .pop()
+            .map(|entry| (target.manifest_slug, entry))
+    })
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -525,11 +709,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     })?;
     fs::create_dir_all(parent)?;
 
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("session");
-    let tmp_path = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+    // Fixed-length name: embedding the target's basename would overflow
+    // NAME_MAX for a valid long target.
+    let tmp_path = parent.join(format!(".{}.tmp", uuid::Uuid::new_v4().simple()));
 
     {
         let mut tmp = fs::File::create(&tmp_path)?;
@@ -664,7 +846,7 @@ pub fn load_latest_session_for_context(
     .map_err(|e| TuicrError::CorruptedSession(format!("slug build: {e}")))?;
     let slug = Slug::Local(local);
 
-    let manifest = manifest::load_manifest(&reviews_dir).unwrap_or_default();
+    let manifest = read_manifest(&reviews_dir)?;
     let canonical = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
     let Some(entry) = manifest.get_local(&slug.to_string(), &canonical) else {
         return Ok(None);
@@ -681,7 +863,7 @@ pub(crate) fn list_sessions_for_selector_in_dir(
 ) -> Result<Vec<(String, ManifestEntry)>> {
     maybe_migrate(reviews_dir)?;
 
-    let manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
+    let manifest = read_manifest(reviews_dir)?;
     let target = RepoSelector::resolve(selector);
     let mut entries: Vec<_> = manifest
         .iter()
@@ -754,7 +936,7 @@ impl RepoSelector {
 pub(crate) fn list_all_sessions_in_dir(reviews_dir: &Path) -> Result<Vec<(String, ManifestEntry)>> {
     maybe_migrate(reviews_dir)?;
 
-    let manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
+    let manifest = read_manifest(reviews_dir)?;
     let mut entries: Vec<_> = manifest
         .iter()
         .map(|(slug, entry)| (slug.clone(), entry.clone()))
@@ -873,7 +1055,7 @@ fn find_pr_session(
     head_matches: impl Fn(&str) -> bool,
     identity: impl Fn(&PrSessionKey) -> bool,
 ) -> Result<Option<(PathBuf, ReviewSession)>> {
-    let manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
+    let manifest = read_manifest(reviews_dir)?;
     let qualified = slug.to_string();
     let hostless = slug.hostless().to_string();
     let mut buckets = vec![qualified.as_str()];
@@ -989,10 +1171,24 @@ fn maybe_migrate(reviews_dir: &Path) -> Result<()> {
     if !reviews_dir.exists() {
         return Ok(());
     }
-    if reviews_dir.join(SESSIONS_DIRNAME).exists() {
+    let sessions_dir = reviews_dir.join(SESSIONS_DIRNAME);
+    if sessions_dir.exists() {
         return Ok(());
     }
-    if fs::read_dir(reviews_dir)?.next().is_none() {
+    // Current-layout bookkeeping (registry, lock, atomic-write temp files) is
+    // not legacy content: a directory holding only that is just fresh.
+    let has_legacy_content = fs::read_dir(reviews_dir)?.any(|entry| {
+        entry.map_or(true, |entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            !(name == ACTIVE_SESSIONS_FILENAME
+                || name == STORAGE_LOCK_FILENAME
+                || (name.starts_with('.') && name.ends_with(".tmp"))
+                || name == format!("{MANIFEST_FILENAME}.tmp"))
+        })
+    });
+    if !has_legacy_content {
+        fs::create_dir_all(&sessions_dir)?;
         return Ok(());
     }
 
@@ -1011,7 +1207,7 @@ fn maybe_migrate(reviews_dir: &Path) -> Result<()> {
     }
 
     fs::rename(reviews_dir, &backup)?;
-    fs::create_dir_all(reviews_dir)?;
+    fs::create_dir_all(&sessions_dir)?;
     eprintln!(
         "[tuicr] migrating reviews to new layout; previous reviews moved to {}",
         backup.display()
@@ -2219,5 +2415,424 @@ mod tests {
             !our_backup_exists,
             "should not migrate when reviews dir is empty"
         );
+    }
+
+    // ---- Write-back, manifest recovery, registry ----
+
+    fn manifest_paths(reviews_dir: &Path) -> Vec<PathBuf> {
+        manifest::load_manifest(reviews_dir)
+            .unwrap()
+            .iter()
+            .map(|(_, entry)| entry.path.clone())
+            .collect()
+    }
+
+    fn add_note(session: &mut ReviewSession) -> Result<()> {
+        session.review_comments.push(Comment::new(
+            "note".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn should_write_back_to_the_referenced_file_after_origin_changes() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let checkout = make_repo_with_origin("https://github.com/a/one.git");
+        let session = make_local_session(
+            checkout.path().to_path_buf(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        git2::Repository::open(checkout.path())
+            .unwrap()
+            .remote_set_url("origin", "https://github.com/b/two.git")
+            .unwrap();
+
+        update_session_in_dir(&path, &reviews_dir, add_note).unwrap();
+
+        assert_eq!(load_session(&path).unwrap().review_comments.len(), 1);
+        let entries = list_all_sessions_in_dir(&reviews_dir).unwrap();
+        assert_eq!(entries.len(), 1, "one file, one entry: {entries:?}");
+        assert_eq!(entries[0].1.display.comment_count, 1);
+        assert!(entries[0].0.starts_with("b/two"));
+    }
+
+    #[test]
+    fn should_write_back_to_an_explicit_path_outside_the_reviews_dir() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let managed = save_session(&session).unwrap();
+        let external =
+            std::env::temp_dir().join(format!("tuicr-ext-{}.json", uuid::Uuid::new_v4()));
+        fs::copy(&managed, &external).unwrap();
+
+        update_session_in_dir(&external, &reviews_dir, add_note).unwrap();
+
+        assert_eq!(load_session(&external).unwrap().review_comments.len(), 1);
+        assert!(load_session(&managed).unwrap().review_comments.is_empty());
+        assert_eq!(manifest_paths(&reviews_dir).len(), 1);
+        assert!(manifest_paths(&reviews_dir)[0].starts_with(SESSIONS_DIRNAME));
+        let _ = fs::remove_file(&external);
+    }
+
+    #[test]
+    fn should_edit_a_session_file_with_a_name_near_name_max() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let managed = save_session(&session).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let long = outside.path().join(format!("{}.json", "x".repeat(230)));
+        assert_eq!(long.file_name().unwrap().len(), 235);
+        fs::copy(&managed, &long).unwrap();
+
+        update_session_in_dir(&long, &reviews_dir, add_note).unwrap();
+
+        assert_eq!(load_session(&long).unwrap().review_comments.len(), 1);
+    }
+
+    #[test]
+    fn should_not_index_an_external_file_whose_slot_is_absent() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let checkout = make_repo_with_origin("https://github.com/a/one.git");
+        let session = make_local_session(
+            checkout.path().to_path_buf(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let managed = save_session(&session).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let external = outside.path().join("custom.json");
+        fs::copy(&managed, &external).unwrap();
+        git2::Repository::open(checkout.path())
+            .unwrap()
+            .remote_set_url("origin", "https://github.com/b/two.git")
+            .unwrap();
+
+        update_session_in_dir(&external, &reviews_dir, add_note).unwrap();
+
+        assert_eq!(load_session(&external).unwrap().review_comments.len(), 1);
+        let listed = manifest_paths(&reviews_dir);
+        assert_eq!(listed.len(), 1);
+        assert!(listed.iter().all(|p| p.starts_with(SESSIONS_DIRNAME)));
+    }
+
+    #[test]
+    fn should_not_create_the_registry_when_an_unregistered_pid_exits() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        assert!(!reviews_dir.join(ACTIVE_SESSIONS_FILENAME).exists());
+
+        clear_active_session_for_pid_in_dir(&reviews_dir).unwrap();
+
+        assert!(!reviews_dir.join(ACTIVE_SESSIONS_FILENAME).exists());
+    }
+
+    #[test]
+    fn should_not_let_another_checkouts_slot_block_a_rekey() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let a = make_repo_with_origin("https://github.com/a/one.git");
+        let b = make_repo_with_origin("https://github.com/b/two.git");
+        let make = |p: &Path| {
+            make_local_session(
+                p.to_path_buf(),
+                "abc1234",
+                Some("main"),
+                SessionDiffSource::WorkingTree,
+                None,
+            )
+        };
+        let a_path = save_session(&make(a.path())).unwrap();
+        let b_path = save_session(&make(b.path())).unwrap();
+        git2::Repository::open(a.path())
+            .unwrap()
+            .remote_set_url("origin", "https://github.com/b/two.git")
+            .unwrap();
+
+        update_session_in_dir(&a_path, &reviews_dir, add_note).unwrap();
+
+        let listed = list_all_sessions_in_dir(&reviews_dir).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().all(|(slug, _)| slug.starts_with("b/two")));
+        assert!(
+            listed
+                .iter()
+                .any(|(_, e)| e.path == manifest_relative_path(&b_path, &reviews_dir))
+        );
+    }
+
+    #[test]
+    fn should_not_let_a_missing_slot_file_block_a_rekey() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let repo = make_repo_with_origin("https://github.com/a/one.git");
+        let make = || {
+            make_local_session(
+                repo.path().to_path_buf(),
+                "abc1234",
+                Some("main"),
+                SessionDiffSource::WorkingTree,
+                None,
+            )
+        };
+        let old = save_session(&make()).unwrap();
+        git2::Repository::open(repo.path())
+            .unwrap()
+            .remote_set_url("origin", "https://github.com/b/two.git")
+            .unwrap();
+        let current = save_session(&make()).unwrap();
+        fs::remove_file(current).unwrap();
+
+        update_session_in_dir(&old, &reviews_dir, add_note).unwrap();
+
+        let listed = list_all_sessions_in_dir(&reviews_dir).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].0.starts_with("b/two"));
+        assert_eq!(listed[0].1.path, manifest_relative_path(&old, &reviews_dir));
+    }
+
+    #[test]
+    fn should_prune_the_manifest_by_path_when_the_slug_drifted() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let checkout = make_repo_with_origin("https://github.com/a/one.git");
+        let session = make_local_session(
+            checkout.path().to_path_buf(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        git2::Repository::open(checkout.path())
+            .unwrap()
+            .remote_set_url("origin", "https://github.com/b/two.git")
+            .unwrap();
+
+        assert!(delete_session_in_dir(&path, &reviews_dir).unwrap());
+
+        assert!(manifest_paths(&reviews_dir).is_empty());
+    }
+
+    #[test]
+    fn should_rebuild_a_corrupt_manifest_instead_of_dropping_sessions() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        for commit in ["aaa1111", "bbb2222"] {
+            let session = make_local_session(
+                make_repo(),
+                commit,
+                Some("main"),
+                SessionDiffSource::WorkingTree,
+                None,
+            );
+            save_session(&session).unwrap();
+        }
+        fs::write(reviews_dir.join(MANIFEST_FILENAME), "{corrupt").unwrap();
+
+        assert_eq!(list_all_sessions_in_dir(&reviews_dir).unwrap().len(), 2);
+
+        fs::write(reviews_dir.join(MANIFEST_FILENAME), "{corrupt").unwrap();
+        let third = make_local_session(
+            make_repo(),
+            "ccc3333",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        save_session(&third).unwrap();
+
+        assert_eq!(list_all_sessions_in_dir(&reviews_dir).unwrap().len(), 3);
+        assert!(reviews_dir.join("index.json.corrupt").exists());
+        assert_eq!(
+            manifest::load_manifest(&reviews_dir).unwrap().version,
+            manifest::MANIFEST_VERSION
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_keep_another_live_owner_when_a_second_tui_exits() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        let mut first_owner = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let active = ActiveSessionsFile {
+            sessions: vec![ActiveSessionEntry {
+                pid: first_owner.id(),
+                slug: "x".to_string(),
+                path: normalize_active_path(&path),
+                last_seen_at: Utc::now(),
+            }],
+            ..ActiveSessionsFile::default()
+        };
+        save_active_sessions_unlocked(&reviews_dir, &active).unwrap();
+
+        mark_session_active_in_dir(&session, &path, &reviews_dir).unwrap();
+        clear_active_session_for_pid_in_dir(&reviews_dir).unwrap();
+
+        let outcome = delete_inactive_session_in_dir(&path, &reviews_dir).unwrap();
+        let _ = first_owner.kill();
+        let _ = first_owner.wait();
+        assert_eq!(outcome, DeleteOutcome::Active);
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn should_not_treat_registry_bookkeeping_as_a_legacy_layout() {
+        // A dir an older tuicr left holding only bookkeeping, with no sessions/.
+        let names = [
+            ACTIVE_SESSIONS_FILENAME.to_string(),
+            STORAGE_LOCK_FILENAME.to_string(),
+            format!(".{}.tmp", uuid::Uuid::new_v4().simple()),
+            format!("{MANIFEST_FILENAME}.tmp"),
+        ];
+        for name in names {
+            let _g = with_test_reviews_dir();
+            let reviews_dir = get_reviews_dir().unwrap();
+            let _ = fs::remove_dir_all(reviews_dir.join(SESSIONS_DIRNAME));
+            fs::write(reviews_dir.join(&name), "{}").unwrap();
+
+            maybe_migrate(&reviews_dir).unwrap();
+
+            assert!(reviews_dir.join(&name).exists(), "{name} was moved aside");
+            assert!(reviews_dir.join(SESSIONS_DIRNAME).is_dir());
+            let backup = reviews_dir.with_file_name(format!(
+                "{}.bak1",
+                reviews_dir.file_name().unwrap().to_string_lossy()
+            ));
+            assert!(!backup.exists(), "{name}: no spurious migration backup");
+        }
+    }
+
+    #[test]
+    fn should_keep_the_index_of_a_corrupt_manifest_when_deleting_a_session() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let mut paths = Vec::new();
+        for commit in ["aaa1111", "bbb2222"] {
+            let session = make_local_session(
+                make_repo(),
+                commit,
+                Some("main"),
+                SessionDiffSource::WorkingTree,
+                None,
+            );
+            paths.push(save_session(&session).unwrap());
+        }
+        fs::write(reviews_dir.join(MANIFEST_FILENAME), "{corrupt").unwrap();
+
+        assert!(delete_session_in_dir(&paths[0], &reviews_dir).unwrap());
+
+        let left = manifest_paths(&reviews_dir);
+        assert_eq!(left.len(), 1, "the other session stays indexed: {left:?}");
+        assert!(reviews_dir.join("index.json.corrupt").exists());
+    }
+
+    #[test]
+    fn should_rebuild_a_missing_manifest_when_sessions_exist() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        for commit in ["aaa1111", "bbb2222"] {
+            let session = make_local_session(
+                make_repo(),
+                commit,
+                Some("main"),
+                SessionDiffSource::WorkingTree,
+                None,
+            );
+            save_session(&session).unwrap();
+        }
+        fs::remove_file(reviews_dir.join(MANIFEST_FILENAME)).unwrap();
+
+        assert_eq!(list_all_sessions_in_dir(&reviews_dir).unwrap().len(), 2);
+
+        fs::remove_file(reviews_dir.join(MANIFEST_FILENAME)).unwrap();
+        let third = make_local_session(
+            make_repo(),
+            "ccc3333",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        save_session(&third).unwrap();
+
+        assert_eq!(list_all_sessions_in_dir(&reviews_dir).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn should_not_evict_the_current_identity_file_on_write_back_to_an_old_file() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let checkout = make_repo_with_origin("https://github.com/a/one.git");
+        let make = || {
+            make_local_session(
+                checkout.path().to_path_buf(),
+                "abc1234",
+                Some("main"),
+                SessionDiffSource::WorkingTree,
+                None,
+            )
+        };
+        let old_path = save_session(&make()).unwrap();
+        git2::Repository::open(checkout.path())
+            .unwrap()
+            .remote_set_url("origin", "https://github.com/b/two.git")
+            .unwrap();
+        let new_path = save_session(&make()).unwrap();
+        assert_ne!(old_path, new_path);
+
+        update_session_in_dir(&old_path, &reviews_dir, add_note).unwrap();
+
+        let listed = manifest_paths(&reviews_dir);
+        let rel = |p: &Path| manifest_relative_path(p, &reviews_dir);
+        assert!(
+            listed.contains(&rel(&new_path)),
+            "current file dropped: {listed:?}"
+        );
+        assert!(
+            listed.contains(&rel(&old_path)),
+            "edited file dropped: {listed:?}"
+        );
+        let counts: Vec<_> = list_all_sessions_in_dir(&reviews_dir)
+            .unwrap()
+            .into_iter()
+            .map(|(_, e)| (e.path.clone(), e.display.comment_count))
+            .collect();
+        assert!(counts.contains(&(rel(&old_path), 1)), "{counts:?}");
+        assert!(counts.contains(&(rel(&new_path), 0)), "{counts:?}");
     }
 }
