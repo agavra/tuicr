@@ -4,20 +4,43 @@ Fixtures: data/github/. Knobs (env): E2E_VARIANT / E2E_VARIANT_FILE (overlay dir
 E2E_LIST_ROWS / E2E_LIST_FAIL_ABOVE (PR list size, failing load-more),
 E2E_HEAD_MODE=once|every (PR head moves while the PR opens), E2E_HOLD_DIR (core).
 """
+
+from __future__ import annotations
+
 import json
 import os
 import re
-import sys
 import urllib.parse
 
+from .core import Fake
+
 API_VALUE_FLAGS = ("-H", "--hostname", "--jq", "-f", "-F", "--method", "--input", "-X")
-EMPTY_THREADS = {"data": {"repository": {"pullRequest": {"reviewThreads": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}}}
-EMPTY_REVIEWS = {"data": {"repository": {"pullRequest": {"reviews": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}}}
-EMPTY_METADATA = {"data": {"viewer": {"login": "reviewer"}, "repository": {"pullRequest": {"reviews": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}}}
-REVIEW_CREATED = '{"id": 1001, "html_url": "https://github.com/octo/demo/pull/1#pullrequestreview-1001", "state": "COMMENTED"}'
+EMPTY_THREADS = {
+    "data": {
+        "repository": {
+            "pullRequest": {"reviewThreads": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}
+        }
+    }
+}
+EMPTY_REVIEWS = {
+    "data": {
+        "repository": {"pullRequest": {"reviews": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}
+    }
+}
+EMPTY_METADATA = {
+    "data": {
+        "viewer": {"login": "reviewer"},
+        "repository": {
+            "pullRequest": {"reviews": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}
+        },
+    }
+}
+REVIEW_CREATED = (
+    '{"id": 1001, "html_url": "https://github.com/octo/demo/pull/1#pullrequestreview-1001", "state": "COMMENTED"}'
+)
 
 
-def handle(f):
+def handle(f: Fake) -> None:
     argv = f.argv
     f.start(read_stdin="--input" in argv and f.flag("--input") == "-")
     if argv[:2] == ["pr", "list"]:
@@ -43,21 +66,29 @@ def handle(f):
     return rest(f, pos[0] if pos else "")
 
 
-def pr_list(f):
+def pr_list(f: Fake) -> None:
     if not os.environ.get("E2E_LIST_ROWS"):
         f.serve("pr_list.json")
-    # E2E_LIST_ROWS=N: serve N rows (truncated to --limit); E2E_LIST_FAIL_ABOVE=M: --limit > M fails (a failing load-more)
+    # E2E_LIST_ROWS=N: serve N rows (truncated to --limit); E2E_LIST_FAIL_ABOVE=M: --limit > M fails
+    # (a failing load-more)
     limit = int(f.flag("--limit") or 30)
     above = os.environ.get("E2E_LIST_FAIL_ABOVE")
     if above and limit > int(above):
         f.fail("simulated network failure")
     base = f.load_json("pr_list.json")[0]
-    rows = [dict(base, number=i, title="Row %d %s" % (i, "alpha" if i % 2 else "beta"), url="https://github.com/octo/demo/pull/%d" % i)
-            for i in range(1, int(os.environ["E2E_LIST_ROWS"]) + 1)]
+    rows = [
+        dict(
+            base,
+            number=i,
+            title=f"Row {i} {'alpha' if i % 2 else 'beta'}",
+            url=f"https://github.com/octo/demo/pull/{i}",
+        )
+        for i in range(1, int(os.environ["E2E_LIST_ROWS"]) + 1)
+    ]
     f.out(json.dumps(rows[:limit]) + "\n")
 
 
-def data_calls_so_far(f):
+def data_calls_so_far(f: Fake) -> int:
     """Number of PR data calls (files/commits/diff) already logged: drives E2E_HEAD_MODE."""
     n = 0
     if f.log and os.path.exists(f.log):
@@ -66,16 +97,21 @@ def data_calls_so_far(f):
                 a = json.loads(line)["argv"]
             except Exception:
                 continue
-            if any(x.startswith(("repos/octo/demo/pulls/1/files", "repos/octo/demo/pulls/1/commits")) or x in ("pulls/1/files", "pulls/1/commits") for x in a) or a[:2] == ["pr", "diff"]:
+            if any(
+                x.startswith(("repos/octo/demo/pulls/1/files", "repos/octo/demo/pulls/1/commits"))
+                or x in ("pulls/1/files", "pulls/1/commits")
+                for x in a
+            ) or a[:2] == ["pr", "diff"]:
                 n += 1
     return n
 
 
-def pr_view(f):
+def pr_view(f: Fake) -> None:
     mode = os.environ.get("E2E_HEAD_MODE")
     if not mode:
         f.serve("pr_view.json")
-    # once: head A (2222..) until the first data call, then 4444..; every: a new head after every data call (a push racing PR open)
+    # once: head A (2222..) until the first data call, then 4444..;
+    # every: a new head after every data call (a push racing PR open)
     n = data_calls_so_far(f)
     body = f.load_json("pr_view.json")
     if mode == "once":
@@ -85,16 +121,18 @@ def pr_view(f):
     f.out(json.dumps(body) + "\n")
 
 
-def fixture_name(rel):
-    """Fixture files are stored under Windows-safe names: `\\` -> _BACKSLASH_, `?` -> _QUESTION_ (see e2e/selftest/run.sh)."""
+def fixture_name(rel: str) -> str:
+    """Fixture files are stored under Windows-safe names: `\\` -> _BACKSLASH_, `?` -> _QUESTION_."""
     return rel.replace("\\", "_BACKSLASH_").replace("?", "_QUESTION_")
 
 
-def graphql(f, fields):
+def graphql(f: Fake, fields: dict[str, str]) -> None:
     q = fields.get("query", "")
     if "committedDate" in q:
-        repo = {f"pr{n}": {"commits": {"nodes": [{"commit": {"committedDate": "2026-01-02T03:04:05Z"}}]}}
-                for n in re.findall(r"pr(\d+): pullRequest", q)}
+        repo = {
+            f"pr{n}": {"commits": {"nodes": [{"commit": {"committedDate": "2026-01-02T03:04:05Z"}}]}}
+            for n in re.findall(r"pr(\d+): pullRequest", q)
+        }
         f.out(json.dumps({"data": {"repository": repo}}) + "\n")
     if "object(expression" in q:
         repo = {}
@@ -113,7 +151,7 @@ def graphql(f, fields):
     f.unexpected("unrecognised graphql query")
 
 
-def rest(f, endpoint):
+def rest(f: Fake, endpoint: str) -> None:
     m = re.match(r"repos/[^/]+/[^/]+/(.*)", endpoint)
     if not m:
         f.unexpected("unrecognised api endpoint")
@@ -131,7 +169,7 @@ def rest(f, endpoint):
         f.serve("commits.json") if first_page else f.out("[]\n")
     if base.startswith("compare/"):
         # Range-specific answers: <variant>/compare_end_<end-sha>.{json,patch}; fallback to the PR-wide files.
-        end = base[len("compare/"):].split("...")[-1]
+        end = base[len("compare/") :].split("...")[-1]
         diff_req = any("vnd.github.diff" in a for a in f.argv)
         rel = f"compare_end_{end}.{'patch' if diff_req else 'json'}"
         v = f.variant()
@@ -139,5 +177,5 @@ def rest(f, endpoint):
             f.serve(rel)
         f.serve("pr_diff.patch" if diff_req else "compare.json")
     if base.startswith("contents/"):
-        f.serve("contents/" + fixture_name(urllib.parse.unquote(base[len("contents/"):])))
+        f.serve("contents/" + fixture_name(urllib.parse.unquote(base[len("contents/") :])))
     f.unexpected("unrecognised REST endpoint " + path)

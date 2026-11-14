@@ -5,6 +5,7 @@ A scenario is a script whose body is a function decorated with @scenario. The de
 
 Importing this module sets up the harness environment (git/hg/locale isolation, scratch dirs), so it needs TUICR_BIN.
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -17,8 +18,13 @@ import subprocess
 import sys
 import tempfile
 import traceback
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .flows import FakeClipboard
+    from .tui import Tui
 
 LIB = Path(__file__).resolve().parent
 E2E_DIR = LIB.parent.parent  # e2e/
@@ -32,7 +38,7 @@ UNEXPECTED_MARK = '"note": "UNEXPECTED'
 class Failure(Exception):
     """An assertion or wait that did not hold. `evidence` (a screen, a log) is printed under the message."""
 
-    def __init__(self, message: str, evidence: Optional[str] = None):
+    def __init__(self, message: str, evidence: str | None = None) -> None:
         super().__init__(message)
         self.evidence = evidence
 
@@ -51,7 +57,7 @@ def grep(pattern: str, text: str) -> bool:
     return any(rx.search(line) for line in text.split("\n"))
 
 
-def must_fail(fn: Callable, message: str, exc=Failure):
+def must_fail(fn: Callable[[], object], message: str, exc: type[BaseException] = Failure) -> None:
     """Assert that fn() raises `exc` (a Failure by default; NoPane for the missing-pane checks). For harness self-tests:
     a call that returns, or fails with something else, fails the scenario with `message`."""
     try:
@@ -63,22 +69,36 @@ def must_fail(fn: Callable, message: str, exc=Failure):
     raise AssertionError(message)
 
 
-def _setup_env():
+def _setup_env() -> tuple[str, str]:
     """Harness-side isolation, exported to this process (fixture git/hg/jj commands inherit it)."""
     root = os.environ.get("E2E_ROOT") or tempfile.mkdtemp(prefix="tuicr-e2e.", dir=os.environ.get("TMPDIR", "/tmp"))
-    os.environ.update(E2E_DIR=str(E2E_DIR), E2E_ROOT=root,
-                      E2E_SOCKET=os.environ.get("E2E_SOCKET", f"tuicr-e2e-{os.getpid()}"),
-                      E2E_OUT=os.environ.get("E2E_OUT", f"{root}/out"))
+    os.environ.update(
+        E2E_DIR=str(E2E_DIR),
+        E2E_ROOT=root,
+        E2E_SOCKET=os.environ.get("E2E_SOCKET", f"tuicr-e2e-{os.getpid()}"),
+        E2E_OUT=os.environ.get("E2E_OUT", f"{root}/out"),
+    )
     Path(os.environ["E2E_OUT"]).mkdir(parents=True, exist_ok=True)
-    os.environ.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0",
-                      GIT_AUTHOR_NAME="E2E", GIT_AUTHOR_EMAIL="e2e@example.invalid",
-                      GIT_COMMITTER_NAME="E2E", GIT_COMMITTER_EMAIL="e2e@example.invalid",
-                      HGRCPATH="/dev/null", HGPLAIN="1", HGUSER="e2e")
+    os.environ.update(
+        GIT_CONFIG_GLOBAL="/dev/null",
+        GIT_CONFIG_NOSYSTEM="1",
+        GIT_TERMINAL_PROMPT="0",
+        GIT_AUTHOR_NAME="E2E",
+        GIT_AUTHOR_EMAIL="e2e@example.invalid",
+        GIT_COMMITTER_NAME="E2E",
+        GIT_COMMITTER_EMAIL="e2e@example.invalid",
+        HGRCPATH="/dev/null",
+        HGPLAIN="1",
+        HGUSER="e2e",
+    )
     # UTF-8 locale for tuicr and tmux: en_US.UTF-8 where installed, else C.UTF-8 (CI images).
     loc = os.environ.get("E2E_LOCALE")
     if not loc:
-        have = subprocess.run(["locale", "-a"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                              universal_newlines=True).stdout.lower().split()
+        have = (
+            subprocess.run(["locale", "-a"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            .stdout.lower()
+            .split()
+        )
         loc = "en_US.UTF-8" if {"en_us.utf-8", "en_us.utf8"} & set(have) else "C.UTF-8"
     os.environ.update(LANG=loc, LC_ALL=loc)
     # PATH of the child: fake forge CLIs first, then system dirs, then the dirs of the tools the harness needs.
@@ -99,11 +119,20 @@ OUT = Path(os.environ["E2E_OUT"])
 SOCKET = os.environ["E2E_SOCKET"]
 
 
-def child_env(d: Path, path: str, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def child_env(d: Path, path: str, extra: dict[str, str] | None = None) -> dict[str, str]:
     """The isolated environment tuicr runs with (`env -i ...`): its own HOME/XDG dirs, the fake forges first on PATH."""
-    env = dict(HOME=f"{d}/home", XDG_CONFIG_HOME=f"{d}/config", XDG_DATA_HOME=f"{d}/data",
-               XDG_STATE_HOME=f"{d}/state", TMPDIR=f"{d}/tmp", PATH=path, LANG=LOCALE, LC_ALL=LOCALE,
-               E2E_FORGE_LOG=f"{d}/forge.log", E2E_DATA=f"{E2E_DIR}/data")
+    env = dict(
+        HOME=f"{d}/home",
+        XDG_CONFIG_HOME=f"{d}/config",
+        XDG_DATA_HOME=f"{d}/data",
+        XDG_STATE_HOME=f"{d}/state",
+        TMPDIR=f"{d}/tmp",
+        PATH=path,
+        LANG=LOCALE,
+        LC_ALL=LOCALE,
+        E2E_FORGE_LOG=f"{d}/forge.log",
+        E2E_DATA=f"{E2E_DIR}/data",
+    )
     env.update(extra or {})
     return env
 
@@ -111,166 +140,233 @@ def child_env(d: Path, path: str, extra: Optional[Dict[str, str]] = None) -> Dic
 class CliResult:
     """A finished non-interactive tuicr run: exit status and stdout+stderr (trailing newlines stripped)."""
 
-    def __init__(self, rc: int, out: str):
+    def __init__(self, rc: int, out: str) -> None:
         self.rc, self.out = rc, out
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"CliResult(rc={self.rc}, out={self.out!r})"
 
 
 class Scenario:
     """One scenario run: its name, scratch dir, the TUIs it started, its environment and cleanups."""
 
-    def __init__(self, script: str):
+    def __init__(self, script: str) -> None:
         self.script = Path(os.environ.get("E2E_SCENARIO", script))
-        self.name = f"{self.script.parent.name}_{self.script.stem}"   # <area>_<behaviour>
-        self.dir = ROOT / self.name                                   # scratch dir (repos, files)
-        self.tuis: list = []                                          # every Tui started, stopped at exit
-        self.env: Dict[str, str] = {}      # extra variables for every child tuicr (E2E_ENV, but a dict)
-        self.pre_path: List[str] = []      # directories put first on the child's PATH (E2E_PRE_PATH)
+        self.name = f"{self.script.parent.name}_{self.script.stem}"  # <area>_<behaviour>
+        self.dir = ROOT / self.name  # scratch dir (repos, files)
+        self.tuis: list[Tui] = []  # every Tui started, stopped at exit
+        self.env: dict[str, str] = {}  # extra variables for every child tuicr (E2E_ENV, but a dict)
+        self.pre_path: list[str] = []  # directories put first on the child's PATH (E2E_PRE_PATH)
         self.cols, self.rows = COLS, ROWS  # size of the next pane
-        self.forge_logs: List[Path] = []
-        self.forge_unexpected: List[str] = []   # UNEXPECTED calls from logs a restart truncated
+        self.forge_logs: list[Path] = []
+        self.forge_unexpected: list[str] = []  # UNEXPECTED calls from logs a restart truncated
         self.allow_unexpected = False
         self.gerrit_proc = None
-        self._cleanups: list = []
+        self._cleanups: list[tuple[Callable[..., object], tuple[object, ...]]] = []
 
     def path_of(self, name: str) -> Path:
         """Scratch dir of a named TUI (the scenario's own name by default)."""
         return ROOT / name
 
     # ---- lifecycle -----------------------------------------------------------------------------------------------
-    def on_exit(self, fn: Callable, *args):
+    def on_exit(self, fn: Callable[..., object], *args: object) -> None:
         """Register cleanup; runs in reverse order after the TUIs are stopped. Never install signal/atexit handlers."""
         self._cleanups.append((fn, args))
 
-    def skip(self, reason: str):
+    def skip(self, reason: str) -> None:
         raise Skip(reason)
 
-    def allow_unexpected_forge_calls(self, why: str = ""):
+    def allow_unexpected_forge_calls(self, why: str = "") -> None:
         """A scenario that provokes calls the fakes have no fixture for, on purpose, declares it (say why)."""
         self.allow_unexpected = True
 
-    def _unexpected_calls(self) -> List[str]:
+    def _unexpected_calls(self) -> list[str]:
         bad = list(self.forge_unexpected)
         for log in dict.fromkeys(self.forge_logs):
             if log.exists():
-                bad += [l for l in log.read_text().splitlines() if UNEXPECTED_MARK in l]
+                bad += [ln for ln in log.read_text().splitlines() if UNEXPECTED_MARK in ln]
         return bad
 
     # ---- starting tuicr (interactive, in a tmux pane) --------------------------------------------------------------
-    def start(self, *args, name: Optional[str] = None, cwd=None, env: Optional[Dict[str, str]] = None, keep: bool = False,
-              cols: Optional[int] = None, rows: Optional[int] = None):
+    def start(
+        self,
+        *args: object,
+        name: str | None = None,
+        cwd: str | Path | None = None,
+        env: dict[str, str] | None = None,
+        keep: bool = False,
+        cols: int | None = None,
+        rows: int | None = None,
+    ) -> Tui:
         """Start `tuicr --no-update-check <args>` in a tmux pane and return its Tui.
 
         cwd: working directory (default <scratch>/work); env: extra child variables; keep=True keeps home/data/... so
         a restart sees the saved sessions; name: a second TUI in one scenario (own scratch dir and pane)."""
-        return self.start_cmd([TUICR_BIN, "--no-update-check", *map(str, args)], name=name, cwd=cwd, env=env, keep=keep,
-                              cols=cols, rows=rows)
+        return self.start_cmd(
+            [TUICR_BIN, "--no-update-check", *map(str, args)],
+            name=name,
+            cwd=cwd,
+            env=env,
+            keep=keep,
+            cols=cols,
+            rows=rows,
+        )
 
-    def start_cmd(self, argv: List[str], *, name: Optional[str] = None, cwd=None, env: Optional[Dict[str, str]] = None,
-                  keep: bool = False, cols: Optional[int] = None, rows: Optional[int] = None):
+    def start_cmd(
+        self,
+        argv: list[str],
+        *,
+        name: str | None = None,
+        cwd: str | Path | None = None,
+        env: dict[str, str] | None = None,
+        keep: bool = False,
+        cols: int | None = None,
+        rows: int | None = None,
+    ) -> Tui:
         """Start an arbitrary command in the pane (same isolated environment as `start`)."""
         from .tui import Tui
-        return Tui.start(self, [str(a) for a in argv], name or self.name, cwd=cwd, env=env, keep=keep,
-                         cols=cols or self.cols, rows=rows or self.rows)
+
+        return Tui.start(
+            self,
+            [str(a) for a in argv],
+            name or self.name,
+            cwd=cwd,
+            env=env,
+            keep=keep,
+            cols=cols or self.cols,
+            rows=rows or self.rows,
+        )
 
     # ---- non-interactive tuicr -----------------------------------------------------------------------------------
-    def _cli_env(self, name: Optional[str], env, path):
+    def _cli_env(self, name: str | None, env: dict[str, str] | None, path: str | None) -> dict[str, str]:
         d = self.path_of(name or self.name)
         for sub in ("home", "config", "data", "state", "tmp"):
             (d / sub).mkdir(parents=True, exist_ok=True)
-        self.forge_logs.append(d / "forge.log")   # the central UNEXPECTED check covers CLI runs too
+        self.forge_logs.append(d / "forge.log")  # the central UNEXPECTED check covers CLI runs too
         return child_env(d, path or f"{E2E_DIR}/bin:{TOOL_PATH}", {**self.env, **(env or {})})
 
-    def cli(self, *args, input: Optional[str] = None, env: Optional[Dict[str, str]] = None, path: Optional[str] = None,
-            name: Optional[str] = None, check: bool = True) -> str:
+    def cli(
+        self,
+        *args: object,
+        input: str | None = None,
+        env: dict[str, str] | None = None,
+        path: str | None = None,
+        name: str | None = None,
+        check: bool = True,
+    ) -> str:
         """Run tuicr with the scenario's isolated env and return stdout (stderr goes to the log).
 
         A non-zero exit fails the scenario unless check=False. path replaces the child's PATH (see minimal_path)."""
         argv = [TUICR_BIN, *map(str, args)]
-        p = subprocess.run(argv, input=input,
-                           stdin=None if input is not None else subprocess.DEVNULL,
-                           env=self._cli_env(name, env, path), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           universal_newlines=True)
+        p = subprocess.run(
+            argv,
+            input=input,
+            stdin=None if input is not None else subprocess.DEVNULL,
+            env=self._cli_env(name, env, path),
+            capture_output=True,
+            text=True,
+        )
         sys.stderr.write(p.stderr)
         if check and p.returncode != 0:
-            raise Failure(f"`tuicr {' '.join(argv[1:])}` exited {p.returncode}",
-                          f"stdout:\n{p.stdout}\nstderr:\n{p.stderr}")
+            raise Failure(
+                f"`tuicr {' '.join(argv[1:])}` exited {p.returncode}", f"stdout:\n{p.stdout}\nstderr:\n{p.stderr}"
+            )
         return p.stdout
 
-    def cli_result(self, *args, env: Optional[Dict[str, str]] = None, path: Optional[str] = None,
-                   name: Optional[str] = None) -> CliResult:
+    def cli_result(
+        self, *args: object, env: dict[str, str] | None = None, path: str | None = None, name: str | None = None
+    ) -> CliResult:
         """Run tuicr with stdin closed; stdout+stderr and the exit status. Never fails."""
-        p = subprocess.run([TUICR_BIN, *map(str, args)], stdin=subprocess.DEVNULL, env=self._cli_env(name, env, path),
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        p = subprocess.run(
+            [TUICR_BIN, *map(str, args)],
+            stdin=subprocess.DEVNULL,
+            env=self._cli_env(name, env, path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
         return CliResult(p.returncode, p.stdout.rstrip("\n"))
 
     # ---- saved sessions ------------------------------------------------------------------------------------------
-    def session_files(self, name: Optional[str] = None) -> List[Path]:
+    def session_files(self, name: str | None = None) -> list[Path]:
         """Saved session json files: $XDG_DATA_HOME on Linux, $HOME/Library/Application Support on macOS."""
         d = self.path_of(name or self.name)
-        return sorted(p for top in (d / "data", d / "home") if top.exists() for p in top.rglob("*.json")
-                      if fnmatch.fnmatch(str(p), "*/sessions/*.json"))
+        return sorted(
+            p
+            for top in (d / "data", d / "home")
+            if top.exists()
+            for p in top.rglob("*.json")
+            if fnmatch.fnmatch(str(p), "*/sessions/*.json")
+        )
 
-    def session_json(self, name: Optional[str] = None) -> str:
+    def session_json(self, name: str | None = None) -> str:
         """The text of every saved session file, concatenated ("" when there is none)."""
         return "".join(p.read_text() for p in self.session_files(name))
 
-    def session(self, name: Optional[str] = None) -> dict:
+    def session(self, name: str | None = None) -> dict[str, Any]:
         """The one saved session, parsed. Zero or several sessions fail."""
         files = self.session_files(name)
         if len(files) != 1:
             raise Failure(f"expected exactly one saved session, found {len(files)}", "\n".join(map(str, files)))
         return json.loads(files[0].read_text())
 
-    def session_has(self, pattern: str, name: Optional[str] = None) -> bool:
+    def session_has(self, pattern: str, name: str | None = None) -> bool:
         """A saved session mentions the pattern (a regex, matched line by line)."""
         return grep(pattern, self.session_json(name))
 
     # ---- fixtures and flows (thin forwarding, so a scenario reads `s.diff()`) ------------------------------------
-    def open(self, *args, **kw):
+    def open(self, *args: str, **kw: Any) -> Tui:
         from . import flows
+
         return flows.open_review(self, *args, **kw)
 
-    def diff(self, **kw):
+    def diff(self, **kw: Any) -> Tui:
         from . import flows
+
         return flows.diff(self, **kw)
 
-    def pr_open(self, variant: str = "threads_and_commits", **kw):
+    def pr_open(self, variant: str = "threads_and_commits", **kw: Any) -> Tui:
         from . import forge
+
         return forge.pr_open(self, variant, **kw)
 
-    def forge_open(self, url: str, variant: Optional[str] = None, **kw):
+    def forge_open(self, url: str, variant: str | None = None, **kw: Any) -> Tui:
         from . import forge
+
         return forge.forge_open(self, url, variant, **kw)
 
-    def gerrit_open(self, kind: str, **kw):
+    def gerrit_open(self, kind: str, **kw: Any) -> Tui:
         from . import forge
+
         return forge.gerrit_open(self, kind, **kw)
 
-    def gerrit_stop(self):
+    def gerrit_stop(self) -> None:
         from . import forge
+
         forge.gerrit_stop(self)
 
-    def use_hg(self):
+    def use_hg(self) -> None:
         from . import repos
+
         repos.use_hg(self)
 
-    def use_jj(self):
+    def use_jj(self) -> None:
         from . import repos
+
         repos.use_jj(self)
 
-    def fake_clipboard(self, name: Optional[str] = None):
+    def fake_clipboard(self, name: str | None = None) -> FakeClipboard:
         from . import flows
+
         return flows.FakeClipboard(self, name or self.name)
 
-    def minimal_path(self, directory, *tools: str) -> str:
+    def minimal_path(self, directory: str | Path, *tools: str) -> str:
         from . import flows
+
         return flows.minimal_path(directory, *tools)
 
 
-def _report(exc: BaseException):
+def _report(exc: BaseException) -> None:
     """Print what failed, where in the scenario, and the evidence."""
     frames = [f for f in traceback.extract_tb(exc.__traceback__) if not f.filename.startswith(str(LIB))]
     where = "".join(f"  at {_rel(f.filename)}:{f.lineno}: {f.line}\n" for f in frames)
@@ -291,9 +387,10 @@ def _rel(path: str) -> str:
         return path
 
 
-def scenario(fn):
+def scenario(fn: Callable[[Scenario], None]) -> None:
     """Run fn(Scenario) as the script's main and exit with the harness status conventions."""
     import __main__
+
     s = Scenario(getattr(__main__, "__file__", sys.argv[0]))
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     rc = 0
@@ -322,8 +419,10 @@ def scenario(fn):
         # No scenario may pass while a fake forge saw a call its fixtures do not cover.
         bad = s._unexpected_calls()
         if rc == 0 and bad and not s.allow_unexpected:
-            sys.stderr.write("e2e: fake forge saw an unexpected call:\n"
-                             f"  at {_rel(str(s.script))}:{fn.__code__.co_firstlineno}: {fn.__name__}() finished with it unreported\n"
-                             + "\n".join(bad) + "\n")
+            sys.stderr.write(
+                "e2e: fake forge saw an unexpected call:\n"
+                f"  at {_rel(str(s.script))}:{fn.__code__.co_firstlineno}: "  # ty: ignore[unresolved-attribute]
+                f"{getattr(fn, '__name__', fn)}() finished with it unreported\n" + "\n".join(bad) + "\n"
+            )
             rc = 1
     sys.exit(rc)

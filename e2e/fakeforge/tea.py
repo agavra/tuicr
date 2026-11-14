@@ -4,10 +4,16 @@ Like `tea`, every response is "HTTP 200" at exit 0: the status line + headers go
 Stateful: POSTed reviews are kept in the run's state dir; no event => PENDING (like Gitea).
 Knobs (env): E2E_GT_ROWS rows of PR list in total, server caps `limit` at E2E_GT_CAP (like MaxResponseItems).
 """
+
+from __future__ import annotations
+
 import json
 import os
 import re
 import sys
+from typing import Any
+
+from .core import Fake
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -15,12 +21,12 @@ PULL = "/repos/octo/demo/pulls/1"
 REVIEWS = "gt_reviews.json"
 
 
-def reply(f, body, status="200 OK", total=None):
+def reply(f: Fake, body: Any, status: str = "200 OK", total: int | None = None) -> None:
     sys.stderr.write(f"HTTP/1.1 {status}\r\n" + (f"X-Total-Count: {total}\r\n" if total is not None else "") + "\r\n")
     f.out(body)
 
 
-def handle(f):
+def handle(f: Fake) -> None:
     argv = f.argv
     f.start(read_stdin="@-" in argv)
     if argv[:2] == ["logins", "list"]:
@@ -52,31 +58,47 @@ def handle(f):
     if re.fullmatch(PULL + r"/reviews/(\d+)/comments", base) or base == "/repos/octo/demo/issues/1/comments":
         reply(f, "[]")
     if base.startswith("/repos/octo/demo/raw/"):
-        p = os.path.join(os.environ["E2E_DATA"], "github", "contents", base[len("/repos/octo/demo/raw/"):])
+        p = os.path.join(os.environ["E2E_DATA"], "github", "contents", base[len("/repos/octo/demo/raw/") :])
         if os.path.exists(p):
             reply(f, open(p).read())
     f.record("UNEXPECTED " + ep)
     reply(f, '{"message":"no route"}', "404 Not Found")
 
 
-def pr_list(f, query, page):
+def pr_list(f: Fake, query: str, page: int) -> None:
     total = int(os.environ.get("E2E_GT_ROWS", "1"))
     cap = int(os.environ.get("E2E_GT_CAP", "50"))
     m = re.search(r"(?:^|&)limit=(\d+)", query)
     lim = min(int(m.group(1) if m else "30"), cap)
-    rows = [{"number": i, "title": "GT row %d" % i, "state": "open", "user": {"login": "alice"},
-             "html_url": "https://gitea.example.com/octo/demo/pulls/%d" % i, "head": {"ref": "f%d" % i, "sha": HEAD},
-             "base": {"ref": "main", "sha": BASE}, "updated_at": "2026-01-02T03:04:05Z", "draft": False}
-            for i in range(1, total + 1)]
-    reply(f, rows[(page - 1) * lim: page * lim], total=total)
+    rows = [
+        {
+            "number": i,
+            "title": f"GT row {i}",
+            "state": "open",
+            "user": {"login": "alice"},
+            "html_url": f"https://gitea.example.com/octo/demo/pulls/{i}",
+            "head": {"ref": f"f{i}", "sha": HEAD},
+            "base": {"ref": "main", "sha": BASE},
+            "updated_at": "2026-01-02T03:04:05Z",
+            "draft": False,
+        }
+        for i in range(1, total + 1)
+    ]
+    reply(f, rows[(page - 1) * lim : page * lim], total=total)
 
 
-def post_review(f, reviews):
-    p = json.loads(f.stdin)
+def post_review(f: Fake, reviews: list[Any]) -> None:
+    p = json.loads(f.stdin or "")
     n = len(reviews) + 1
-    r = {"id": n, "state": "COMMENT" if p.get("event") else "PENDING", "body": p.get("body", ""), "user": {"login": "me"},
-         "comments_count": len(p.get("comments", [])), "commit_id": p.get("commit_id"),
-         "html_url": "https://gitea.example.com/octo/demo/pulls/1#r%d" % n}
+    r = {
+        "id": n,
+        "state": "COMMENT" if p.get("event") else "PENDING",
+        "body": p.get("body", ""),
+        "user": {"login": "me"},
+        "comments_count": len(p.get("comments", [])),
+        "commit_id": p.get("commit_id"),
+        "html_url": f"https://gitea.example.com/octo/demo/pulls/1#r{n}",
+    }
     reviews.append(r)
     f.save_state(REVIEWS, reviews)
     reply(f, r)
