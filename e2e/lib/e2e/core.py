@@ -197,12 +197,12 @@ class Scenario:
         return child_env(d, path or f"{E2E_DIR}/bin:{TOOL_PATH}", {**self.env, **(env or {})})
 
     def cli(self, *args, input: Optional[str] = None, env: Optional[Dict[str, str]] = None, path: Optional[str] = None,
-            name: Optional[str] = None, check: bool = True) -> str:
+            name: Optional[str] = None, cwd=None, check: bool = True) -> str:
         """Run tuicr with the scenario's isolated env and return stdout (stderr goes to the log).
 
         A non-zero exit fails the scenario unless check=False. path replaces the child's PATH (see minimal_path)."""
         argv = [TUICR_BIN, *map(str, args)]
-        p = subprocess.run(argv, input=input,
+        p = subprocess.run(argv, input=input, cwd=None if cwd is None else str(cwd),
                            stdin=None if input is not None else subprocess.DEVNULL,
                            env=self._cli_env(name, env, path), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True)
@@ -213,9 +213,10 @@ class Scenario:
         return p.stdout
 
     def cli_result(self, *args, env: Optional[Dict[str, str]] = None, path: Optional[str] = None,
-                   name: Optional[str] = None) -> CliResult:
+                   name: Optional[str] = None, cwd=None) -> CliResult:
         """Run tuicr with stdin closed; stdout+stderr and the exit status. Never fails."""
-        p = subprocess.run([TUICR_BIN, *map(str, args)], stdin=subprocess.DEVNULL, env=self._cli_env(name, env, path),
+        p = subprocess.run([TUICR_BIN, *map(str, args)], stdin=subprocess.DEVNULL,
+                           cwd=None if cwd is None else str(cwd), env=self._cli_env(name, env, path),
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         return CliResult(p.returncode, p.stdout.rstrip("\n"))
 
