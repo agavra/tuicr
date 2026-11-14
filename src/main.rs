@@ -13,19 +13,8 @@ use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
 use tuicr::cli::parse_cli_args;
 use tuicr::config::IgnoreWhitespaceConfig;
 use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, EditorTarget};
-use tuicr::handler::{
-    handle_command_action, handle_comment_action, handle_comment_navigator_action,
-    handle_commit_select_action, handle_commit_selector_action, handle_confirm_action,
-    handle_diff_action, handle_file_list_action, handle_file_picker_action, handle_help_action,
-    handle_mouse_event, handle_search_action, handle_submit_action_picker_action,
-    handle_submit_confirm_action, handle_submit_resolver_action, handle_summary_action,
-    handle_theme_picker_action, handle_visual_action,
-};
-use tuicr::input::{
-    Action, map_file_picker_filter_mode, map_file_tree_mode_with_q_quits,
-    map_file_tree_prompt_mode, map_key_to_action_with_q_quits, map_target_filter_mode,
-    map_theme_picker_filter_mode,
-};
+use tuicr::handler::{handle_mouse_event, handle_paste};
+use tuicr::input::Action;
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
 use tuicr::theme::{is_syntax_theme_fallback_warning, resolve_theme_with_config};
 use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference, WhitespaceAutoPolicy};
@@ -154,7 +143,7 @@ fn main() -> anyhow::Result<()> {
         .and_then(|cfg| cfg.transparent_background)
         .unwrap_or(true);
     if transparent {
-        theme.panel_bg = ratatui::style::Color::Reset;
+        theme = theme.with_transparent_background();
     }
 
     let no_update_check = cli_args.no_update_check
@@ -269,6 +258,7 @@ fn main() -> anyhow::Result<()> {
     }) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
+            app.transparent_background = transparent;
             startup_warnings.extend(app.vcs.startup_warnings());
             if let Some(cfg) = config_outcome.config.as_ref() {
                 if let Some(forge_cfg) = cfg.forge.clone() {
@@ -614,12 +604,7 @@ fn main() -> anyhow::Result<()> {
                         match key.code {
                             crossterm::event::KeyCode::Char('Z') => {
                                 // ZZ: save session, export, and quit (same as :wq)
-                                let _ = app.save_current_session_merging_external();
-                                if app.session.has_comments() {
-                                    handler::handle_export_and_quit(&mut app);
-                                } else {
-                                    app.should_quit = true;
-                                }
+                                handler::handle_write_and_quit(&mut app);
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('Q') => {
@@ -748,39 +733,7 @@ fn main() -> anyhow::Result<()> {
                     // route through the filter-specific key map so typed
                     // characters update the filter buffer rather than driving
                     // commit-list navigation.
-                    let mut action = if app.input_mode == InputMode::CommitSelect
-                        && app.pr_filter_editing()
-                    {
-                        map_target_filter_mode(key)
-                    } else if app.input_mode == InputMode::Normal && app.file_tree_prompt_editing()
-                    {
-                        // An open file-tree prompt (`i`/`e`/`/`) captures all
-                        // input until Enter/Esc, like the PR filter above.
-                        map_file_tree_prompt_mode(key)
-                    } else if app.input_mode == InputMode::ThemePicker
-                        && app.theme_picker_filtering()
-                    {
-                        // The theme picker's `/` filter draft captures all
-                        // input until Enter/Esc, same shape as the two above.
-                        map_theme_picker_filter_mode(key)
-                    } else if app.input_mode == InputMode::FilePicker && app.file_picker_filtering()
-                    {
-                        // Same for the file picker's `/` draft.
-                        map_file_picker_filter_mode(key)
-                    } else if app.input_mode == InputMode::Normal
-                        && app.focused_panel == FocusedPanel::FileList
-                    {
-                        // The tree claims i/e/I/E and `/` for filtering; the
-                        // diff keeps its own meanings for those keys.
-                        map_file_tree_mode_with_q_quits(key, app.leader_key, app.q_quits)
-                    } else {
-                        map_key_to_action_with_q_quits(
-                            key,
-                            app.input_mode,
-                            app.leader_key,
-                            app.q_quits,
-                        )
-                    };
+                    let mut action = handler::map_normal_path_key(&app, key);
 
                     // Handle pending command setters (these work in any mode)
                     match action {
@@ -846,7 +799,7 @@ fn main() -> anyhow::Result<()> {
                                             // last one runs through normal dispatch
                                             // below.
                                             for _ in 1..count {
-                                                dispatch_action(&mut app, action.clone());
+                                                handler::dispatch_action(&mut app, action.clone());
                                             }
                                         }
                                         _ => {
@@ -860,7 +813,7 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     let previous_mode = app.input_mode;
-                    dispatch_action(&mut app, action);
+                    handler::dispatch_action(&mut app, action);
                     if previous_mode != InputMode::Summary && app.input_mode == InputMode::Summary {
                         // Summary identities are populated by rendering before queued input.
                         break;
@@ -926,16 +879,7 @@ fn main() -> anyhow::Result<()> {
                         app.comment_vim_feed_paste(text);
                         continue;
                     }
-                    let action = Action::Paste(text);
-                    match app.input_mode {
-                        InputMode::Comment => handle_comment_action(&mut app, action),
-                        InputMode::Command => handle_command_action(&mut app, action),
-                        InputMode::Search => handle_search_action(&mut app, action),
-                        InputMode::CommitSelect if app.pr_filter_editing() => {
-                            handle_commit_select_action(&mut app, action)
-                        }
-                        _ => {}
-                    }
+                    handle_paste(&mut app, text);
                 }
                 _ => {}
             }
@@ -970,30 +914,6 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-fn dispatch_action(app: &mut App, action: Action) {
-    match app.input_mode {
-        InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
-        InputMode::Summary => handle_summary_action(app, action),
-        InputMode::Command => handle_command_action(app, action),
-        InputMode::Search => handle_search_action(app, action),
-        InputMode::Comment => handle_comment_action(app, action),
-        InputMode::Confirm => handle_confirm_action(app, action),
-        InputMode::CommitSelect => handle_commit_select_action(app, action),
-        InputMode::VisualSelect => handle_visual_action(app, action),
-        InputMode::SubmitResolver => handle_submit_resolver_action(app, action),
-        InputMode::SubmitConfirm => handle_submit_confirm_action(app, action),
-        InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
-        InputMode::ThemePicker => handle_theme_picker_action(app, action),
-        InputMode::FilePicker => handle_file_picker_action(app, action),
-        InputMode::Normal => match app.focused_panel {
-            FocusedPanel::FileList => handle_file_list_action(app, action),
-            FocusedPanel::Comments => handle_comment_navigator_action(app, action),
-            FocusedPanel::Diff => handle_diff_action(app, action),
-            FocusedPanel::CommitSelector => handle_commit_selector_action(app, action),
-        },
-    }
 }
 
 /// Handle a comment-mode key while vim is active: app-level keys keep their

@@ -50,6 +50,11 @@ standing in its checkout or passing `--repo slatedb/slatedb` — surfaces them.
 `list` emits a usable slug for each; pass a PR slug to `--session` to read or
 annotate it (no `--repo` needed, since PR slugs are self-contained).
 
+A PR slug names the forge's default host (`gh:` is github.com) implicitly. A PR
+session on any other host (a GitHub Enterprise server, a self-hosted GitLab,
+and always Gerrit) is listed and resolved with an `@<host>` suffix, e.g.
+`gh:owner/repo/pr/42@ghe.example.com`; a hostless slug never reaches it.
+
 ```bash
 # from anywhere:
 tuicr review list --repo slatedb/slatedb
@@ -75,6 +80,12 @@ tuicr review list --repo https://gitlab.com/org/team/svc
 tuicr review list --repo git@gitlab.com:org/team/svc.git
 #   -> [ ..., { "slug": "gl:org/team/svc/pr/123", "kind": "pr", ... } ]
 ```
+
+The `forge:<host>/<owner>/<repo>` form is the path tuicr stores for PR sessions
+and keeps every owner segment, so `forge:dev.azure.com/myorg/myproject/myrepo`
+and `forge:gerrit.example.org/a/tools` (owner `a`) select exactly that repo.
+A path whose repo segment is empty (`forge:host/owner/.git`) is not a valid
+selector.
 
 `--repo` for `add` / `comments` is only consulted when resolving a *local*
 slug; PR slugs and JSON paths ignore it.

@@ -472,3 +472,25 @@ fn should_not_report_filtering_once_the_mode_is_forced_back_to_normal() {
 
     assert!(!app.file_picker_filtering());
 }
+
+#[test]
+fn should_paste_into_the_filter_draft_as_one_line() {
+    let mut app = app_with(&["src/main.rs", "README.md"]);
+    app.enter_file_picker_mode();
+    handle_file_picker_action(&mut app, Action::FilePickerFilter);
+
+    crate::handler::handle_paste(&mut app, "READ\nME".into());
+
+    assert_eq!(app.file_picker.draft.as_deref(), Some("README"));
+}
+
+#[test]
+fn should_drop_carriage_returns_when_pasting_into_the_filter_draft() {
+    let mut app = app_with(&["src/main.rs", "README.md"]);
+    app.enter_file_picker_mode();
+    handle_file_picker_action(&mut app, Action::FilePickerFilter);
+
+    crate::handler::handle_paste(&mut app, "RE\r\nAD\rME".into());
+
+    assert_eq!(app.file_picker.draft.as_deref(), Some("README"));
+}

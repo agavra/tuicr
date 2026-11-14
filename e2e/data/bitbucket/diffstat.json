@@ -1,0 +1,20 @@
+{
+ "values": [
+  {
+   "status": "modified",
+   "old": {
+    "path": "README.md"
+   },
+   "new": {
+    "path": "README.md"
+   }
+  },
+  {
+   "status": "added",
+   "old": null,
+   "new": {
+    "path": "src/greet.rs"
+   }
+  }
+ ]
+}

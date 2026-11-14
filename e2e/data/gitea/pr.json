@@ -1,0 +1,24 @@
+{
+ "number": 1,
+ "title": "Add greeting",
+ "state": "open",
+ "user": {
+  "login": "alice"
+ },
+ "html_url": "https://gitea.example.com/octo/demo/pulls/1",
+ "head": {
+  "ref": "feature/greet",
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ },
+ "base": {
+  "ref": "main",
+  "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+ },
+ "merge_base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "body": "Adds greet.",
+ "updated_at": "2026-01-02T03:04:05Z",
+ "draft": false,
+ "merged": false,
+ "merged_at": null,
+ "mergeable": true
+}

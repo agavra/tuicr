@@ -427,7 +427,8 @@ pub struct ForgeFileLinesRequest {
     pub path: PathBuf,
     /// File status, used to choose the appropriate side without forcing the
     /// caller to also compute it. Renames use `Renamed`; `path` should already
-    /// reflect the chosen side.
+    /// reflect the chosen side. Kept public for library callers; not read
+    /// internally.
     pub status: FileStatus,
     /// Which side to read from. The caller is responsible for picking the
     /// right side per the spec mapping rules.
@@ -438,6 +439,31 @@ pub struct ForgeFileLinesRequest {
 }
 
 impl ForgeFileLinesRequest {
+    /// Build a request for `status`'s side of a file, or `None` when the diff
+    /// carries no path for that side.
+    pub fn for_file(
+        repository: ForgeRepository,
+        base_sha: String,
+        head_sha: String,
+        status: FileStatus,
+        old_path: Option<&PathBuf>,
+        new_path: Option<&PathBuf>,
+        line_range: (u32, u32),
+    ) -> Option<Self> {
+        let side = Self::side_for_status(status);
+        let path = Self::path_for_side(side, old_path, new_path)?;
+        Some(Self {
+            repository,
+            base_sha,
+            head_sha,
+            path,
+            status,
+            side,
+            start_line: line_range.0,
+            end_line: line_range.1,
+        })
+    }
+
     /// Resolve the side and path for a given file based on its status.
     /// Helper for callers that have a `DiffFile` and want to fetch context.
     pub fn side_for_status(status: FileStatus) -> ForgeFileSide {
@@ -488,6 +514,31 @@ pub struct GhCreateReviewResponse {
     pub state: String,
 }
 
+/// What a multi-request submit had already posted when it failed. Forges
+/// without a single review object (GitLab, Bitbucket, Azure) post the summary
+/// and each inline comment separately, so a later failure leaves some of them
+/// live on the forge.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubmitReceipts {
+    /// The review body (summary + review-level comments) was posted.
+    pub body_posted: bool,
+    /// `InlineComment::comment_id`s that were posted.
+    pub comment_ids: Vec<String>,
+}
+
+impl SubmitReceipts {
+    /// Attach these receipts to `err`; with nothing posted, `err` is unchanged.
+    pub fn into_error(self, err: TuicrError) -> TuicrError {
+        if !self.body_posted && self.comment_ids.is_empty() {
+            return err;
+        }
+        TuicrError::PartialSubmit {
+            message: err.to_string(),
+            receipts: self,
+        }
+    }
+}
+
 /// Request to create a review against a PR. The payload is the forge-agnostic
 /// shape of the JSON body the backend will POST; downstream the GitHub
 /// backend reshapes it via `build_review_payload` and writes it on stdin.
@@ -495,6 +546,10 @@ pub struct GhCreateReviewResponse {
 pub struct CreateReviewRequest<'a> {
     pub event: SubmitEvent,
     pub commit_id: &'a str,
+    /// Revision of the displayed diff's old side when the inline commit
+    /// selector shows a strict subset (the parent of its oldest commit).
+    /// `None` for the cumulative PR diff, whose old side is the merge base.
+    pub base_commit_id: Option<&'a str>,
     pub body: &'a str,
     pub comments: &'a [crate::forge::submit::InlineComment],
 }
@@ -517,24 +572,6 @@ pub struct PullRequestCommit {
     pub timestamp: Option<DateTime<Utc>>,
 }
 
-/// The body of a raw commit message: what follows the subject line and the
-/// blank line(s) after it, or `None` for a subject-only message. Splits the
-/// way the VCS backends split a local commit, so a commit reads the same in
-/// a pull request review as in a local one.
-pub fn commit_message_body(message: &str) -> Option<String> {
-    let mut lines = message
-        .lines()
-        .skip(1)
-        .skip_while(|line| line.trim().is_empty());
-    let mut body = lines.next()?.to_string();
-    for line in lines {
-        body.push('\n');
-        body.push_str(line);
-    }
-    body.truncate(body.trim_end().len());
-    Some(body)
-}
-
 /// Minimal review metadata used to infer "commits since my last review".
 /// This is separate from displayed review summaries because empty-body
 /// approvals still count as reviews for scoping purposes.
@@ -551,7 +588,10 @@ pub struct PullRequestReviewRecord {
     pub commit_oid: Option<String>,
 }
 
-/// A reviewer's latest response on a pull request.
+/// A reviewer's effective response on a pull request: normally the latest
+/// response, but a later comment-only review does not replace an earlier
+/// decisive vote (approval or change request), and dismissed votes are ignored
+/// (Gitea). `submitted_at` is the time of the effective row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestReviewStatus {
     pub author: Option<String>,
@@ -621,8 +661,18 @@ pub trait ForgeBackend {
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>>;
     /// Fetch the requested file lines from the forge for context expansion.
     /// Implementations may optimize by reading from a local checkout when
-    /// available; the trait does not require that path.
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>>;
+    /// available; the trait does not require that path. The default slices
+    /// [`Self::fetch_file_content`]; an empty or inverted range reads nothing.
+    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
+        if request.start_line == 0 || request.start_line > request.end_line {
+            return Ok(Vec::new());
+        }
+        let (start_line, end_line) = (request.start_line, request.end_line);
+        let content = self.fetch_file_content(request)?;
+        Ok(crate::vcs::slice_context_lines(
+            &content, start_line, end_line,
+        ))
+    }
     /// Return the whole file at the revision described by `request`, exactly as
     /// stored: unlike [`Self::fetch_file_lines`], tabs are not expanded, so the
     /// result is safe to write back out as a file. `start_line` and `end_line`
@@ -721,51 +771,33 @@ pub trait ForgeBackend {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn should_leave_error_unchanged_when_nothing_was_posted() {
+        let err = SubmitReceipts::default().into_error(TuicrError::Forge("x".to_string()));
+        assert!(matches!(err, TuicrError::Forge(_)), "{err:?}");
+    }
+
+    #[test]
+    fn should_wrap_error_when_only_the_body_was_posted() {
+        let receipts = SubmitReceipts {
+            body_posted: true,
+            comment_ids: Vec::new(),
+        };
+        let err = receipts.into_error(TuicrError::Forge("x".to_string()));
+        assert!(matches!(err, TuicrError::PartialSubmit { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn should_wrap_error_when_only_comments_were_posted() {
+        let receipts = SubmitReceipts {
+            body_posted: false,
+            comment_ids: vec!["c".to_string()],
+        };
+        let err = receipts.into_error(TuicrError::Forge("x".to_string()));
+        assert!(matches!(err, TuicrError::PartialSubmit { .. }), "{err:?}");
+    }
+
     use super::*;
-
-    #[test]
-    fn should_omit_commit_body_for_a_subject_only() {
-        // given / when / then
-        assert_eq!(commit_message_body("Subject"), None);
-        assert_eq!(commit_message_body("Subject\n\n \t\n"), None);
-    }
-
-    #[test]
-    fn should_preserve_paragraphs_inside_commit_body() {
-        // given
-        let message = "Subject\n\nFirst paragraph.\nContinued.\n\nSecond paragraph.";
-        // when
-        let body = commit_message_body(message);
-        // then
-        assert_eq!(
-            body.as_deref(),
-            Some("First paragraph.\nContinued.\n\nSecond paragraph.")
-        );
-    }
-
-    #[test]
-    fn should_skip_multiple_blank_commit_message_separators() {
-        // given / when
-        let body = commit_message_body("Subject\n\n \t\n\n  Indented body.");
-        // then
-        assert_eq!(body.as_deref(), Some("  Indented body."));
-    }
-
-    #[test]
-    fn should_trim_trailing_commit_body_whitespace() {
-        // given / when
-        let body = commit_message_body("Subject\n\nBody. \t\n\n");
-        // then
-        assert_eq!(body.as_deref(), Some("Body."));
-    }
-
-    #[test]
-    fn should_normalize_crlf_commit_message_lines() {
-        // given / when
-        let body = commit_message_body("Subject\r\n\r\nFirst.\r\n\r\nSecond.\r\n");
-        // then
-        assert_eq!(body.as_deref(), Some("First.\n\nSecond."));
-    }
 
     #[test]
     fn should_round_trip_pr_session_key_via_serde() {

@@ -98,7 +98,11 @@ REST API when a revision isn't present locally.
 
 This is the first Azure DevOps slice. Not yet supported:
 
-- **Commit-subrange selection** requires both commits to be present in the local clone.
+- **Commit-subrange selection** requires both commits to be present in the local clone. Inline
+  comments submitted from a subrange must be on a commit that is an Azure PR iteration head (one
+  push); otherwise submit fails before posting anything. Comments on the old (left) side also
+  need the range's parent to be the PR's common base or another iteration head. Select all
+  commits, or comment on the new side, to work around it.
 - **Draft reviews** — Azure DevOps has no draft-review primitive, so `:submit draft` behaves
   like Comment and posts immediately.
 - **Older on-premises servers** — REST API 7.1 requires Azure DevOps Server 2022.1

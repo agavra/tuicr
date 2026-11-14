@@ -14,6 +14,7 @@ mod file_session_identity_tests;
 mod find_source_line_tests;
 mod locked_comment_tests;
 mod persistence_merge_tests;
+mod pr_identity_tests;
 mod pr_info_tests;
 mod redraw_tests;
 pub(in crate::app) mod render_perf_tests;

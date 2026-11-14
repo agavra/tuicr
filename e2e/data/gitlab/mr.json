@@ -1,0 +1,19 @@
+{
+ "iid": 1,
+ "title": "Add greeting",
+ "web_url": "https://gitlab.com/octo/demo/-/merge_requests/1",
+ "state": "opened",
+ "author": {
+  "username": "alice"
+ },
+ "source_branch": "feature/greet",
+ "target_branch": "main",
+ "sha": "2222222222222222222222222222222222222222",
+ "diff_refs": {
+  "base_sha": "1111111111111111111111111111111111111111",
+  "head_sha": "2222222222222222222222222222222222222222",
+  "start_sha": "1111111111111111111111111111111111111111"
+ },
+ "description": "Adds greet.",
+ "updated_at": "2026-01-02T03:04:05Z"
+}

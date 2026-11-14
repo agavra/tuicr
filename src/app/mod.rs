@@ -785,6 +785,8 @@ pub struct SubmitState {
     pub resolver_cursor: usize,
     /// Originally-reviewed head SHA — used as `commit_id` in the payload.
     pub commit_id: String,
+    /// Old-side revision of a strict commit subset; `None` for the full PR.
+    pub base_commit_id: Option<String>,
     /// When `true`, the resolver advances directly to the network call
     /// instead of routing through `SubmitConfirm`. Set by the action-picker
     /// path; left `false` for explicit `:submit <event>` invocations.
@@ -996,6 +998,9 @@ pub struct SubmitInFlightState {
     /// Head SHA at preflight — used as `commit_id` in the GitHub payload and
     /// to discard stale results if the user reloaded the PR mid-submit.
     pub head_sha_snapshot: String,
+    /// Head of the PR session the submit started from. Differs from
+    /// `head_sha_snapshot` when a commit subset is selected.
+    pub pr_head_sha: String,
     /// Repository + PR identity. Lets the stale-result guard verify the
     /// result still applies to the same PR session.
     pub repository: crate::forge::traits::ForgeRepository,
@@ -1011,6 +1016,8 @@ pub enum PrSubmitEvent {
         pr_number: u64,
         head_sha: String,
         result: std::result::Result<crate::forge::traits::GhCreateReviewResponse, String>,
+        /// What a failed submit had already posted (empty on success).
+        partial: crate::forge::traits::SubmitReceipts,
     },
 }
 
@@ -1141,6 +1148,11 @@ pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
     pub vcs_info: VcsInfo,
+    /// The backend that is *not* active while a PR is open: the checkout's own
+    /// while in PR mode (the active one is `PrNoopVcs`), so local targets stay
+    /// reachable. `None` until needed when tuicr started on `tuicr pr`; see
+    /// `activate_local_vcs`.
+    parked_vcs: Option<(Box<dyn VcsBackend>, VcsInfo)>,
     /// The on-disk repo root tuicr was launched in, when there is one.
     ///
     /// Entering PR mode replaces `vcs_info.root_path` with the synthetic
@@ -1203,6 +1215,8 @@ pub struct App {
     pub summary_state: SummaryState,
     /// File-tree include/exclude filters and `/` search.
     pub file_filter: FileTreeFilter,
+    /// `transparent_background`: reapplied to every theme resolved at runtime.
+    pub transparent_background: bool,
     /// Runtime `:theme` picker state.
     pub theme_picker: ThemePickerState,
     /// `<leader>p` file picker state.
@@ -1357,6 +1371,10 @@ pub struct App {
     pub current_pr_head: Option<String>,
     /// Extended PR metadata rendered at the top of the diff view. Populated in PR mode.
     pub pr_info: Option<crate::forge::traits::PullRequestInfo>,
+    /// Built PR-info panel rows, reused until the width, PR metadata or theme
+    /// changes (see `ui::pr_info_panel::pr_info_display_lines`).
+    pub(crate) pr_info_rows_cache:
+        std::cell::RefCell<Option<crate::ui::pr_info_panel::PrInfoRowsCache>>,
     /// Whether pull-request CI checks are fetched and rendered. Defaults to
     /// false; configured before the first direct PR load.
     pub show_pr_checks: bool,
@@ -1498,7 +1516,7 @@ pub struct App {
     pub initial_comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
     /// Cached individual/subrange diffs keyed by (start_idx, end_idx) into review_commits
     pub commit_diff_cache: HashMap<(usize, usize), Vec<DiffFile>>,
-    /// The combined "all selected" diff, cached for quick restoration
+    /// Full-range (every commit) diff cache, used to restore the widened view
     pub range_diff_files: Option<Vec<DiffFile>>,
     /// Saved inline selection range when entering full commit select mode via :commits
     pub saved_inline_selection: Option<(usize, usize)>,
@@ -1514,6 +1532,25 @@ pub struct CommentTypeDefinition {
     pub label: String,
     pub definition: Option<String>,
     pub color: Option<Color>,
+}
+
+/// Resolved `[TYPE]` text for a comment type: the configured label uppercased,
+/// else the uppercased id. Empty for [`CommentType::None`] so callers omit the
+/// tag. The single resolver behind the TUI, export and forge submit labels.
+pub fn resolve_comment_type_label(
+    comment_type: &crate::model::CommentType,
+    comment_types: &[CommentTypeDefinition],
+) -> String {
+    if comment_type.is_none() {
+        return String::new();
+    }
+    match comment_types
+        .iter()
+        .find(|definition| definition.id == comment_type.id())
+    {
+        Some(definition) => definition.label.to_ascii_uppercase(),
+        None => comment_type.as_str(),
+    }
 }
 
 #[derive(Default)]
@@ -1615,7 +1652,7 @@ pub struct CommentNavigatorItem {
     pub author: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DiffState {
     pub scroll_offset: usize,
     pub scroll_x: usize,
@@ -1647,22 +1684,6 @@ impl DiffState {
     /// viewport to guarantee a stable free zone after centering (zz).
     pub fn effective_scroll_margin(&self, scroll_offset: usize) -> usize {
         scroll_offset.min((self.effective_visible_lines() / 2).saturating_sub(1))
-    }
-}
-
-impl Default for DiffState {
-    fn default() -> Self {
-        Self {
-            scroll_offset: 0,
-            scroll_x: 0,
-            cursor_line: 0,
-            current_file_idx: 0,
-            viewport_height: 0,
-            viewport_width: 0,
-            max_content_width: 0,
-            wrap_lines: true,
-            visible_line_count: 0,
-        }
     }
 }
 

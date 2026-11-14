@@ -247,7 +247,8 @@ language they lack, drop its Sublime Text grammar (`*.sublime-syntax`) into the 
 on Windows). It applies to the file extensions the grammar's `file_extensions` lists.
 
 Grammars that `extends:` another (a Sublime Text 4 feature) are not supported. A file that fails to
-parse is skipped with a startup warning. Loading any grammar here adds about 200ms to startup.
+parse is skipped with a startup warning, as is one with an empty context list in a `push`/`set` list
+(`push: [[]]`) or a non-string `escape`, which crash the grammar loader. Loading any grammar here adds about 200ms to startup.
 
 ## Comment types
 

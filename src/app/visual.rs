@@ -101,14 +101,26 @@ impl App {
         });
     }
 
+    /// Line range and side of the selection, or `None` when it spans files.
     pub fn visual_selection_line_range(&self) -> Option<(LineRange, LineSide)> {
+        self.visual_selection_target()
+            .map(|(_, range, side)| (range, side))
+    }
+
+    /// File, line range and side of the selection. Each file's annotations
+    /// are contiguous, so equal endpoint files mean one file throughout.
+    fn visual_selection_target(&self) -> Option<(usize, LineRange, LineSide)> {
         let sel = self.get_visual_selection()?;
         let (start, end) = sel.ordered();
+        let file_idx = annotation_file_idx(self.line_annotations.get(start.annotation_idx)?)?;
+        if annotation_file_idx(self.line_annotations.get(end.annotation_idx)?)? != file_idx {
+            return None;
+        }
         let start_line = self.annotation_line_for_side(start.annotation_idx, start.side);
         let end_line = self.annotation_line_for_side(end.annotation_idx, end.side);
         let start_ln = start_line?;
         let end_ln = end_line?;
-        Some((LineRange::new(start_ln, end_ln), start.side))
+        Some((file_idx, LineRange::new(start_ln, end_ln), start.side))
     }
 
     fn annotation_line_for_side(&self, idx: usize, side: LineSide) -> Option<u32> {
@@ -198,7 +210,9 @@ impl App {
     }
 
     pub fn enter_comment_from_visual(&mut self) {
-        if let Some((range, side)) = self.visual_selection_line_range() {
+        if let Some((file_idx, range, side)) = self.visual_selection_target() {
+            // Paging in visual mode can move the current file off the selection.
+            self.diff_state.current_file_idx = file_idx;
             self.comment_line_range = Some((range, side));
             self.comment_line = Some((range.end, side));
             self.input_mode = InputMode::Comment;

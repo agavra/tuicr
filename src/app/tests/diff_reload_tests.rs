@@ -312,6 +312,22 @@ fn should_stage_both_paths_of_reviewed_rename() {
 }
 
 #[test]
+fn should_keep_wrap_preference_when_staging_empties_the_diff() {
+    let _reviews = TestReviewsDir::new();
+    let (_dir, _repo, mut app) = renamed_file_app(FileStatus::Renamed);
+    app.diff_state.wrap_lines = true;
+    app.session
+        .get_file_mut(&PathBuf::from("new.txt"))
+        .unwrap()
+        .reviewed = true;
+
+    app.stage_reviewed_files();
+
+    assert!(app.diff_files.is_empty(), "staging should empty the diff");
+    assert!(app.diff_state.wrap_lines, "staging reload reset wrap");
+}
+
+#[test]
 fn should_stage_only_destination_of_reviewed_copy() {
     let _reviews = TestReviewsDir::new();
     let (_dir, repo, mut app) = renamed_file_app(FileStatus::Copied);
@@ -1110,5 +1126,49 @@ fn should_redraw_and_drop_the_annotation_when_one_of_two_line_comments_is_delete
     assert!(
         line_comment_rows(&app) < before,
         "the deleted comment must leave the annotation cache"
+    );
+}
+
+/// An external `tuicr review clear` removes a hunk mark on disk. A TUI save
+/// that also carries a local hunk mark must not write the cleared one back.
+#[test]
+fn should_not_resurrect_an_externally_cleared_hunk_mark_when_saving() {
+    let _reviews = TestReviewsDir::new();
+    let mut file = make_diff_file("a.rs", FileStatus::Modified, 1);
+    file.hunks = vec![make_hunk(10, "base"), make_hunk(20, "local")];
+    let keys = file.hunk_review_keys();
+    let path = file.display_path().clone();
+    let mut app = build_app_with_scripted_vcs(vec![file], ScriptedVcs::new());
+    app.session
+        .files
+        .get_mut(&path)
+        .unwrap()
+        .reviewed_hunks
+        .insert(keys[0].clone());
+    let saved = app.save_current_session_merging_external().unwrap();
+
+    let mut external = crate::persistence::storage::load_session(&saved).unwrap();
+    external
+        .files
+        .get_mut(&path)
+        .unwrap()
+        .reviewed_hunks
+        .clear();
+    crate::persistence::storage::save_session(&external).unwrap();
+    app.session
+        .files
+        .get_mut(&path)
+        .unwrap()
+        .reviewed_hunks
+        .insert(keys[1].clone());
+    app.save_current_session_merging_external().unwrap();
+
+    let expected: std::collections::BTreeSet<String> = [keys[1].clone()].into_iter().collect();
+    let on_disk = crate::persistence::storage::load_session(&saved).unwrap();
+    assert_eq!(on_disk.files[&path].reviewed_hunks, expected);
+    assert_eq!(app.session.files[&path].reviewed_hunks, expected);
+    assert_eq!(
+        app.persisted_session_snapshot.files[&path].reviewed_hunks,
+        expected
     );
 }

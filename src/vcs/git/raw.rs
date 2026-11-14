@@ -13,26 +13,61 @@ use crate::model::{FilePatch, FileStatus};
 /// Parse one `git diff --raw -z --patch` byte stream.
 pub(crate) fn parse_raw_patch_output(output: &[u8]) -> Result<Vec<FilePatch>> {
     let (raw, patch_text) = split_raw_patch_sections(output)?;
-    let metadata = parse_raw_records(raw)?;
+    let records = parse_raw_records(raw)?;
     let patch_blocks = split_patch_blocks(patch_text);
 
-    if metadata.len() != patch_blocks.len() {
+    let with_patch = records.iter().filter(|record| record.has_patch).count();
+    if with_patch != patch_blocks.len() {
         return Err(malformed(format!(
-            "Git emitted {} raw records but {} patch blocks",
-            metadata.len(),
+            "Git emitted {with_patch} raw records but {} patch blocks",
             patch_blocks.len()
         )));
     }
 
-    pair_metadata_with_blocks(metadata, patch_blocks)
+    let mut blocks = patch_blocks.into_iter();
+    let mut files = Vec::with_capacity(records.len());
+    for record in records {
+        if record.has_patch {
+            let block = blocks.next().unwrap_or_default();
+            files.extend(pair_metadata_with_blocks(
+                vec![record.metadata],
+                vec![block],
+            )?);
+        } else {
+            files.push(unmerged_file_patch(record.metadata));
+        }
+    }
+    Ok(files)
 }
+
+/// A conflicted path: listed as modified, with no hunks, like libgit2.
+pub(crate) fn unmerged_file_patch(metadata: FileMetadata) -> FilePatch {
+    FilePatch::new(
+        metadata.old_path,
+        metadata.new_path,
+        metadata.status,
+        String::new(),
+    )
+}
+
+/// User config that changes the shape of `git diff` output: forced color wraps
+/// headers in ANSI escapes and `suppressBlankEmpty` drops the space prefix of
+/// blank context lines. `--no-color` is a `diff` flag, so it is passed there.
+pub(crate) const NO_USER_DIFF_CONFIG: [&str; 4] = [
+    "-c",
+    "color.diff=false",
+    "-c",
+    "diff.suppressBlankEmpty=false",
+];
 
 /// Run Git with the structured diff flags used by non-CLI-backend callers.
 pub(crate) fn run_git_diff(root: &Path, diff_args: &[&str]) -> Result<Vec<FilePatch>> {
     let output = Command::new("git")
         .current_dir(root)
+        .args(NO_USER_DIFF_CONFIG)
         .args([
             "diff",
+            "--no-color",
             "--no-ext-diff",
             "--raw",
             "-z",
@@ -57,11 +92,19 @@ pub(crate) struct FileMetadata {
     pub status: FileStatus,
 }
 
+/// One raw record. Conflicted paths (`U` and combined `::` records) have no
+/// `diff --git` block, so `has_patch` is false for them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RawRecord {
+    pub metadata: FileMetadata,
+    pub has_patch: bool,
+}
+
 /// Read the authoritative records from the raw section of a combined diff.
 ///
 /// This is also useful when a diff option (notably `--ignore-all-space`)
 /// suppresses some patch bodies but Git still emits raw records for them.
-pub(crate) fn parse_raw_metadata_from_patch_output(output: &[u8]) -> Result<Vec<FileMetadata>> {
+pub(crate) fn parse_raw_metadata_from_patch_output(output: &[u8]) -> Result<Vec<RawRecord>> {
     let (raw, _) = split_raw_patch_sections(output)?;
     parse_raw_records(raw)
 }
@@ -82,10 +125,15 @@ fn split_raw_patch_sections(output: &[u8]) -> Result<(&[u8], &[u8])> {
         return Ok((output, &output[1..]));
     }
 
-    let separator = output
-        .windows(2)
-        .position(|window| window == b"\0\0")
-        .ok_or_else(|| malformed("missing NUL boundary between raw metadata and patch text"))?;
+    let Some(separator) = output.windows(2).position(|window| window == b"\0\0") else {
+        // Only combined (conflict) records: Git emits no `-z` patch boundary.
+        if output.starts_with(b":") && output.ends_with(b"\0") {
+            return Ok((output, &[]));
+        }
+        return Err(malformed(
+            "missing NUL boundary between raw metadata and patch text",
+        ));
+    };
     Ok((&output[..=separator], &output[separator + 2..]))
 }
 
@@ -128,7 +176,7 @@ fn pair_metadata_with_blocks(
         .collect())
 }
 
-fn parse_raw_records(raw: &[u8]) -> Result<Vec<FileMetadata>> {
+fn parse_raw_records(raw: &[u8]) -> Result<Vec<RawRecord>> {
     let mut fields = raw.split(|byte| *byte == 0).peekable();
     let mut records = Vec::new();
 
@@ -138,6 +186,23 @@ fn parse_raw_records(raw: &[u8]) -> Result<Vec<FileMetadata>> {
         }
         let header = std::str::from_utf8(header)
             .map_err(|_| malformed("raw metadata header is not ASCII"))?;
+        if header.starts_with("::") {
+            // Combined record of an unmerged path: one path, no patch block.
+            let path = fields
+                .next()
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| malformed("raw combined record has no path"))?;
+            let path = path_buf_from_bytes(path);
+            records.push(RawRecord {
+                metadata: FileMetadata {
+                    old_path: Some(path.clone()),
+                    new_path: Some(path),
+                    status: FileStatus::Modified,
+                },
+                has_patch: false,
+            });
+            continue;
+        }
         let status_token = header
             .strip_prefix(':')
             .and_then(|rest| rest.split_whitespace().nth(4))
@@ -194,7 +259,10 @@ fn parse_raw_records(raw: &[u8]) -> Result<Vec<FileMetadata>> {
                 )));
             }
         };
-        records.push(record);
+        records.push(RawRecord {
+            metadata: record,
+            has_patch: status_code != b'U',
+        });
     }
 
     Ok(records)
@@ -282,6 +350,15 @@ mod tests {
                 .is_empty()
         );
         assert!(patch_text_from_raw_patch_output(b"\0").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parses_combined_conflict_record_without_patch_boundary() {
+        let files =
+            parse_raw_patch_output(b"::100644 100644 100644 aaa bbb ccc UU\0f.txt\0").unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].new_path.as_deref(), Some(Path::new("f.txt")));
+        assert!(parse_raw_patch_output(b":100644 100644 aaa bbb M\0f.txt").is_err());
     }
 
     #[test]

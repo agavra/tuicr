@@ -31,7 +31,9 @@ all open the same review. The target accepts several forms:
 | `host/owner/repo#iid` | `git.example.com/mygroup/myrepo#125` |
 
 Nested groups and subgroups work in the `owner/repo` slot, for example
-`mygroup/subgroup/myrepo#125`.
+`mygroup/subgroup/myrepo#125`. A three-segment `a/b/c#iid` is read as
+`host/owner/repo` only when `a` contains a `.`; use a full URL for single-label
+hosts.
 
 tuicr detects the forge from the repository's remotes. A remote routes to GitLab
 when its host contains `gitlab` or matches a self-hosted host configured in
@@ -102,11 +104,14 @@ in `~/.ssh/config` are resolved the same way.
 
 ## Limitations and troubleshooting
 
+- Merge requests with more than 10,000 commits fail to open with an explicit error rather than showing a partial commit list.
+
 Reviewing a commit range within an MR requires a local checkout of the branch.
 A remote-only commit-range diff returns a "not yet supported" error.
 
 For verbose tracing of the `glab` calls tuicr makes, set `TUICR_GLAB_DEBUG=1`.
-tuicr appends each interaction to `/tmp/tuicr-glab-debug.log`.
+tuicr appends each interaction to `glab-debug.log` in its per-user cache
+directory (`~/.cache/tuicr/` on Linux), readable only by you.
 
 Common errors:
 

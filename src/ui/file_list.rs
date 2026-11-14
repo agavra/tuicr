@@ -8,7 +8,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, FileTreeItem, FocusedPanel};
-use crate::ui::diff_view::apply_horizontal_scroll;
+use crate::ui::diff_view::scroll_spans_by_width;
 use crate::ui::styles;
 
 const EXPANDED_GLYPH: &str = "\u{25bc}"; // ▼
@@ -49,33 +49,6 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     app.file_list_inner_area = Some(inner);
     let visible_items = app.build_visible_items();
 
-    let max_content_width = visible_items
-        .iter()
-        .map(|item| match item {
-            FileTreeItem::Directory { label, depth, .. } => depth * 2 + 2 + label.width() + 1,
-            FileTreeItem::File { file_idx, depth } => {
-                let file = &app.diff_files[*file_idx];
-                let filename = file
-                    .display_path()
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("?");
-                depth * 2 + 4 + filename.width()
-            }
-        })
-        .max()
-        .unwrap_or(0);
-
-    app.file_list_state.viewport_width = inner.width as usize;
-    app.file_list_state.viewport_height = inner.height as usize;
-    app.file_list_state.max_content_width = max_content_width;
-
-    let max_scroll_x = max_content_width.saturating_sub(inner.width as usize);
-    if app.file_list_state.scroll_x > max_scroll_x {
-        app.file_list_state.scroll_x = max_scroll_x;
-    }
-    let scroll_x = app.file_list_state.scroll_x;
-
     // When diff panel is focused, sync file list selection to current view
     // But preserve the current offset to not interfere with manual scrolling
     if app.focused_panel == FocusedPanel::Diff {
@@ -96,10 +69,10 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    let items: Vec<ListItem> = visible_items
+    let lines: Vec<Line> = visible_items
         .iter()
         .map(|item| {
-            let line = match item {
+            match item {
                 FileTreeItem::Directory {
                     label,
                     depth,
@@ -158,14 +131,23 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                         Line::from(spans)
                     }
                 }
-            };
-
-            ListItem::new(if app.compact_folders {
-                scroll_compact_row(line, scroll_x)
-            } else {
-                apply_horizontal_scroll(line, scroll_x)
-            })
+            }
         })
+        .collect();
+    app.file_list_state.viewport_width = inner.width as usize;
+    app.file_list_state.viewport_height = inner.height as usize;
+    let max_content_width = lines.iter().map(Line::width).max().unwrap_or(0);
+    app.file_list_state.max_content_width = max_content_width;
+
+    let max_scroll_x = max_content_width.saturating_sub(inner.width as usize);
+    if app.file_list_state.scroll_x > max_scroll_x {
+        app.file_list_state.scroll_x = max_scroll_x;
+    }
+    let scroll_x = app.file_list_state.scroll_x;
+
+    let items: Vec<ListItem> = lines
+        .into_iter()
+        .map(|line| ListItem::new(scroll_spans_by_width(line, scroll_x)))
         .collect();
 
     // Full-row bg highlight on the selected row (no leading cursor glyph or
@@ -187,34 +169,6 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
             y: area.y + area.height.saturating_sub(1),
         });
     }
-}
-
-/// Compact paths are measured in terminal columns; pan by the same unit,
-/// preserving grapheme clusters and padding a partially clipped wide glyph.
-fn scroll_compact_row(line: Line<'_>, mut columns: usize) -> Line<'_> {
-    if columns == 0 {
-        return line;
-    }
-    let spans = line
-        .spans
-        .into_iter()
-        .map(|span| {
-            let mut text = String::new();
-            for grapheme in span.styled_graphemes(Style::default()) {
-                let width = grapheme.symbol.width();
-                if columns == 0 {
-                    text.push_str(grapheme.symbol);
-                } else if columns >= width {
-                    columns -= width;
-                } else {
-                    text.push_str(&" ".repeat(width - columns));
-                    columns = 0;
-                }
-            }
-            Span::styled(text, span.style)
-        })
-        .collect::<Vec<_>>();
-    Line::from(spans)
 }
 
 /// Leading `│` border plus one space before the prompt sigil.
@@ -402,10 +356,10 @@ mod tests {
         use ratatui::text::Line;
         let line = Line::from("界e\u{301}/next");
         assert_eq!(
-            super::scroll_compact_row(line.clone(), 1).to_string(),
+            super::scroll_spans_by_width(line.clone(), 1).to_string(),
             " e\u{301}/next"
         );
-        assert_eq!(super::scroll_compact_row(line, 3).to_string(), "/next");
+        assert_eq!(super::scroll_spans_by_width(line, 3).to_string(), "/next");
     }
 
     #[test]
@@ -426,6 +380,34 @@ mod tests {
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("▶ app/src/main/kotlin/"), "{text}");
         assert!(!text.contains("Editor.kt"), "{text}");
+    }
+
+    #[test]
+    fn non_compact_horizontal_scroll_moves_every_row() {
+        let mut app = app_with(&["a/b/c/long_filename.rs"]);
+        app.compact_folders = false;
+        let mut terminal = Terminal::new(TestBackend::new(18, 8)).unwrap();
+        terminal
+            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
+            .unwrap();
+        app.file_list_state.scroll_x = 4;
+        terminal
+            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
+            .unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("▼ c/"), "{text}");
+        assert!(text.contains("▢ M long"), "{text}");
+    }
+
+    #[test]
+    fn pristine_mode_width_excludes_the_status_badge() {
+        let mut app = app_with(&["file.rs"]);
+        app.is_pristine_mode = true;
+        let mut terminal = Terminal::new(TestBackend::new(30, 8)).unwrap();
+        terminal
+            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
+            .unwrap();
+        assert_eq!(app.file_list_state.max_content_width, 9);
     }
 
     #[test]

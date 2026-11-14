@@ -1,32 +1,34 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
 use crate::error::{Result, TuicrError};
 use crate::forge::local_git::read_blob;
-use crate::forge::local_merge_base;
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
+use crate::forge::remote_url::{
+    parse_scp_like_remote, read_ssh_hostname, strip_port, strip_scheme, trim_url_suffix,
+};
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestInfo,
     PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
-use crate::model::{DiffLine, FilePatch};
+use crate::forge::{forge_path, percent_encode_component, percent_encode_path};
+use crate::forge::{local_merge_base, local_range_diff};
+use crate::model::FilePatch;
 use crate::process::{
     CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
 };
-use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch, run_git_diff};
+use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch};
 use crate::vcs::git::read_git_objects;
-use crate::vcs::slice_context_lines;
 
 use super::models::{GhCompare, GhPrCommit, GhPullRequestFile, GhPullRequestSummary};
 use super::review_summaries::{
     build_query as build_reviews_query, parse_graphql_page as parse_reviews_page,
 };
-use super::review_threads::{build_query, parse_graphql_page};
+use super::review_threads::{GhPageInfo, build_query, parse_graphql_page};
 use super::submit::build_review_payload;
 use crate::forge::traits::CreateReviewRequest;
 
@@ -36,10 +38,6 @@ const DEFAULT_GITHUB_HOST: &str = "github.com";
 const BLOB_TEXTS_PER_QUERY: usize = 50;
 const PR_LIST_JSON_FIELDS: &str =
     "number,title,author,headRefName,baseRefName,updatedAt,url,state,isDraft";
-const PR_VIEW_JSON_FIELDS: &str = concat!(
-    "number,title,url,state,isDraft,author,headRefName,baseRefName,",
-    "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt"
-);
 const PR_INFO_JSON_FIELDS: &str = concat!(
     "number,title,url,state,isDraft,author,headRefName,baseRefName,",
     "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
@@ -114,25 +112,6 @@ impl From<CommandOutputError> for GhCommandError {
             }
         }
     }
-}
-
-/// Return `Some(diff)` when both `start_sha` and `end_sha` are present in
-/// the local checkout at `repo_root`, by running `git diff <start>..<end>`.
-/// Returns `None` when the checkout is missing either SHA or the command
-/// fails — callers fall back to the forge in that case.
-fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<Vec<FilePatch>> {
-    for sha in [start_sha, end_sha] {
-        let exists = run_command_output(
-            "git",
-            Some(repo_root),
-            ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
-        );
-        if exists.is_err() {
-            return None;
-        }
-    }
-    let range = format!("{start_sha}..{end_sha}");
-    run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
 #[derive(Debug, Clone)]
@@ -227,9 +206,7 @@ where
                 pr.repository.owner, pr.repository.name, pr.number
             );
             let mut args = vec!["api".to_string()];
-            if pr.repository.host != DEFAULT_GITHUB_HOST {
-                args.extend(["--hostname".to_string(), pr.repository.host.clone()]);
-            }
+            push_hostname(&mut args, &pr.repository.host);
             args.push(endpoint);
             let output = self.run_gh(args, &pr.repository.host)?;
             let rows: Vec<GhPullRequestFile> = serde_json::from_str(&output)?;
@@ -380,10 +357,7 @@ where
                 pr.repository.owner, pr.repository.name, pr.number, page,
             );
             let mut args = vec!["api".to_string()];
-            if pr.repository.host != DEFAULT_GITHUB_HOST {
-                args.push("--hostname".to_string());
-                args.push(pr.repository.host.clone());
-            }
+            push_hostname(&mut args, &pr.repository.host);
             args.push(endpoint);
             let output = self.run_gh(args, &pr.repository.host)?;
             let rows: Vec<GhPrCommit> = serde_json::from_str(&output)?;
@@ -421,9 +395,7 @@ where
             pr.repository.owner, pr.repository.name, start_sha, end_sha,
         );
         let mut metadata_args = vec!["api".to_string()];
-        if pr.repository.host != DEFAULT_GITHUB_HOST {
-            metadata_args.extend(["--hostname".to_string(), pr.repository.host.clone()]);
-        }
+        push_hostname(&mut metadata_args, &pr.repository.host);
         metadata_args.push(endpoint.clone());
         let metadata_output = self.run_gh(metadata_args, &pr.repository.host)?;
         let compare: GhCompare = serde_json::from_str(&metadata_output)?;
@@ -438,10 +410,7 @@ where
             "-H".to_string(),
             "Accept: application/vnd.github.diff".to_string(),
         ];
-        if pr.repository.host != DEFAULT_GITHUB_HOST {
-            args.push("--hostname".to_string());
-            args.push(pr.repository.host.clone());
-        }
+        push_hostname(&mut args, &pr.repository.host);
         args.push(endpoint);
         let patch = self.run_gh(args, &pr.repository.host)?;
         pair_metadata_with_patch(metadata, patch.as_bytes())
@@ -465,10 +434,7 @@ where
             pr.repository.owner, pr.repository.name, pr.base_sha, pr.head_sha,
         );
         let mut args = vec!["api".to_string()];
-        if pr.repository.host != DEFAULT_GITHUB_HOST {
-            args.push("--hostname".to_string());
-            args.push(pr.repository.host.clone());
-        }
+        push_hostname(&mut args, &pr.repository.host);
         args.push(endpoint);
         let output = self.run_gh(args, &pr.repository.host).ok()?;
         let comparison: GhCompare = serde_json::from_str(&output).ok()?;
@@ -488,16 +454,10 @@ where
             let output = self.run_gh(args, &pr.repository.host)?;
             let parsed = parse_graphql_page(&output)?;
             all.extend(parsed.threads);
-            let Some(page_info) = parsed.page_info else {
-                break;
-            };
-            if !page_info.has_next_page {
+            cursor = next_cursor(parsed.page_info);
+            if cursor.is_none() {
                 break;
             }
-            let Some(end_cursor) = page_info.end_cursor else {
-                break;
-            };
-            cursor = Some(end_cursor);
         }
         Ok(all)
     }
@@ -510,16 +470,10 @@ where
             let output = self.run_gh(args, &pr.repository.host)?;
             let parsed = parse_reviews_page(&output)?;
             all.extend(parsed.summaries);
-            let Some(page_info) = parsed.page_info else {
-                break;
-            };
-            if !page_info.has_next_page {
+            cursor = next_cursor(parsed.page_info);
+            if cursor.is_none() {
                 break;
             }
-            let Some(end_cursor) = page_info.end_cursor else {
-                break;
-            };
-            cursor = Some(end_cursor);
         }
         Ok(all)
     }
@@ -538,27 +492,12 @@ where
                 all.viewer_login = parsed.metadata.viewer_login;
             }
             all.reviews.extend(parsed.metadata.reviews);
-            let Some(page_info) = parsed.page_info else {
-                break;
-            };
-            if !page_info.has_next_page {
+            cursor = next_cursor(parsed.page_info);
+            if cursor.is_none() {
                 break;
             }
-            let Some(end_cursor) = page_info.end_cursor else {
-                break;
-            };
-            cursor = Some(end_cursor);
         }
         Ok(all)
-    }
-
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
-        if request.start_line == 0 || request.start_line > request.end_line {
-            return Ok(Vec::new());
-        }
-        let (start_line, end_line) = (request.start_line, request.end_line);
-        let content = self.fetch_file_content(request)?;
-        Ok(slice_context_lines(&content, start_line, end_line))
     }
 
     /// Local blob when the checkout has the PR's SHA, REST otherwise. The PR's
@@ -587,7 +526,7 @@ where
         let specs: Vec<String> = requests
             .iter()
             .map(|r| {
-                let path = r.path.to_string_lossy().replace('\\', "/");
+                let path = forge_path(&r.path);
                 format!("{}:{path}", r.sha())
             })
             .collect();
@@ -645,10 +584,7 @@ where
             "--input".to_string(),
             "-".to_string(),
         ];
-        if pr.repository.host != DEFAULT_GITHUB_HOST {
-            args.push("--hostname".to_string());
-            args.push(pr.repository.host.clone());
-        }
+        push_hostname(&mut args, &pr.repository.host);
 
         let output = self
             .runner
@@ -698,23 +634,22 @@ where
             "graphql".to_string(),
             "-f".to_string(),
             format!("query={query}"),
-            "-F".to_string(),
+            // `-f` keeps string variables strings (a repo named "2024" or
+            // "true" must not be coerced); only `number` needs `-F`.
+            "-f".to_string(),
             format!("owner={}", pr.repository.owner),
-            "-F".to_string(),
+            "-f".to_string(),
             format!("name={}", pr.repository.name),
             "-F".to_string(),
             format!("number={}", pr.number),
         ];
         if let Some(c) = cursor {
-            args.push("-F".to_string());
+            args.push("-f".to_string());
             args.push(format!("after={c}"));
         }
         // Enterprise host routing — `gh api graphql --hostname` picks the
         // correct endpoint when the repo lives on a non-default host.
-        if pr.repository.host != "github.com" {
-            args.push("--hostname".to_string());
-            args.push(pr.repository.host.clone());
-        }
+        push_hostname(&mut args, &pr.repository.host);
         args
     }
 
@@ -752,10 +687,7 @@ where
             "-f".to_string(),
             format!("name={}", repository.name),
         ];
-        if repository.host != DEFAULT_GITHUB_HOST {
-            args.push("--hostname".to_string());
-            args.push(repository.host.clone());
-        }
+        push_hostname(&mut args, &repository.host);
         let output = self.run_gh(args, &repository.host)?;
         let value: serde_json::Value = serde_json::from_str(&output)?;
         let prs = &value["data"]["repository"];
@@ -807,10 +739,7 @@ where
             args.push("-f".to_string());
             args.push(format!("e{i}={spec}"));
         }
-        if repository.host != DEFAULT_GITHUB_HOST {
-            args.push("--hostname".to_string());
-            args.push(repository.host.clone());
-        }
+        push_hostname(&mut args, &repository.host);
         let output = self.run_gh(args, &repository.host)?;
         let value: serde_json::Value = serde_json::from_str(&output)?;
         let blobs = &value["data"]["repository"];
@@ -831,23 +760,19 @@ where
         // `Accept: application/vnd.github.raw` header skips JSON wrapping
         // and returns raw bytes, which we use here to keep parsing simple
         // and binary-safe (callers already gate binary files out).
-        let path_str = request.path.to_string_lossy().replace('\\', "/");
         let endpoint = format!(
             "repos/{}/{}/contents/{}?ref={}",
             request.repository.owner,
             request.repository.name,
-            path_str,
-            request.sha(),
+            percent_encode_path(&forge_path(&request.path)),
+            percent_encode_component(request.sha()),
         );
         let mut args = vec![
             "api".to_string(),
             "-H".to_string(),
             "Accept: application/vnd.github.raw".to_string(),
         ];
-        if request.repository.host != "github.com" {
-            args.push("--hostname".to_string());
-            args.push(request.repository.host.clone());
-        }
+        push_hostname(&mut args, &request.repository.host);
         args.push(endpoint);
         self.run_gh(args, &request.repository.host)
     }
@@ -907,7 +832,7 @@ fn parse_url_target(target: &str) -> Option<PullRequestTarget> {
     let without_scheme = strip_scheme(target)?;
     let trimmed = trim_url_suffix(without_scheme);
     let mut parts = trimmed.split('/').filter(|part| !part.is_empty());
-    let host = parts.next()?;
+    let host = strip_port(strip_userinfo(parts.next()?));
     let owner = parts.next()?;
     let repo = parts.next()?;
     let segment = parts.next()?;
@@ -952,7 +877,11 @@ fn parse_repo_hash_target(target: &str) -> Option<PullRequestTarget> {
         [owner, repo] => {
             ForgeRepository::github(DEFAULT_GITHUB_HOST, *owner, strip_git_suffix(repo))
         }
-        [host, owner, repo] => forge_repo_from_host(host, owner, strip_git_suffix(repo)),
+        // A dotless first segment is a GitLab subgroup (`group/sub/repo#N`),
+        // not a host: leave it to the GitLab target parser.
+        [host, owner, repo] if host.contains('.') => {
+            forge_repo_from_host(strip_port(host), owner, strip_git_suffix(repo))
+        }
         _ => return None,
     };
 
@@ -964,13 +893,12 @@ fn parse_repo_hash_target(target: &str) -> Option<PullRequestTarget> {
 /// Build a `ForgeRepository` from host/owner/repo, picking the forge kind
 /// based on the host name.
 fn forge_repo_from_host(host: &str, owner: &str, repo: &str) -> ForgeRepository {
-    if host.contains("gitlab") {
-        ForgeRepository::gitlab(host, owner, repo)
-    } else if crate::forge::gitea::tea::is_gitea_host(host) {
-        ForgeRepository::gitea(host, owner, repo)
-    } else {
-        ForgeRepository::github(host, owner, repo)
-    }
+    crate::forge::parse_any_remote_url(&format!("https://{host}/{owner}/{repo}"))
+        .unwrap_or_else(|| ForgeRepository::github(host, owner, repo))
+}
+
+fn strip_userinfo(host: &str) -> &str {
+    host.rsplit_once('@').map(|(_, h)| h).unwrap_or(host)
 }
 
 /// Resolve an SSH host alias to its real `HostName` via `~/.ssh/config`.
@@ -984,17 +912,6 @@ fn forge_repo_from_host(host: &str, owner: &str, repo: &str) -> ForgeRepository 
 fn resolve_ssh_hostname(alias: &str) -> String {
     let resolved = read_ssh_hostname(alias);
     normalize_ssh_transport_host(&resolved).to_string()
-}
-
-fn read_ssh_hostname(alias: &str) -> String {
-    let Ok(home) = std::env::var("HOME") else {
-        return alias.to_string();
-    };
-    let path = PathBuf::from(home).join(".ssh/config");
-    let Ok(content) = fs::read_to_string(path) else {
-        return alias.to_string();
-    };
-    resolve_ssh_hostname_from_config(alias, &content)
 }
 
 /// Map GitHub's documented SSH-over-HTTPS transport host back to its API host.
@@ -1012,51 +929,6 @@ fn normalize_ssh_transport_host(host: &str) -> &str {
     }
 }
 
-fn resolve_ssh_hostname_from_config(alias: &str, config: &str) -> String {
-    let mut in_block = false;
-    for raw in config.lines() {
-        // Strip inline comments and surrounding whitespace.
-        let line = raw.split_once('#').map_or(raw, |(before, _)| before).trim();
-        if line.is_empty() {
-            continue;
-        }
-        // SSH config separates keyword from value by whitespace or '='.
-        let (key, value) = line
-            .split_once(|c: char| c.is_whitespace() || c == '=')
-            .unwrap_or((line, ""));
-        let value = value
-            .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
-            .trim();
-
-        if key.eq_ignore_ascii_case("Host") {
-            // Exact match only; wildcards and negation are intentionally unsupported.
-            in_block = value.split_whitespace().any(|pat| pat == alias);
-        } else if key.eq_ignore_ascii_case("Match") {
-            // Match blocks aren't supported; exit any Host block we were in.
-            in_block = false;
-        } else if in_block && key.eq_ignore_ascii_case("HostName") {
-            return value.to_string();
-        }
-    }
-    alias.to_string()
-}
-
-fn parse_scp_like_remote(remote_url: &str) -> Option<(&str, &str)> {
-    if remote_url.contains("://") {
-        return None;
-    }
-
-    let (host_part, path) = remote_url.split_once(':')?;
-    if host_part.contains('/') || path.is_empty() {
-        return None;
-    }
-    let host = host_part
-        .rsplit_once('@')
-        .map(|(_, host)| host)
-        .unwrap_or(host_part);
-    Some((host, path))
-}
-
 fn repository_from_path(host: &str, path: &str) -> Option<ForgeRepository> {
     let mut parts = path.split('/').filter(|part| !part.is_empty());
     let owner = parts.next()?;
@@ -1068,35 +940,23 @@ fn repository_from_path(host: &str, path: &str) -> Option<ForgeRepository> {
     ))
 }
 
-fn strip_scheme(value: &str) -> Option<&str> {
-    value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-        .or_else(|| value.strip_prefix("ssh://"))
-}
-
-fn trim_url_suffix(value: &str) -> &str {
-    value
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(value)
-        .trim_end_matches('/')
-}
-
-/// Strip a trailing `:<port>` from a host, e.g. `example.com:2222` ->
-/// `example.com`. `ssh://` remotes commonly carry a non-default SSH port
-/// (GitHub Enterprise instances behind a custom port); that port is
-/// meaningless for the HTTPS API host used to build `--repo` arguments, and
-/// left in place it turns into a broken URL.
-fn strip_port(host: &str) -> &str {
-    match host.rsplit_once(':') {
-        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
-        _ => host,
-    }
-}
-
 fn strip_git_suffix(value: &str) -> &str {
     value.strip_suffix(".git").unwrap_or(value)
+}
+
+/// Cursor of the next GraphQL page, or `None` when pagination is over.
+fn next_cursor(page_info: Option<GhPageInfo>) -> Option<String> {
+    page_info
+        .filter(|info| info.has_next_page)
+        .and_then(|info| info.end_cursor)
+}
+
+/// Route a `gh api` call to a GitHub Enterprise host; github.com is the default.
+fn push_hostname(args: &mut Vec<String>, host: &str) {
+    if host != DEFAULT_GITHUB_HOST {
+        args.push("--hostname".to_string());
+        args.push(host.to_string());
+    }
 }
 
 fn gh_repo_arg(repository: &ForgeRepository) -> String {
@@ -1235,6 +1095,8 @@ index 1111111..2222222 100644
 
 #[cfg(test)]
 mod tests {
+    use crate::forge::remote_url::resolve_ssh_hostname_from_config;
+    use std::fs;
     use std::sync::Mutex;
 
     use chrono::TimeZone;
@@ -1595,6 +1457,17 @@ index 1111111..2222222 100644
     }
 
     #[test]
+    fn leaves_dotless_three_segment_shorthand_to_gitlab() {
+        assert!(parse_pull_request_target("group/subgroup/repo#42").is_err());
+    }
+
+    #[test]
+    fn strips_port_from_host_qualified_shorthand() {
+        let target = parse_pull_request_target("github.example.com:443/agavra/tuicr#125").unwrap();
+        assert_eq!(target.repository.unwrap().host, "github.example.com");
+    }
+
+    #[test]
     fn parses_full_pull_request_url() {
         let target = parse_pull_request_target("https://github.com/agavra/tuicr/pull/125").unwrap();
         assert_eq!(target.number, 125);
@@ -1651,6 +1524,23 @@ index 1111111..2222222 100644
             parse_github_remote_url("ssh://git@github.example.com:2222/agavra/tuicr.git").unwrap();
         assert_eq!(repository.host, "github.example.com");
         assert_eq!(repository.slug(), "agavra/tuicr");
+    }
+
+    #[test]
+    fn url_target_strips_port_and_userinfo() {
+        let t = parse_pull_request_target("https://github.com:443/agavra/tuicr/pull/125").unwrap();
+        assert_eq!(t.repository.unwrap().host, "github.com");
+        let t = parse_pull_request_target("https://u@github.com/agavra/tuicr/pull/125").unwrap();
+        assert_eq!(t.repository.unwrap().host, "github.com");
+    }
+
+    #[test]
+    fn repo_hash_target_matches_gitlab_host_case_insensitively() {
+        let t = parse_pull_request_target("GITLAB.example.com/agavra/tuicr#125").unwrap();
+        assert_eq!(
+            t.repository.unwrap().kind,
+            crate::forge::traits::ForgeKind::GitLab
+        );
     }
 
     #[test]
@@ -2631,6 +2521,7 @@ Match host github-work
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: "abcdef1234567890",
+            base_commit_id: None,
             body: "review body",
             comments: &comments,
         };
@@ -2680,6 +2571,7 @@ Match host github-work
                 CreateReviewRequest {
                     event: SubmitEvent::Draft,
                     commit_id: "sha",
+                    base_commit_id: None,
                     body: "",
                     comments: &[],
                 },
@@ -2690,6 +2582,160 @@ Match host github-work
         let (_, stdin) = &stdin_calls[0];
         let payload: serde_json::Value = serde_json::from_str(stdin).unwrap();
         assert!(payload.get("event").is_none());
+    }
+
+    #[test]
+    fn every_api_call_routes_to_the_enterprise_host() {
+        // given — every backend operation that shells out to `gh api`
+        let enterprise = ForgeRepository::github("github.example.com", "agavra", "tuicr");
+        let backend =
+            GitHubGhBackend::with_runner(Some(enterprise.clone()), FakeGhRunner::default());
+        let mut details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        details.repository = enterprise.clone();
+        let file_request = ForgeFileLinesRequest {
+            repository: enterprise.clone(),
+            base_sha: "0".repeat(40),
+            head_sha: "1".repeat(40),
+            path: PathBuf::from("a.rs"),
+            status: crate::model::FileStatus::Modified,
+            side: crate::forge::traits::ForgeFileSide::Head,
+            start_line: 0,
+            end_line: 0,
+        };
+        // when — results are irrelevant; only the recorded arguments matter
+        let _ = backend.pull_request_file_metadata(&details);
+        let _ = backend.list_pull_request_commits(&details);
+        let _ = backend.get_pull_request_commit_range_diff(&details, "baseaaa", "headbbb");
+        let _ = backend.resolve_diff_base_sha(&details);
+        let _ = backend.list_review_threads(&details);
+        let _ = backend.list_review_summaries(&details);
+        let _ = backend.list_pull_request_review_metadata(&details);
+        let _ = backend.fetch_file_via_api(&file_request);
+        let _ = backend.fetch_blob_texts(&enterprise, &["sha:a.rs"]);
+        let _ = backend.list_pull_requests(PullRequestListQuery::first_page(enterprise.clone(), 1));
+        let _ = backend.create_review(
+            &details,
+            CreateReviewRequest {
+                event: SubmitEvent::Comment,
+                commit_id: "sha",
+                base_commit_id: None,
+                body: "",
+                comments: &[],
+            },
+        );
+        // then
+        let calls = backend.runner.calls.lock().unwrap();
+        let api_calls: Vec<_> = calls
+            .iter()
+            .filter(|args| args.first().map(String::as_str) == Some("api"))
+            .collect();
+        assert!(api_calls.len() >= 11, "{} api calls", api_calls.len());
+        for args in api_calls {
+            assert!(
+                args.windows(2)
+                    .any(|w| w[0] == "--hostname" && w[1] == "github.example.com"),
+                "missing --hostname: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn next_cursor_requires_a_next_page_and_an_end_cursor() {
+        let page = |has_next_page, end_cursor: Option<&str>| {
+            Some(GhPageInfo {
+                has_next_page,
+                end_cursor: end_cursor.map(str::to_string),
+            })
+        };
+        assert_eq!(next_cursor(page(true, Some("c1"))), Some("c1".to_string()));
+        assert_eq!(next_cursor(page(false, Some("c1"))), None);
+        assert_eq!(next_cursor(page(true, None)), None);
+        assert_eq!(next_cursor(None), None);
+    }
+
+    /// Serves a first GraphQL page that advertises a next page, then the
+    /// plain fixtures (no next page).
+    #[derive(Default)]
+    struct PagingRunner {
+        inner: FakeGhRunner,
+        served: std::sync::atomic::AtomicBool,
+    }
+
+    impl GhCommandRunner for PagingRunner {
+        fn run(&self, args: &[String]) -> GhCommandResult<String> {
+            let out = self.inner.run(args)?;
+            let graphql = args.get(1).map(String::as_str) == Some("graphql");
+            if graphql && !self.served.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return Ok(out.replace(
+                    r#""hasNextPage": false, "endCursor": null"#,
+                    r#""hasNextPage": true, "endCursor": "c1""#,
+                ));
+            }
+            Ok(out)
+        }
+    }
+
+    #[test]
+    fn review_listings_follow_the_cursor_once_then_stop() {
+        type Listing = fn(&GitHubGhBackend<PagingRunner>, &PullRequestDetails);
+        let listings: [(&str, Listing); 3] = [
+            ("threads", |b, pr| {
+                b.list_review_threads(pr).unwrap();
+            }),
+            ("summaries", |b, pr| {
+                b.list_review_summaries(pr).unwrap();
+            }),
+            ("metadata", |b, pr| {
+                b.list_pull_request_review_metadata(pr).unwrap();
+            }),
+        ];
+        for (name, list) in listings {
+            // given
+            let backend = GitHubGhBackend::with_runner(Some(repo()), PagingRunner::default());
+            let details = backend
+                .get_pull_request(parse_pull_request_target("125").unwrap())
+                .unwrap();
+            // when
+            list(&backend, &details);
+            // then — exactly two pages; the second carries the cursor
+            let calls = backend.runner.inner.calls.lock().unwrap();
+            let graphql: Vec<_> = calls
+                .iter()
+                .filter(|a| a.get(1).map(String::as_str) == Some("graphql"))
+                .collect();
+            assert_eq!(graphql.len(), 2, "{name}");
+            assert!(
+                !graphql[0].iter().any(|a| a.starts_with("after=")),
+                "{name}"
+            );
+            assert!(graphql[1].iter().any(|a| a == "after=c1"), "{name}");
+        }
+    }
+
+    #[test]
+    fn graphql_string_variables_are_never_coerced() {
+        // given — a repository whose name looks like a number, and a numeric cursor
+        let repository = ForgeRepository::github("github.com", "101", "2024");
+        let backend =
+            GitHubGhBackend::with_runner(Some(repository.clone()), FakeGhRunner::default());
+        let mut details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        details.repository = repository;
+        // when
+        let args = backend.build_review_threads_args(&details, Some("123"));
+        // then — string variables use `-f`; only `number` uses `-F`
+        for (key, flag) in [
+            ("owner=101", "-f"),
+            ("name=2024", "-f"),
+            ("after=123", "-f"),
+            ("number=125", "-F"),
+        ] {
+            let i = args.iter().position(|a| a == key).unwrap();
+            assert_eq!(args[i - 1], flag, "{key}");
+        }
     }
 
     #[test]
@@ -2709,6 +2755,7 @@ Match host github-work
                 CreateReviewRequest {
                     event: SubmitEvent::Comment,
                     commit_id: "sha",
+                    base_commit_id: None,
                     body: "",
                     comments: &[],
                 },
@@ -2740,6 +2787,7 @@ Match host github-work
                 CreateReviewRequest {
                     event: SubmitEvent::Comment,
                     commit_id: "sha",
+                    base_commit_id: None,
                     body: "",
                     comments: &[],
                 },
@@ -2772,6 +2820,7 @@ Match host github-work
                 CreateReviewRequest {
                     event: SubmitEvent::Comment,
                     commit_id: "sha",
+                    base_commit_id: None,
                     body: "",
                     comments: &[],
                 },
@@ -2797,6 +2846,7 @@ Match host github-work
                 CreateReviewRequest {
                     event: SubmitEvent::Comment,
                     commit_id: "sha",
+                    base_commit_id: None,
                     body: "",
                     comments: &[],
                 },
@@ -2823,6 +2873,7 @@ Match host github-work
                 CreateReviewRequest {
                     event: SubmitEvent::Comment,
                     commit_id: "sha",
+                    base_commit_id: None,
                     body: "",
                     comments: &[],
                 },
@@ -2851,6 +2902,7 @@ Match host github-work
                 CreateReviewRequest {
                     event: SubmitEvent::Comment,
                     commit_id: "sha",
+                    base_commit_id: None,
                     body: "",
                     comments: &[],
                 },
@@ -2882,6 +2934,7 @@ Match host github-work
                 CreateReviewRequest {
                     event: SubmitEvent::Comment,
                     commit_id: "sha",
+                    base_commit_id: None,
                     body: "",
                     comments: &[],
                 },
@@ -2917,6 +2970,7 @@ Match host github-work
                 CreateReviewRequest {
                     event: SubmitEvent::Comment,
                     commit_id: "sha",
+                    base_commit_id: None,
                     body: "",
                     comments: &[],
                 },
@@ -2934,11 +2988,11 @@ Match host github-work
 #[cfg(test)]
 mod line_count_tests {
     use std::collections::HashMap;
+    use std::fs;
     use std::sync::Mutex;
 
     use super::*;
     use crate::forge::traits::ForgeFileSide;
-    use crate::model::FileStatus;
 
     const HEAD: &str = "1111111111111111111111111111111111111111";
 
@@ -2982,7 +3036,7 @@ mod line_count_tests {
             base_sha: "0000000000000000000000000000000000000000".to_string(),
             head_sha: HEAD.to_string(),
             path: PathBuf::from(path),
-            status: FileStatus::Modified,
+            status: crate::model::FileStatus::Modified,
             side: ForgeFileSide::Head,
             start_line: 0,
             end_line: 0,
@@ -3061,5 +3115,63 @@ mod line_count_tests {
         let calls = backend.runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 2);
         assert!(calls[1].iter().any(|arg| arg.contains("/contents/b.rs")));
+    }
+
+    #[test]
+    fn should_percent_encode_the_path_and_ref_of_a_contents_request() {
+        // given — `#` would end the URL path and drop `?ref=`; `?` and `%` corrupt it
+        let runner = BlobRunner {
+            rest_text: "body".to_string(),
+            ..Default::default()
+        };
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        // when
+        let text = backend
+            .fetch_file_content(request("src/C#/a?b%2F.cs"))
+            .unwrap();
+        // then
+        assert_eq!(text, "body");
+        let calls = backend.runner.calls.lock().unwrap();
+        assert!(
+            calls[0].iter().any(|arg| arg
+                == &format!("repos/agavra/tuicr/contents/src/C%23/a%3Fb%252F.cs?ref={HEAD}")),
+            "{:?}",
+            calls[0]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_keep_a_unix_backslash_in_a_contents_request() {
+        // given
+        let backend = GitHubGhBackend::with_runner(None, BlobRunner::default());
+        // when
+        backend.fetch_file_content(request("src/a\\b.rs")).unwrap();
+        // then — `\` is a filename byte, not a separator
+        let calls = backend.runner.calls.lock().unwrap();
+        assert!(
+            calls[0]
+                .iter()
+                .any(|arg| arg.contains("/contents/src/a%5Cb.rs?")),
+            "{:?}",
+            calls[0]
+        );
+    }
+
+    #[test]
+    fn should_keep_a_unix_backslash_in_batch_blob_specs() {
+        // given
+        let backend = GitHubGhBackend::with_runner(None, BlobRunner::default());
+        // when
+        backend.file_line_counts(vec![request("src/a\\b.rs")]);
+        // then
+        let calls = backend.runner.calls.lock().unwrap();
+        assert!(
+            calls[0]
+                .iter()
+                .any(|arg| arg == &format!("e0={HEAD}:src/a\\b.rs")),
+            "{:?}",
+            calls[0]
+        );
     }
 }

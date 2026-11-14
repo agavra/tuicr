@@ -508,16 +508,14 @@ fn suggestion_app_from_patch(patch: &str) -> App {
 fn suggestion_app_from_patch_in_view(patch: &str, view: DiffViewMode) -> App {
     let mut app = build_app();
     app.diff_view_mode = view;
-    app.diff_files = crate::vcs::diff_parser::parse_file_patches(
-        vec![crate::model::FilePatch::new(
+    app.diff_files =
+        crate::vcs::diff_parser::parse_file_patches(vec![crate::model::FilePatch::new(
             Some("test.rs".into()),
             Some("test.rs".into()),
             FileStatus::Modified,
             patch,
-        )],
-        &SyntaxHighlighter::default(),
-    )
-    .unwrap();
+        )])
+        .unwrap();
     app.rebuild_annotations();
     let indices: Vec<_> = app
         .line_annotations
@@ -717,4 +715,30 @@ fn visual_suggestion_skips_existing_comment_rows() {
             }
         }
     }
+}
+
+#[test]
+fn visual_comment_rejects_selection_spanning_two_files() {
+    let mut app = build_app();
+    let mut second = sbs_line(None, Some(4));
+    if let AnnotatedLine::SideBySideLine { file_idx, .. } = &mut second {
+        *file_idx = 1;
+    }
+    app.line_annotations = vec![sbs_line(None, Some(41)), second];
+    app.input_mode = InputMode::VisualSelect;
+    let point = |annotation_idx| SelPoint {
+        annotation_idx,
+        char_offset: 0,
+        side: LineSide::New,
+    };
+    app.visual_selection = Some(VisualSelection {
+        anchor: point(0),
+        head: point(1),
+    });
+    assert!(app.visual_selection_line_range().is_none());
+
+    crate::handler::handle_visual_action(&mut app, Action::AddRangeComment);
+
+    assert_ne!(app.input_mode, InputMode::Comment);
+    assert!(app.comment_line_range.is_none());
 }

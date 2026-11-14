@@ -10,8 +10,9 @@ use serde::Deserialize;
 
 use crate::forge::remote_comments::{RemoteCommentSide, RemoteReviewComment, RemoteReviewThread};
 use crate::forge::traits::{
-    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary, commit_message_body,
+    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
 };
+use crate::vcs::split_commit_message;
 
 /// Azure DevOps list envelope: `{ "count": N, "value": [ ... ] }`.
 ///
@@ -208,7 +209,8 @@ pub struct AzGitUserDate {
 impl AzGitCommitRef {
     pub fn into_pull_request_commit(self) -> PullRequestCommit {
         let short_oid = self.commit_id.chars().take(8).collect();
-        let summary = self.comment.lines().next().unwrap_or_default().to_string();
+        let (subject, body) = split_commit_message(&self.comment);
+        let summary = subject.to_string();
         let (author, timestamp) = match self.author {
             Some(a) => (a.name, a.date),
             None => (String::new(), None),
@@ -217,11 +219,7 @@ impl AzGitCommitRef {
             oid: self.commit_id,
             short_oid,
             summary,
-            body: if self.comment_truncated {
-                None
-            } else {
-                commit_message_body(&self.comment)
-            },
+            body: if self.comment_truncated { None } else { body },
             author,
             timestamp,
         }

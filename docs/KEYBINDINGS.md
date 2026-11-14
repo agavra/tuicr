@@ -195,7 +195,7 @@ In PR review `e` opens the revision under review, not whatever the checkout
 happens to hold. When the local file *is* that revision you get the real file and
 your edits land in it; otherwise — wrong branch checked out, file added or deleted
 by the PR, no checkout at all — tuicr writes a read-only copy of the PR's content
-to a temp directory and opens that, so the text and the line the cursor sits on
+to a private per-user cache directory and opens that, so the text and the line the cursor sits on
 match the diff. The status bar names which one you got, e.g.
 `Opened src/main.rs @ 1a2b3c4 (read-only PR copy)`. Binary files are only opened
 from the checkout, never copied.
@@ -208,6 +208,8 @@ from the checkout, never copied.
 | `c` / `Enter` | Create comment for selected range |
 | `s` | Start an editable suggestion prefilled with the selected code lines |
 | `Esc` / `v` / `V` | Cancel selection |
+
+Range comments must stay within one file: if the selection spans files, `c` / `Enter` warns "Invalid selection" and cancels visual mode without creating a comment.
 
 Suggestions replace whole lines on the new side of a single diff hunk. Selections
 across gaps (including deleted-only rows) or expanded context are rejected.
@@ -291,10 +293,10 @@ In command mode,
 | `:messages` | Open full details for the current error |
 | `:version` | Show tuicr version |
 | `:update` | Check for updates |
-| `:q` (`:quit`) | Quit (warns on unsaved comments; discards review-only state) |
+| `:q` (`:quit`) | Quit (warns on unsaved comments; discards review-only state unless the saved session holds comments, e.g. added by `tuicr review add`) |
 | `:q!` (`:quit!`) | Force quit |
 | `:x` / `:wq` | Save and quit (prompts to copy if comments exist) |
-| `ZZ` | Save and quit |
+| `ZZ` | Save and quit (stays open and reports the error if the save fails, like `:wq`) |
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
 
@@ -335,6 +337,11 @@ are no inline comments; inline comments alone do not satisfy it. GitLab `draft` 
 notes that the author publishes from GitLab's own "Submit review" UI. Gerrit `draft` stores draft
 comments that the author publishes from Gerrit's Reply UI.
 
+GitLab, Bitbucket and Azure DevOps post a submit as several requests. If one fails midway, the
+comments that already posted are locked and not posted again; the rest stay local drafts. Retry
+with the same command. `:submit request-changes` may run with nothing left but the vote (a bare
+retry); GitHub rejects an empty request-changes review, so it needs a comment there.
+
 ## Commit selection / review target selector
 
 | Key | Action |
@@ -361,6 +368,12 @@ comment count, reviewed files, and age. Reviews with no comments and no reviewed
 are omitted; press `a` to show them. Selecting a saved PR review re-fetches it from the
 forge, the same as opening it from the Pull Requests tab.
 
+Opening a different local target (a commit selection on the Local tab, or a saved review
+on the Sessions tab) first saves the review on screen, so its unsaved marks and comments
+are kept. If that save fails, the switch is aborted and the current review stays open
+with its unsaved changes. The commit pane of the replaced review is closed, and focus
+returns to the diff if it was in that pane.
+
 Press `dd` to delete the saved review under the cursor. tuicr asks to confirm first, and
 refuses to delete a review that is open in another tuicr, since that process would write
 it straight back. Combine `a` with `dd` to clear out empty sessions left behind by a
@@ -378,6 +391,13 @@ When exactly one commit is selected, its message is shown above its diff as a
 `Commit Message (<sha>)` entry, in local and pull request reviews alike. A review of a single
 commit, including a single-commit pull request, shows the message without the selector. Comments
 on a commit message in a pull request are submitted in the review summary rather than inline.
+When a pull request opens with a narrowed range, the message appears once the selected range has
+loaded. When the PR's diff base or its known commit list changes, a reload resets the selection to
+all commits.
+
+Reviewed marks belong to the whole review, not to the selected commits: pressing `r` on a file
+while narrowed to one commit marks the entire cumulative file, and the mark stays when you
+widen or change the selection.
 
 | Key | Action |
 |-----|--------|

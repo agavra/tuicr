@@ -506,6 +506,7 @@ impl App {
         // unreached half of the gap stays collapsed behind an expander.
         if !matches!(result, FindSourceLineResult::Exact(_))
             && let Some(gap_id) = self.find_gap_containing_lineno(current_file, target_lineno, side)
+            && !self.gap_is_hidden(&gap_id)
         {
             let (direction, limit) = self.expand_plan_to_reach(&gap_id, target_lineno, side);
             if let Err(e) = self.expand_gap(gap_id, direction, limit) {
@@ -1272,28 +1273,36 @@ impl App {
                                 LineOrigin::Context => {
                                     content_lines += 1;
 
-                                    // Comments for context line
-                                    if let Some(line_comments) = line_comments
-                                        && let Some(new_ln) = diff_line.new_lineno
-                                        && let Some(comments) = line_comments.get(&new_ln)
-                                    {
-                                        for comment in comments {
-                                            if comment.side != Some(LineSide::Old)
-                                                && Self::comment_visible_with(
-                                                    comment,
-                                                    commit_set.as_ref(),
-                                                )
-                                            {
-                                                comment_lines += Self::comment_display_lines(
-                                                    comment,
-                                                    self.diff_state.viewport_width,
-                                                );
+                                    // Comments for context line (both sides)
+                                    for (line_no, side) in [
+                                        (diff_line.old_lineno, LineSide::Old),
+                                        (diff_line.new_lineno, LineSide::New),
+                                    ] {
+                                        let Some(ln) = line_no else { continue };
+                                        if let Some(comments) =
+                                            line_comments.and_then(|lc| lc.get(&ln))
+                                        {
+                                            for comment in comments {
+                                                let matches_side = if side == LineSide::Old {
+                                                    comment.side == Some(LineSide::Old)
+                                                } else {
+                                                    comment.side != Some(LineSide::Old)
+                                                };
+                                                if matches_side
+                                                    && Self::comment_visible_with(
+                                                        comment,
+                                                        commit_set.as_ref(),
+                                                    )
+                                                {
+                                                    comment_lines += Self::comment_display_lines(
+                                                        comment,
+                                                        self.diff_state.viewport_width,
+                                                    );
+                                                }
                                             }
                                         }
-                                    }
-                                    if let Some(new_ln) = diff_line.new_lineno {
                                         comment_lines += remote_thread_rows
-                                            .get(&(new_ln, LineSide::New))
+                                            .get(&(ln, side))
                                             .copied()
                                             .unwrap_or(0);
                                     }
@@ -1537,15 +1546,7 @@ impl App {
     /// Uses viewport_width to account for pre-wrapped visual segments so the
     /// annotation count stays in sync with what format_comment_lines renders.
     pub(crate) fn comment_display_lines(comment: &Comment, viewport_width: usize) -> usize {
-        // Mirrors the content_area calculation in format_comment_lines:
-        // indicator(1) + border_prefix(7) + safety_margin(2) = 10
-        let content_area = viewport_width.saturating_sub(10);
-        let visual_lines: usize = comment
-            .content
-            .split('\n')
-            .map(|line| crate::ui::comment_panel::wrap_segments(line, content_area).len())
-            .sum();
-        2 + visual_lines // top border + visual segments + bottom border
+        crate::ui::comment_panel::comment_box_rows(&comment.content, viewport_width)
     }
 
     /// Update viewport_width and trigger annotation rebuild if it changed.
@@ -1605,5 +1606,14 @@ impl App {
                 .map(|ln| (ln, LineSide::New))
                 .or_else(|| old_lineno.map(|ln| (ln, LineSide::Old))),
         }
+    }
+}
+
+impl App {
+    /// Reset scroll/cursor state while keeping the user's wrap preference.
+    pub(super) fn reset_diff_state(&mut self) {
+        let wrap = self.diff_state.wrap_lines;
+        self.diff_state = DiffState::default();
+        self.diff_state.wrap_lines = wrap;
     }
 }

@@ -18,6 +18,35 @@ cargo test
 cargo fmt
 ```
 
+## Testing
+
+`cargo test` runs the unit and integration tests. User-visible bug fixes and behaviour changes also need an
+end-to-end scenario under `e2e/scenarios/<area>/<behaviour>.py` that fails without the change:
+
+```bash
+cargo build --release
+TUICR_BIN=target/release/tuicr uv run --python 3.12 e2e/run.py   # or filter: ... e2e/run.py pr/submit
+```
+
+Prerequisites: the Rust toolchain, tmux, [uv](https://docs.astral.sh/uv/) (provides Python >= 3.11 for the e2e runner,
+stdlib only, and `uvx` for the Python checks below), plus `hg` and `jj` for their scenarios (they skip without them). Forges are
+faked; no credentials or network needed. CI runs the suite on Linux and macOS. See [e2e/README.md](e2e/README.md)
+and [e2e/COVERAGE.md](e2e/COVERAGE.md).
+
+## Python checks
+
+All Python in the repo (the e2e suite, its fake forges, `scripts/`) is linted, formatted and type-checked; config is
+`e2e/pyproject.toml` (Python 3.11 target). Run these from the repo root before committing Python changes. The
+versions are pinned to match CI (`RUFF_VERSION` / `TY_VERSION` in `.github/workflows/ci.yml`; bump both together):
+
+```bash
+uvx ruff@0.15.16 format --check --config e2e/pyproject.toml e2e e2e/bin/* scripts/demo   # drop --check to rewrite
+uvx ruff@0.15.16 check --config e2e/pyproject.toml e2e e2e/bin/* scripts/demo           # add --fix for safe autofixes
+(cd e2e && uvx ty@0.0.44 check . bin/* ../scripts/demo)
+```
+
+CI runs `format --check` in the Format job and `check` plus `ty check` in the Clippy job.
+
 ## Guidelines
 
 - Keep it simple—this is a focused tool, not a platform

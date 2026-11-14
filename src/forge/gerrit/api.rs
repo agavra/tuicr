@@ -27,21 +27,23 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::{Map, Value, json};
 
 use crate::error::{Result, TuicrError};
+use crate::forge::local_git::{commit_present, read_blob};
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
+use crate::forge::remote_url::{parse_scp_like_remote, strip_scheme, trim_detail};
 use crate::forge::submit::{GhSide, InlineComment, SubmitEvent};
 use crate::forge::traits::{
     CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
     GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
     PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
-use crate::model::{DiffLine, FilePatch};
+use crate::forge::{forge_path, percent_encode_component};
+use crate::model::FilePatch;
 use crate::process::run_command_output;
 use crate::vcs::git::raw::run_git_diff;
-use crate::vcs::slice_context_lines;
 
 use super::models::{
-    GerritChange, GerritComment, PATCHSET_LEVEL, mark_drafts, summaries_from_drafts,
-    threads_from_comment_map,
+    EMPTY_TREE_SHA, GerritChange, GerritComment, PATCHSET_LEVEL, mark_drafts,
+    summaries_from_drafts, threads_from_comment_map,
 };
 
 /// Gerrit's canonical SSH port. A remote on this port is a Gerrit remote, full
@@ -63,7 +65,6 @@ const PASSWORD_ENV_VAR: &str = "GERRIT_PASSWORD";
 const REVIEW_LABEL: &str = "Code-Review";
 /// How much of a server error body to keep, in characters. Long enough for a
 /// real Gerrit message, short enough not to flood the status line.
-const MAX_DETAIL_CHARS: usize = 400;
 /// Gerrit prefixes every JSON response with this XSSI guard.
 const MAGIC_PREFIX: &str = ")]}'";
 
@@ -410,7 +411,7 @@ impl GerritBackend {
     /// patch-set ref when they don't. Gerrit changes live under
     /// `refs/changes/*`, which a normal clone does not carry.
     fn ensure_revision_local(&self, root: &Path, pr: &PullRequestDetails) -> bool {
-        if sha_present(root, &pr.base_sha) && sha_present(root, &pr.head_sha) {
+        if revision_present(root, pr) {
             return true;
         }
         let Some(remote) = remote_for_repository(root, &pr.repository) else {
@@ -429,7 +430,7 @@ impl GerritBackend {
             Some(root),
             ["fetch", "--quiet", remote.as_str(), ref_name.as_str()],
         );
-        sha_present(root, &pr.base_sha) && sha_present(root, &pr.head_sha)
+        revision_present(root, pr)
     }
 
     /// File content at the request's revision: local blob first, REST fallback.
@@ -448,7 +449,7 @@ impl GerritBackend {
             "/projects/{}/commits/{}/files/{}/content",
             encode_path(&gerrit_project(&request.repository)),
             request.sha(),
-            encode_path(&request.path.to_string_lossy()),
+            encode_path(&forge_path(&request.path)),
         );
         let encoded = self.get(&request.repository, &path)?;
         let bytes = BASE64.decode(encoded.trim()).map_err(|err| {
@@ -611,16 +612,8 @@ impl ForgeBackend for GerritBackend {
         self.local_checkout.clone()
     }
 
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
-        if request.start_line == 0 || request.start_line > request.end_line {
-            return Ok(Vec::new());
-        }
-        let content = self.file_content(&request)?;
-        Ok(slice_context_lines(
-            &content,
-            request.start_line,
-            request.end_line,
-        ))
+    fn fetch_file_content(&self, request: ForgeFileLinesRequest) -> Result<String> {
+        self.file_content(&request)
     }
 
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
@@ -651,8 +644,19 @@ impl ForgeBackend for GerritBackend {
     }
 
     fn list_pull_request_commits(&self, pr: &PullRequestDetails) -> Result<Vec<PullRequestCommit>> {
-        let change = self.fetch_change(&pr.repository, pr.number)?;
-        Ok(change.into_commits())
+        // A Gerrit change is one commit per patch set, and the pinned details
+        // already describe it, so there is nothing to refetch.
+        if pr.head_sha.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(vec![PullRequestCommit {
+            oid: pr.head_sha.clone(),
+            short_oid: pr.head_sha.chars().take(8).collect(),
+            summary: pr.title.clone(),
+            body: Some(pr.body.clone()).filter(|body| !body.is_empty()),
+            author: pr.author.clone().unwrap_or_default(),
+            timestamp: pr.updated_at,
+        }])
     }
 
     fn create_review(
@@ -850,44 +854,22 @@ fn comment_input(comment: &InlineComment) -> Map<String, Value> {
     input
 }
 
-// ---------- Local git helpers (mirror az) ----------
+// ---------- Local git helpers ----------
 
-fn sha_present(root: &Path, sha: &str) -> bool {
-    if sha.is_empty() {
-        return false;
-    }
-    let spec = format!("{sha}^{{commit}}");
-    run_command_output("git", Some(root), ["cat-file", "-e", spec.as_str()]).is_ok()
-}
-
-/// Read a git blob via `git show <sha>:<path>`. `None` on any failure so
-/// callers fall back to the REST API.
-fn read_blob(root: &Path, sha: &str, path: &Path) -> Option<String> {
-    let spec = format!("{}:{}", sha, path.to_string_lossy());
-    run_command_output("git", Some(root), ["show", spec.as_str()]).ok()
+/// Both ends of the change's diff are available. A root change's base is the
+/// empty tree, which git knows without storing it, so it bypasses the
+/// commit check (the empty tree is a tree, not a commit).
+fn revision_present(root: &Path, pr: &PullRequestDetails) -> bool {
+    (pr.base_sha == EMPTY_TREE_SHA || commit_present(root, &pr.base_sha))
+        && commit_present(root, &pr.head_sha)
 }
 
 /// Name of the remote in `root` that points at `repo`, preferring `origin`.
 fn remote_for_repository(root: &Path, repo: &ForgeRepository) -> Option<String> {
-    let git_repo = git2::Repository::discover(root).ok()?;
-    let matches = |name: &str| {
-        git_repo
-            .find_remote(name)
-            .ok()
-            .and_then(|remote| remote.url().map(str::to_string))
-            .and_then(|url| parse_gerrit_remote_url(&url))
-            .is_some_and(|parsed| &parsed == repo)
-    };
-    if matches("origin") {
-        return Some("origin".to_string());
-    }
-    git_repo
-        .remotes()
-        .ok()?
-        .iter()
-        .flatten()
-        .find(|name| matches(name))
-        .map(str::to_string)
+    crate::forge::remotes(root)
+        .into_iter()
+        .find(|(_, url)| parse_gerrit_remote_url(url).is_some_and(|parsed| &parsed == repo))
+        .map(|(name, _)| name)
 }
 
 fn missing_checkout() -> TuicrError {
@@ -932,32 +914,10 @@ fn map_http_error(error: GerritHttpError, server: &str) -> TuicrError {
     }
 }
 
-/// Keep error detail readable: collapse whitespace and cap the length.
-///
-/// The cap counts characters, not bytes: Gerrit error bodies are often
-/// non-ASCII HTML, and slicing at a byte offset panics when it lands inside a
-/// multi-byte character.
-fn trim_detail(detail: &str) -> String {
-    let collapsed = detail.split_whitespace().collect::<Vec<_>>().join(" ");
-    match collapsed.char_indices().nth(MAX_DETAIL_CHARS) {
-        Some((end, _)) => format!("{}…", &collapsed[..end]),
-        None => collapsed,
-    }
-}
-
 /// Percent-encode a file path for a Gerrit URL path segment. Gerrit expects
 /// the whole path in one segment, so `/` is encoded too.
 fn encode_path(path: &str) -> String {
-    let mut out = String::with_capacity(path.len());
-    for byte in path.replace('\\', "/").bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char)
-            }
-            other => out.push_str(&format!("%{other:02X}")),
-        }
-    }
-    out
+    percent_encode_component(path)
 }
 
 /// Encode a value used inside a `q=` query term. Gerrit reads `/` literally in
@@ -1014,18 +974,27 @@ pub fn parse_gerrit_remote_url(remote_url: &str) -> Option<ForgeRepository> {
     if !is_gerrit_remote(host, port) {
         return None;
     }
-    repository_from_path(host, strip_configured_path_prefix(path))
+    // The prefix is an HTTP(S) concept; an SSH path is the bare project name.
+    let path = if trimmed.starts_with("ssh://") {
+        path
+    } else {
+        strip_configured_path_prefix(path)
+    };
+    repository_from_path(host, path)
 }
 
 /// Drop the `GERRIT_URL` path prefix from a remote's path. When Gerrit is
 /// served under a subdirectory that prefix belongs to the server URL, not to
-/// the project name.
+/// the project name. Only whole path segments match (`gerrit` is not a prefix
+/// of `gerrit-tools/x`).
 fn strip_configured_path_prefix(path: &str) -> &str {
     let Some(prefix) = configured_path_prefix() else {
         return path;
     };
-    path.strip_prefix(prefix.as_str())
-        .map_or(path, |rest| rest.trim_start_matches('/'))
+    match path.strip_prefix(prefix.as_str()) {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => rest.trim_start_matches('/'),
+        _ => path,
+    }
 }
 
 fn repository_from_path(host: &str, path: &str) -> Option<ForgeRepository> {
@@ -1066,7 +1035,15 @@ fn parse_gerrit_url_target(target: &str) -> Option<PullRequestTarget> {
         return None;
     }
 
-    let segments: Vec<&str> = trim_url_suffix(path)
+    let path = trim_url_suffix(path);
+    // Drop a trailing fragment (`#message-…`), but keep the legacy `/#/c/<n>`
+    // hash route, whose fragment is the path.
+    let path = match path.split_once('#') {
+        Some((head, fragment)) if !fragment.starts_with('/') => head,
+        _ => path,
+    };
+    let path = strip_configured_path_prefix(path);
+    let segments: Vec<&str> = path
         .split('/')
         .filter(|segment| !segment.is_empty() && *segment != "#")
         .collect();
@@ -1109,28 +1086,6 @@ fn malformed_target<T>(input: &str) -> Result<T> {
 
 // ---------- Small URL helpers (mirror az) ----------
 
-fn parse_scp_like_remote(remote_url: &str) -> Option<(&str, &str)> {
-    if remote_url.contains("://") {
-        return None;
-    }
-    let (host_part, path) = remote_url.split_once(':')?;
-    if host_part.contains('/') || path.is_empty() {
-        return None;
-    }
-    let host = host_part
-        .rsplit_once('@')
-        .map(|(_, host)| host)
-        .unwrap_or(host_part);
-    Some((host, path))
-}
-
-fn strip_scheme(value: &str) -> Option<&str> {
-    value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-        .or_else(|| value.strip_prefix("ssh://"))
-}
-
 /// Reduce a URL to `host[:port]/path…` by dropping the scheme and any
 /// `user@` / `user:password@` userinfo. Both are optional, so a bare
 /// `host/path` passes through untouched.
@@ -1163,6 +1118,7 @@ fn strip_git_suffix(value: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use crate::forge::remote_url::MAX_DETAIL_CHARS;
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -1227,6 +1183,34 @@ mod tests {
     }
 
     #[test]
+    fn should_find_gerrit_remote_in_a_repo_libgit2_cannot_open() {
+        let dir = std::env::temp_dir().join(format!("tuicr-gerrit-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q", "--ref-format=reftable"]);
+        if !dir.join(".git/reftable").exists() {
+            return; // this git has no reftable support
+        }
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://gerrit.example.com/platform/base",
+        ]);
+        assert_eq!(
+            remote_for_repository(&dir, &gerrit_repo()),
+            Some("origin".to_string())
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn should_reject_remotes_that_do_not_look_like_gerrit() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         unsafe { std::env::remove_var(URL_ENV_VAR) };
@@ -1256,6 +1240,49 @@ mod tests {
             web_base(&repo.expect("parsed")),
             "https://review.internal/gerrit"
         );
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+    }
+
+    #[test]
+    fn should_strip_the_configured_prefix_only_on_a_segment_boundary_and_not_for_ssh() {
+        // given
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::set_var(URL_ENV_VAR, "https://review.internal/gerrit/") };
+        // when/then — `gerrit-tools` is a project, not the prefix plus `-tools`
+        assert_eq!(
+            parse_gerrit_remote_url("https://review.internal/gerrit-tools/base"),
+            Some(ForgeRepository::gerrit(
+                "review.internal",
+                "gerrit-tools/base"
+            ))
+        );
+        // an SSH path is the project name itself
+        assert_eq!(
+            parse_gerrit_remote_url("ssh://jdoe@review.internal:29418/gerrit/base"),
+            Some(ForgeRepository::gerrit("review.internal", "gerrit/base"))
+        );
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+    }
+
+    #[test]
+    fn should_parse_change_targets_with_fragments_and_a_prefix_containing_c() {
+        // given
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::set_var(URL_ENV_VAR, "https://review.internal/tools/c/") };
+        let repo = ForgeRepository::gerrit("review.internal", "platform/base");
+        // when/then
+        for url in [
+            "https://review.internal/tools/c/c/platform/base/+/3965",
+            "https://review.internal/tools/c/c/platform/base/+/3965#message-123",
+            "https://review.internal/tools/c/c/platform/base/+/3965/2?tab=x#message-1",
+        ] {
+            let target = parse_pull_request_target_gerrit(url).expect(url);
+            assert_eq!(target.number, 3965, "{url}");
+            assert_eq!(target.repository, Some(repo.clone()), "{url}");
+        }
+        // the legacy hash route still works
+        let legacy = parse_pull_request_target_gerrit("https://review.internal/#/c/3965/").unwrap();
+        assert_eq!(legacy.number, 3965);
         unsafe { std::env::remove_var(URL_ENV_VAR) };
     }
 
@@ -1579,6 +1606,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::Approve,
                     commit_id: "abc1234",
+                    base_commit_id: None,
                     body: "LGTM",
                     comments: &comments,
                 },
@@ -1721,6 +1749,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::Draft,
                     commit_id: "abc1234",
+                    base_commit_id: None,
                     body: "still thinking",
                     comments: &comments,
                 },
@@ -1761,6 +1790,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::Draft,
                     commit_id: "abc1234",
+                    base_commit_id: None,
                     body: "still thinking",
                     comments: &comments,
                 },
@@ -1790,6 +1820,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::Draft,
                     commit_id: "abc1234",
+                    base_commit_id: None,
                     body: "still thinking",
                     comments: &[],
                 },
@@ -1853,7 +1884,7 @@ mod tests {
                 r#")]}'
                 {"src/main.rs": [
                     {"id": "reply", "in_reply_to": "pub", "line": 7, "message": "because",
-                     "patch_set": 2, "updated": "2013-02-21 12:00:00.000000000"},
+                     "unresolved": true, "patch_set": 2, "updated": "2013-02-21 12:00:00.000000000"},
                     {"id": "fresh", "line": 12, "message": "[ISSUE] looks wrong",
                      "unresolved": true, "patch_set": 2,
                      "updated": "2013-02-21 12:30:00.000000000"}
@@ -1877,6 +1908,142 @@ mod tests {
         assert!(fresh.is_active(), "an unresolved draft shows by default");
         assert!(fresh.comments[0].is_draft);
         assert_eq!(fresh.comments[0].author.as_deref(), Some("me"));
+    }
+
+    #[test]
+    fn should_build_the_only_commit_from_the_details_without_a_request() {
+        // given
+        let (backend, http) = backend_with(true, vec![]);
+        let mut pr = details();
+        pr.title = "Implement feature X".to_string();
+        pr.body = "Longer rationale.".to_string();
+        pr.author = Some("alice".to_string());
+        // when
+        let commits = backend.list_pull_request_commits(&pr).expect("commits");
+        // then
+        assert!(http.calls().is_empty(), "details already describe it");
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].oid, "abc1234");
+        assert_eq!(commits[0].summary, "Implement feature X");
+        assert_eq!(commits[0].body.as_deref(), Some("Longer rationale."));
+        assert_eq!(commits[0].author, "alice");
+        // and a subject-only message has no body, an unknown head no commit
+        pr.body.clear();
+        let commits = backend.list_pull_request_commits(&pr).expect("commits");
+        assert_eq!(commits[0].body, None);
+        pr.head_sha.clear();
+        assert!(backend.list_pull_request_commits(&pr).unwrap().is_empty());
+    }
+
+    #[test]
+    fn should_diff_a_root_change_against_the_empty_tree() {
+        // given — a checkout whose only commit has no parent
+        let dir = tempfile::tempdir().expect("tempdir");
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(dir.path())
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "{args:?}");
+            String::from_utf8(out.stdout).unwrap()
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "root"]);
+        let mut pr = details();
+        pr.head_sha = git(&["rev-parse", "HEAD"]).trim().to_string();
+        pr.base_sha = EMPTY_TREE_SHA.to_string();
+        let (backend, _http) = backend_with(true, vec![]);
+        let backend = backend.with_local_checkout(Some(dir.path().to_path_buf()));
+        // when
+        let patches = backend.get_pull_request_diff(&pr).expect("diff");
+        // then
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].new_path.as_deref(), Some(Path::new("a.txt")));
+        assert_eq!(patches[0].status, crate::model::FileStatus::Added);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn should_fetch_a_root_change_ref_and_accept_the_empty_tree_base() {
+        // given — a "server" whose only commit is a root, published under the
+        // change ref, and a checkout that has never seen it
+        let server = tempfile::tempdir().expect("tempdir");
+        let checkout = tempfile::tempdir().expect("tempdir");
+        let git = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "{args:?}");
+            String::from_utf8(out.stdout).unwrap()
+        };
+        git(server.path(), &["init", "-q"]);
+        std::fs::write(server.path().join("a.txt"), "one\n").unwrap();
+        git(server.path(), &["add", "."]);
+        git(server.path(), &["commit", "-q", "-m", "root"]);
+        let head = git(server.path(), &["rev-parse", "HEAD"])
+            .trim()
+            .to_string();
+        git(
+            server.path(),
+            &["update-ref", "refs/changes/65/3965/2", head.as_str()],
+        );
+        // The remote URL is a Gerrit SSH URL (so it is recognised). Its
+        // transport is a stub that serves the command from the local "server"
+        // directory, so nothing touches a network. (`url.<x>.insteadOf` is no
+        // use: libgit2 reports the rewritten URL, which no longer parses.)
+        git(checkout.path(), &["init", "-q"]);
+        git(
+            checkout.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "ssh://gerrit.example.com:29418/platform/base",
+            ],
+        );
+        let stub = server.path().join("stub-ssh.sh");
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\nfor last; do :; done\n\
+                 exec sh -c \"$(printf '%s' \"$last\" | sed \"s#/platform/base#{}/.git#\")\"\n",
+                server.path().display()
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let _guard = crate::forge::GIT_SSH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        unsafe {
+            std::env::set_var("GIT_SSH_COMMAND", &stub);
+            std::env::set_var("GIT_SSH_VARIANT", "ssh");
+        }
+        let mut pr = details();
+        pr.head_sha = head;
+        pr.base_sha = EMPTY_TREE_SHA.to_string();
+        let (backend, _http) = backend_with(true, vec![]);
+        let backend = backend.with_local_checkout(Some(checkout.path().to_path_buf()));
+        // when
+        let result = backend.get_pull_request_diff(&pr);
+        unsafe {
+            std::env::remove_var("GIT_SSH_COMMAND");
+            std::env::remove_var("GIT_SSH_VARIANT");
+        }
+        let patches = result.expect("diff");
+        // then — the fetch ran and the root base did not make it fail
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].new_path.as_deref(), Some(Path::new("a.txt")));
     }
 
     #[test]
@@ -1984,6 +2151,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::Comment,
                     commit_id: "abc1234",
+                    base_commit_id: None,
                     body: "hi",
                     comments: &[],
                 },
@@ -1993,6 +2161,40 @@ mod tests {
         assert!(
             error.to_string().contains(USER_ENV_VAR),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn should_read_file_content_through_the_trait_byte_faithfully() {
+        // given — the editor calls `fetch_file_content`, not `fetch_file_lines`
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let (backend, http) = backend_with(true, vec![&BASE64.encode("a\tb\n\tc\n")]);
+        let request = ForgeFileLinesRequest {
+            repository: gerrit_repo(),
+            base_sha: "def5678".to_string(),
+            head_sha: "abc1234".to_string(),
+            path: PathBuf::from("src/a.rs"),
+            status: crate::model::FileStatus::Modified,
+            side: crate::forge::traits::ForgeFileSide::Head,
+            start_line: 0,
+            end_line: 0,
+        };
+        let backend: &dyn ForgeBackend = &backend;
+        // when
+        let content = backend.fetch_file_content(request).expect("content");
+        // then — tabs are not expanded
+        assert_eq!(content, "a\tb\n\tc\n");
+        assert_eq!(http.calls().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_encode_a_unix_backslash_in_a_gerrit_path() {
+        assert_eq!(encode_path("src/a\\b.rs"), "src%2Fa%5Cb.rs");
+        assert_eq!(
+            forge_path(Path::new("src/a\\b.rs")),
+            "src/a\\b.rs".to_string()
         );
     }
 }

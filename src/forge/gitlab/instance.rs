@@ -4,12 +4,13 @@
 //! Today that is one fact: the path prefix of a GitLab installed under a
 //! relative URL (`https://example.com/gitlab/`). `glab` prepends its
 //! configured subfolder to every API URL it builds, so a project id must not
-//! repeat it — see the forge gotcha in `AGENTS.md`.
+//! repeat it — see gotcha G10 in `docs/FORGES.md`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use super::glab::{GlabCommandRunner, strip_port};
+use super::glab::GlabCommandRunner;
+use crate::forge::remote_url::strip_port;
 
 /// `glab`'s per-host config key naming a relative-URL install's path prefix.
 const SUBFOLDER_KEY: &str = "subfolder";
@@ -91,7 +92,7 @@ pub(super) fn strip_subfolder_prefix(project_path: &str, subfolder: &str) -> Opt
 /// Project ids are built inside pagination loops, so the lookup has to be
 /// cached — including its negative result. A `Mutex` rather than a `RefCell`
 /// because `fetch_pr_data` fans the backend out across scoped threads (forge
-/// gotcha 23); the lock is held across the lookup so concurrent callers for
+/// gotcha F7 in docs/FORGES.md); the lock is held across the lookup so concurrent callers for
 /// one host spawn `glab` at most once between them.
 #[derive(Debug, Clone, Default)]
 pub(super) struct SubfolderCache(Arc<Mutex<HashMap<String, Option<String>>>>);

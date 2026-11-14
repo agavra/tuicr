@@ -4,10 +4,11 @@ use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
 use crate::forge::traits::{
-    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary, commit_message_body,
+    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
 };
 use crate::model::FileStatus;
 use crate::vcs::git::raw::FileMetadata;
+use crate::vcs::split_commit_message;
 
 /// Machine-readable entry from the pull-request files REST endpoint.
 #[derive(Debug, Deserialize)]
@@ -218,7 +219,8 @@ pub struct GhCommitAuthor {
 
 impl GhPrCommit {
     pub fn into_pull_request_commit(self) -> PullRequestCommit {
-        let summary = self.commit.message.lines().next().unwrap_or("").to_string();
+        let (subject, body) = split_commit_message(&self.commit.message);
+        let summary = subject.to_string();
         let (author, timestamp) = match self.commit.author {
             Some(a) => (
                 a.name.or(a.email).unwrap_or_else(|| "unknown".to_string()),
@@ -231,7 +233,7 @@ impl GhPrCommit {
             oid: self.sha,
             short_oid,
             summary,
-            body: commit_message_body(&self.commit.message),
+            body,
             author,
             timestamp,
         }

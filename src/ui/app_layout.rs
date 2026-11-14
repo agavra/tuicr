@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Flex, Layout, Rect},
     widgets::Block,
 };
 
@@ -193,6 +193,7 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
         render_content_view(frame, app, diff_area);
     } else {
         app.file_list_area = None;
+        app.file_list_inner_area = None;
         app.comment_navigator_area = None;
         app.comment_navigator_inner_area = None;
         render_content_view(frame, app, content_area);
@@ -215,6 +216,15 @@ fn active_confirm(app: &App) -> Option<ConfirmAction> {
     (app.input_mode == InputMode::Confirm)
         .then_some(app.pending_confirm)
         .flatten()
+}
+
+/// Rect of `percent_x` x `percent_y` of `area`, centered in it.
+pub(crate) fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
+    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
+    let [area] = vertical.areas(area);
+    let [area] = horizontal.areas(area);
+    area
 }
 
 #[cfg(test)]
@@ -380,10 +390,13 @@ mod tests {
     fn hidden_file_list_gives_the_diff_full_width_on_either_side() {
         for position in [FileListPosition::Left, FileListPosition::Right] {
             let mut app = app_with(position);
+            draw(&mut app);
+            assert!(app.file_list_inner_area.is_some(), "{position:?}");
             app.show_file_list = false;
             draw(&mut app);
 
             assert_eq!(app.file_list_area, None, "{position:?}");
+            assert_eq!(app.file_list_inner_area, None, "{position:?}");
             assert_eq!(
                 app.diff_area,
                 Some(Rect::new(0, 1, 100, 22)),
