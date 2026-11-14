@@ -103,7 +103,7 @@ the `Tui`, so steps chain: `tui.cmd("theme").wait_for("Switch Theme").keys("Ente
 defaults to `<scratch>/work`; `env` is a **dict** of extra child variables; `keep=True` keeps home/data so a restart sees
 saved sessions; `name=` starts a second TUI), `s.start_cmd(argv, ...)` (any command, same environment),
 `s.cli(*args, input=, env=, path=, check=True)` (non-interactive tuicr, returns stdout, fails on a non-zero exit),
-`s.cli_result(*args)` (`.rc`, `.out` = stdout+stderr, never fails), `s.session()` (the one saved session, parsed JSON),
+`s.cli_result(*args, cwd=)` (`.rc`, `.out` = stdout+stderr, never fails), `s.session()` (the one saved session, parsed JSON),
 `s.session_json()`, `s.session_has(regex)`, `s.skip(reason)`, `s.on_exit(fn, *args)` (cleanups run in reverse order after
 the TUIs stop; never install signal or atexit handlers), `s.allow_unexpected_forge_calls(why)`, `s.env` / `s.pre_path`
 (variables and PATH directories applied to every later start; `use_hg`, `use_jj` and `fake_clipboard` add to them),

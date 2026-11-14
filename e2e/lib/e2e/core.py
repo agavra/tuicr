@@ -200,9 +200,10 @@ class Scenario:
         return p.stdout
 
     def cli_result(self, *args, env: Optional[Dict[str, str]] = None, path: Optional[str] = None,
-                   name: Optional[str] = None) -> CliResult:
-        """Run tuicr with stdin closed; stdout+stderr and the exit status. Never fails."""
+                   name: Optional[str] = None, cwd=None) -> CliResult:
+        """Run tuicr (in cwd, default the harness's) with stdin closed; stdout+stderr and the exit status. Never fails."""
         p = subprocess.run([TUICR_BIN, *map(str, args)], stdin=subprocess.DEVNULL, env=self._cli_env(name, env, path),
+                           cwd=None if cwd is None else str(cwd),
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         return CliResult(p.returncode, p.stdout.rstrip("\n"))
 
