@@ -5,6 +5,7 @@ use crate::app::{
     self, App, CommandCompletionState, ExpandDirection, FileTreeItem, FileTreePrompt, FocusedPanel,
     GapCursorHit, InputMode, TargetTab, VisualSelection,
 };
+use crate::error::TuicrError;
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
 use crate::input::{
@@ -13,7 +14,9 @@ use crate::input::{
     map_target_filter_mode, map_theme_picker_filter_mode,
 };
 use crate::model::{ClearScope, LineSide};
-use crate::output::{copy_text_to_clipboard, export_to_clipboard, generate_export_content};
+use crate::output::{
+    copy_text_to_clipboard, export_to_clipboard, export_to_file, generate_export_content,
+};
 use crate::text_edit::{
     delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
 };
@@ -496,6 +499,43 @@ fn handle_export(app: &mut App) {
     }
 }
 
+/// The path given to `:file <path>`, or `Some("")` for a bare `:file`.
+fn file_command_path(cmd: &str) -> Option<&str> {
+    let rest = cmd.strip_prefix("file")?;
+    (rest.is_empty() || rest.starts_with(' ')).then(|| rest.trim())
+}
+
+/// `:file <path>`: write the review to a file. A leading `~/` means home.
+fn handle_export_to_file(app: &mut App, path: &str) {
+    if path.is_empty() {
+        app.set_warning("Usage: :file <path>");
+        return;
+    }
+    let path = match path.strip_prefix("~/") {
+        Some(rest) => directories::BaseDirs::new()
+            .map(|dirs| dirs.home_dir().join(rest))
+            .unwrap_or_else(|| path.into()),
+        None => path.into(),
+    };
+    let slug = app.session_slug();
+    match export_to_file(
+        &app.session,
+        &app.diff_source,
+        &app.comment_types,
+        &app.export,
+        &app.forge_review_threads,
+        slug.as_deref(),
+        &path,
+    ) {
+        Ok(msg) => app.set_message(msg),
+        Err(TuicrError::Io(e)) => {
+            app.set_warning(format!("Could not write {}: {e}", path.display()))
+        }
+        Err(TuicrError::NoComments) => app.set_warning("No comments to write"),
+        Err(e) => app.set_warning(format!("{e}")),
+    }
+}
+
 /// Copy just the comment under the cursor (`Y`). Unlike `y`, the rest of the
 /// review stays out of the clipboard, so a single comment can go straight into
 /// a chat message or an agent prompt.
@@ -721,6 +761,9 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 dispatch_command(app, spec.kind)
             } else if let Some((lineno, side)) = parse_lineno_command(&cmd) {
                 app.go_to_source_line(lineno, side);
+                CommandAfterDispatch::ExitCommandMode
+            } else if let Some(path) = file_command_path(&cmd) {
+                handle_export_to_file(app, path);
                 CommandAfterDispatch::ExitCommandMode
             } else if let Some(name) = cmd.strip_prefix("theme ") {
                 let name = name.trim();
@@ -2067,6 +2110,18 @@ mod command_tests {
             command_spec_for("set relativenumber!").map(|spec| spec.kind),
             Some(CommandKind::ToggleRelativeLineNumbers)
         );
+    }
+
+    #[test]
+    fn parses_file_command_paths() {
+        assert_eq!(
+            super::file_command_path("file review.md"),
+            Some("review.md")
+        );
+        assert_eq!(super::file_command_path("file   a b.md "), Some("a b.md"));
+        assert_eq!(super::file_command_path("file"), Some(""));
+        assert_eq!(super::file_command_path("files"), None);
+        assert_eq!(super::file_command_path("focus"), None);
     }
 
     #[test]

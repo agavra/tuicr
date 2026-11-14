@@ -76,6 +76,28 @@ pub fn export_to_clipboard(
     })
 }
 
+/// Write the same review `:clip` copies to `path`, replacing any file there.
+pub fn export_to_file(
+    session: &ReviewSession,
+    diff_source: &DiffSource,
+    comment_types: &[CommentTypeDefinition],
+    export: &ExportConfig,
+    remote_threads: &[RemoteReviewThread],
+    session_slug: Option<&str>,
+    path: &std::path::Path,
+) -> Result<String> {
+    let content = generate_export_content(
+        session,
+        diff_source,
+        comment_types,
+        export,
+        remote_threads,
+        session_slug,
+    )?;
+    std::fs::write(path, content)?;
+    Ok(format!("Review written to {}", path.display()))
+}
+
 /// Copy arbitrary text to the system clipboard. Returns `Ok(true)` if the
 /// terminal-based fallback (tmux/OSC 52) was used, `Ok(false)` if the
 /// platform clipboard handled it.
@@ -856,6 +878,63 @@ mod tests {
         }
 
         session
+    }
+
+    #[test]
+    fn should_write_the_clipboard_text_to_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("review.md");
+        let session = create_test_session();
+        let args = (
+            &DiffSource::WorkingTree,
+            &comment_types(),
+            &ExportConfig::default(),
+        );
+
+        let message = export_to_file(&session, args.0, args.1, args.2, &[], None, &path).unwrap();
+
+        let expected = generate_export_content(&session, args.0, args.1, args.2, &[], None);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected.unwrap());
+        assert_eq!(message, format!("Review written to {}", path.display()));
+    }
+
+    #[test]
+    fn should_fail_to_write_into_a_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("review.md");
+        let result = export_to_file(
+            &create_test_session(),
+            &DiffSource::WorkingTree,
+            &comment_types(),
+            &ExportConfig::default(),
+            &[],
+            None,
+            &path,
+        );
+        assert!(matches!(result, Err(TuicrError::Io(_))));
+    }
+
+    #[test]
+    fn should_write_no_file_without_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("review.md");
+        let session = ReviewSession::new(
+            PathBuf::from("/tmp/test-repo"),
+            "abc1234def".to_string(),
+            None,
+            SessionDiffSource::WorkingTree,
+        );
+        let result = export_to_file(
+            &session,
+            &DiffSource::WorkingTree,
+            &comment_types(),
+            &ExportConfig::default(),
+            &[],
+            None,
+            &path,
+        );
+        assert!(matches!(result, Err(TuicrError::NoComments)));
+        assert!(!path.exists());
     }
 
     #[test]
