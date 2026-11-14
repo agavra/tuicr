@@ -88,3 +88,10 @@ git2 = { version = "0.20", default-features = false }
 # Static Linux builds need a target-native zlib instead of the host library.
 [target.'cfg(target_env = "musl")'.dependencies]
 git2 = { version = "0.20", default-features = false, features = ["zlib-ng-compat"] }
+
+# panic stays "unwind": the src/main.rs panic hook restores the terminal, and
+# scoped forge worker threads rely on unwinding to propagate panics.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
