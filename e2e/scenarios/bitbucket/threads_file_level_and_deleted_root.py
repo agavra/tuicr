@@ -15,9 +15,7 @@ def main(s: Scenario) -> None:
     s.dir.mkdir(parents=True, exist_ok=True)
     comments = s.dir / "comments.json"
     comments.write_text(COMMENTS)
-    tui = s.forge_open(
-        "https://bitbucket.org/octo/demo.git", env={"E2E_BB_COMMENTS": str(comments)}
-    )
+    tui = s.forge_open("https://bitbucket.org/octo/demo.git", env={"E2E_BB_COMMENTS": str(comments)})
     # the file-level note renders in the PR description pane (top); check before `}` scrolls it away
     tui.wait_for("BB-FILE-LEVEL-NOTE", 10)  # else: file-level comment dropped
     tui.keys("}")

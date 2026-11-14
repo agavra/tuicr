@@ -12,8 +12,6 @@ def main(s: Scenario) -> None:
     tui.keys("C").wait_for("COMMENT").type("long-note").keys("Enter").settle()
     tui.cmd("submit comment").wait_for("cannot be posted inline").settle()
     print("\n".join(line[33:150] for line in tui.screen().split("\n")))
-    tui.expect(
-        r"> \[x\] Move to summary", 2
-    )  # else: tall resolver item was dropped instead of clipped
+    tui.expect(r"> \[x\] Move to summary", 2)  # else: tall resolver item was dropped instead of clipped
     tui.expect("Esc: cancel", 2)  # else: resolver footer missing
     tui.keys("Escape").quit()

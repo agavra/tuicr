@@ -20,19 +20,13 @@ def main(s: Scenario) -> None:
     s.dir.mkdir(parents=True, exist_ok=True)
     disc = s.dir / "disc.json"
     disc.write_text(DISCUSSIONS)
-    tui = s.forge_open(
-        "https://gitlab.com/octo/demo.git", env={"E2E_GL_DISCUSSIONS": str(disc)}
-    )
+    tui = s.forge_open("https://gitlab.com/octo/demo.git", env={"E2E_GL_DISCUSSIONS": str(disc)})
     # general comments render in the PR description pane (top); check before `}` scrolls them away
     tui.wait_for("GENERAL-ROOT-NOTE", 10)  # else: replied general comment dropped
     tui.keys("}")
     tui.wait_for("FRESH-INLINE-NOTE", 10)  # else: current-head thread missing
-    tui.reject(
-        "STALE-INLINE-NOTE"
-    )  # else: outdated discussion shown as active by default
+    tui.reject("STALE-INLINE-NOTE")  # else: outdated discussion shown as active by default
     tui.cmd("comments all")
-    tui.wait_for(
-        "STALE-INLINE-NOTE", 5
-    )  # else: outdated thread absent under :comments all
+    tui.wait_for("STALE-INLINE-NOTE", 5)  # else: outdated thread absent under :comments all
     tui.check(r"@carol outdated\]", "no outdated badge")
     tui.quit()

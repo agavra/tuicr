@@ -21,6 +21,4 @@ def main(s: Scenario) -> None:
         r = s.cli_result("--no-update-check", "pr", url, path=minbin)
         print(f"{url} -> {r.out}")
         assert r.rc != 0, "tuicr pr unexpectedly succeeded"
-        assert "Azure DevOps integration needs" in r.out, (
-            f"Azure PR URL not recognised: {url}"
-        )
+        assert "Azure DevOps integration needs" in r.out, f"Azure PR URL not recognised: {url}"

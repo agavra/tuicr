@@ -12,9 +12,7 @@ def main(s: Scenario) -> None:
     tui = s.start(cwd=repo)
     tui.wait_for("Unstaged changes").keys("Enter").wait_for("unstaged line")
     tui.cursor_on("unstaged line")
-    tui.keys("c").wait_for("COMMENT").type("root-session-comment").keys(
-        "Enter"
-    ).wait_for("root-session-comment")
+    tui.keys("c").wait_for("COMMENT").type("root-session-comment").keys("Enter").wait_for("root-session-comment")
     tui.save().cmd("q!").wait_exit()
     # 2. PR from src/, then the Sessions tab
     tui = s.start(

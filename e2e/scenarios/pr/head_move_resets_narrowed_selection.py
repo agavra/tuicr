@@ -20,9 +20,7 @@ def main(s: Scenario) -> None:
     variant.write_text("moved_head\n")
     tui.cmd("e")
     # the reload resets the selection to the cumulative diff: the single-commit message above it goes away
-    tui.wait_gone(r"Commit Message \(", 15).wait_for("hello from the PR").reject(
-        r"Commit Message \("
-    )
+    tui.wait_gone(r"Commit Message \(", 15).wait_for("hello from the PR").reject(r"Commit Message \(")
     tui.check(r"▣.*4444444|4444444.*fourth|fourth commit", "new commit not listed")
     # narrow to bbbbbbb again: its message review must have been carried over
     tui.keys(";k").keys("j", "j").wait_for("▸.*bbbbbbb").keys("Enter")

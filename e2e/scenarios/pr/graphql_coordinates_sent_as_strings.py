@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Covers #915: GraphQL repository coordinates must be sent with `gh api -f` (string), not `-F` (typed: a repo named
-# `123` becomes the integer 123 and GitHub rejects the query). Repo octo/123; assert no `-F owner=/name=/after=` in the log.
+# `123` becomes the integer 123 and GitHub rejects the query). Repo octo/123; assert no `-F owner=/name=/after=` in
+# the log.
 from e2e import Scenario, repos, scenario
 
 

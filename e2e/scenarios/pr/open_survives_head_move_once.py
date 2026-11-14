@@ -14,8 +14,6 @@ def main(s: Scenario) -> None:
     tui.save()
     j = s.session_json()
     print(sorted(set(re.findall(r'"head_sha": *"[0-9a-f]*"', j))))
-    assert re.search(r'"head_sha": *"4{40}"', j), (
-        "session not keyed to the settled head"
-    )
+    assert re.search(r'"head_sha": *"4{40}"', j), "session not keyed to the settled head"
     assert not re.search(r'"head_sha": *"2{40}"', j), "session pinned to the stale head"
     tui.quit()

@@ -7,9 +7,7 @@ from e2e import Scenario, pr_comment, scenario
 def main(s: Scenario) -> None:
     tui = s.pr_open()
     pr_comment(tui, "draft inline")
-    tui.cmd("submit draft").wait_for("Push pending GitHub review").expect(
-        "Inline: 1"
-    ).keys("y")
+    tui.cmd("submit draft").wait_for("Push pending GitHub review").expect("Inline: 1").keys("y")
     tui.wait_for("Pushed pending GitHub review #1001", 15)
     posts = tui.posts()
     print(posts)

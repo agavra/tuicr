@@ -7,12 +7,8 @@ from e2e import Scenario, pr_comment, scenario
 def main(s: Scenario) -> None:
     tui = s.pr_open()
     pr_comment(tui, "inline for approve")
-    tui.keys(";c").wait_for("COMMENT").keys("overall looks good").keys(
-        "Enter"
-    ).wait_for("overall looks good")
-    tui.cmd("submit approve").wait_for("Submit review to GitHub").expect(
-        "Event: Approve"
-    ).keys("y")
+    tui.keys(";c").wait_for("COMMENT").keys("overall looks good").keys("Enter").wait_for("overall looks good")
+    tui.cmd("submit approve").wait_for("Submit review to GitHub").expect("Event: Approve").keys("y")
     tui.wait_for("Submitted GitHub review #1001")
     posts = tui.posts()
     print(posts)

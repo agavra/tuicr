@@ -17,9 +17,7 @@ def main(s: Scenario) -> None:
     )
     tui.wait_exit(20, 1)  # else: PR opened despite the head moving on every request
     err = stderr.read_text()
-    assert "changed while it was being loaded; try again" in err, (
-        f"no head-moved error:\n{err}"
-    )
+    assert "changed while it was being loaded; try again" in err, f"no head-moved error:\n{err}"
     # fetched twice (one retry), then gave up
     fetches = tui.forge_count('"pr", "diff"')
     assert fetches == 2, f"expected exactly one retry, got {fetches} fetches"

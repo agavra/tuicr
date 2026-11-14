@@ -12,8 +12,6 @@ def main(s: Scenario) -> None:
     ):
         # origin must name the same host as the URL
         tui = s.gerrit_open("root", host="127.0.0.1", target=target)
-        tui.wait_for(
-            r"a\.txt", 20
-        )  # else: URL with patch set, query and fragment did not open the change
+        tui.wait_for(r"a\.txt", 20)  # else: URL with patch set, query and fragment did not open the change
         tui.stop()
         s.gerrit_stop()

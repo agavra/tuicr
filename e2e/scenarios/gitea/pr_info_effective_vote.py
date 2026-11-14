@@ -17,7 +17,7 @@ def review(i: int, user: str, state: str, at: str, **kw: Any) -> dict[str, Any]:
         "submitted_at": at,
         "comments_count": 0,
         "commit_id": "",
-        "html_url": "u%d" % i,
+        "html_url": f"u{i}",
     }
     return dict(base, **kw)
 
