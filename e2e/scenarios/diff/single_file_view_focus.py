@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# `:focus` shows one file at a time: `}` / `{` swap the file under review; `:focus` again returns to the continuous diff.
+# `:focus` shows one file at a time: `}` / `{` swap the file under review; `:focus` again returns to the continuous
+# diff.
 from e2e import Scenario, scenario
 
 

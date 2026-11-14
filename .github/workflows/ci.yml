@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUFF_VERSION: 0.15.16 # Python lint/format for the e2e suite and scripts (e2e/pyproject.toml)
+  TY_VERSION: 0.0.44 # Python type check (e2e/pyproject.toml)
 
 jobs:
   check:
@@ -28,6 +30,9 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all --check
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - name: Python format (ruff)
+        run: uvx ruff@${{ env.RUFF_VERSION }} format --check --config e2e/pyproject.toml e2e scripts/demo
 
   clippy:
     name: Clippy
@@ -40,6 +45,12 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -- -D warnings
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - name: Python lint (ruff)
+        run: uvx ruff@${{ env.RUFF_VERSION }} check --config e2e/pyproject.toml e2e scripts/demo
+      - name: Python types (ty)
+        working-directory: e2e # ty reads [tool.ty] from its cwd
+        run: uvx ty@${{ env.TY_VERSION }} check . ../scripts/demo
 
   static-linux:
     name: Static Linux binary

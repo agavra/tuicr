@@ -17,14 +17,10 @@ def main(s: Scenario) -> None:
     base = tui.colors_hash(1, (3, 30))
     tui.cmd("theme").wait_for("Switch Theme")
     tui.keys("/").type("zz-local").keys("Enter").settle(0.4)
-    assert tui.colors_hash(1, (3, 30)) != base, (
-        f"local theme preview did not change colours\n{tui.screen()}"
-    )
+    assert tui.colors_hash(1, (3, 30)) != base, f"local theme preview did not change colours\n{tui.screen()}"
     local.unlink()
     tui.keys("Enter").wait_for("Unknown theme 'zz-local'").settle(0.4)
     with because("announced a theme that failed to apply"):
         tui.reject("Theme: zz-local", 0.3)
-    assert tui.colors_hash(1, (3, 30)) == base, (
-        "failed confirm did not restore the original theme"
-    )
+    assert tui.colors_hash(1, (3, 30)) == base, "failed confirm did not restore the original theme"
     tui.quit()

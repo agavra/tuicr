@@ -17,9 +17,7 @@ def main(s: Scenario) -> None:
     tui.cmd("theme light").settle(0.4)
     c = cnt(tui)
     print(f"opaque light panel_bg cells after :theme light: {c}")
-    assert c == 0, (
-        ":theme light painted an opaque panel background despite transparent_background"
-    )
+    assert c == 0, ":theme light painted an opaque panel background despite transparent_background"
     tui.cmd("theme").wait_for("Switch Theme")
     tui.keys("j").settle().keys("k").settle().keys("j").settle()
     c = cnt(tui)

@@ -16,7 +16,7 @@ def main(s: Scenario) -> None:
     assert len(sessions) == 1, sessions
     slug = sessions[0]["slug"]
 
-    def sess(cmd: str, *args: object, **kw: Any) -> str:
+    def sess(cmd: str, *args: str, **kw: Any) -> str:
         return s.cli("review", cmd, "--repo", repo, "--session", slug, *args, **kw)
 
     def listed(pattern: str) -> bool:
@@ -36,16 +36,7 @@ def main(s: Scenario) -> None:
         '{"comment_type": "suggestion", "content": "range from literal json", "target": '
         '{"type": "line_range", "file": "README.md", "start_line": 3, "end_line": 4, "side": "new"}}',
     )
-    comment_id = json.loads(
-        sess(
-            "add",
-            "--target-file",
-            "src/lib.rs",
-            "--username",
-            "alice",
-            "flag file note",
-        )
-    )["id"]
+    comment_id = json.loads(sess("add", "--target-file", "src/lib.rs", "--username", "alice", "flag file note"))["id"]
 
     c = json.loads(sess("comments"))
     c = c if isinstance(c, list) else c.get("comments", c)
@@ -73,19 +64,9 @@ def main(s: Scenario) -> None:
 
     assert comment_id in sess("delete", "--comment-id", comment_id), "delete did not echo the id"
     assert not listed("flag file note"), "deleted comment still listed"
-    assert (
-        s.cli_result(
-            "review",
-            "delete",
-            "--repo",
-            repo,
-            "--session",
-            slug,
-            "--comment-id",
-            comment_id,
-        ).rc
-        != 0
-    ), "deleting a missing id succeeded"
+    assert s.cli_result("review", "delete", "--repo", repo, "--session", slug, "--comment-id", comment_id).rc != 0, (
+        "deleting a missing id succeeded"
+    )
     sess("clearc")
     assert not listed("from stdin json"), "clearc left comments"
     assert s.session_json(), "clearc removed a session that still has a reviewed file"

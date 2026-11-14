@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Covers #907: `--file App.vue` colors the <script> block (container grammar, whole-file highlight).
-# Baseline's FileBackend skipped enhance_with_full_file_highlight, so the Vue file stayed plain (a single foreground colour).
+# Baseline's FileBackend skipped enhance_with_full_file_highlight, so the Vue file stayed plain (a single foreground
+# colour).
 import re
 import time
 

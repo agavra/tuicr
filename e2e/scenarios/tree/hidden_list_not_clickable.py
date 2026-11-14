@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # after hiding the file list (<leader>e) its old rectangle must stop being a click target.
-# Baseline kept the stale hit area, so clicking where the tree used to be selected a file instead of landing in the diff.
+# Baseline kept the stale hit area, so clicking where the tree used to be selected a file
+# instead of landing in the diff.
 from e2e import Scenario, scenario
 
 

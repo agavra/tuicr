@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Covers #900: a bracketed paste into the file-tree `i` filter prompt lands in the draft (`└ i README` on the tree border).
+# Covers #900: a bracketed paste into the file-tree `i` filter prompt lands in the draft (`└ i README` on the tree
+# border).
 # Baseline's paste table only knew comment/command/search modes and silently dropped the paste.
 from e2e import Scenario, because, scenario
 

@@ -4,14 +4,19 @@ The diff and file contents are the GitHub fixtures' (README.md + src/greet.rs).
 POSTed comments, `pr approve` and request-changes are only logged (the body is the `--input` argument).
 Knob (env): E2E_BB_COMMENTS=<json file>: the list served for /comments.
 """
+
+from __future__ import annotations
+
 import json
 import os
+
+from .core import Fake
 
 HEAD = "2" * 40
 REPO = "/2.0/repositories/octo/demo"
 
 
-def handle(f):
+def handle(f: Fake) -> None:
     argv = f.argv
     f.start()
     github = os.path.join(os.environ["E2E_DATA"], "github")
@@ -25,7 +30,7 @@ def handle(f):
     pr = REPO + "/pullrequests/1"
     if f.flag("--method") == "POST":  # published comments / request-changes: logged, not served back
         if ep == pr + "/comments":
-            f.out({"id": 4000 + sum(1 for _ in open(f.log))})
+            f.out({"id": 4000 + sum(1 for _ in open(f.log or ""))})
         if ep == pr + "/request-changes":
             f.out({})
     if ep == "/2.0/user":

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-# `:N` (new side), `:oN` (old side) and `{N}G` put the cursor on that source line even inside collapsed context, expanding
-# only as far as needed; `Enter` on an "expand" row reveals the hidden lines and `Enter` on revealed context folds them back.
+# `:N` (new side), `:oN` (old side) and `{N}G` put the cursor on that source line even inside collapsed context,
+# expanding
+# only as far as needed; `Enter` on an "expand" row reveals the hidden lines and `Enter` on revealed context folds
+# them back.
 from e2e import Scenario, repos, scenario
 
 
@@ -13,9 +15,7 @@ def main(s: Scenario) -> None:
     repos.git(r, "commit", "-qm", "base")
     # three lines replace "row 5", so later rows are numbered +2 on the new side
     text = (r / "f.txt").read_text()
-    text = text.replace("row 5\n", "ins a\nins b\nins c\n").replace(
-        "row 70\n", "row 70 CHANGED\n"
-    )
+    text = text.replace("row 5\n", "ins a\nins b\nins c\n").replace("row 70\n", "row 70 CHANGED\n")
     repos.write(r / "f.txt", text)
     tui = s.start("-w", cwd=r)
     tui.wait_for("row 70 CHANGED").keys("Escape")
