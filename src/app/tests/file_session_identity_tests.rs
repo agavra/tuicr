@@ -35,6 +35,7 @@ fn file_options(path: &str) -> AppStartupOptions<'_> {
         diff_whitespace_mode: DiffWhitespaceMode::Normal,
         commit_selection: CommitSelectionStart::All,
         pr_target: None,
+        pr_current_branch: false,
         repo_url_override: None,
     }
 }

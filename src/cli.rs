@@ -32,6 +32,8 @@ pub struct CliArgs {
     pub start_line: Option<u32>,
     /// Direct PR target from `tuicr pr <target>`.
     pub pr_target: Option<String>,
+    /// `tuicr pr` without a target: review the PR for the current branch.
+    pub pr_current_branch: bool,
     /// Override the GitHub repo used for PR operations.
     pub repo_url: Option<String>,
     /// Use a named VCS remote for PR operations.
@@ -191,8 +193,9 @@ enum TuiSubcmd {
 
 #[derive(Args, Debug, Clone, Default)]
 struct PrCommand {
-    /// PR target: <number>, <owner/repo#N>, or a PR URL.
-    target: String,
+    /// PR target: <number>, <owner/repo#N>, or a PR URL. Defaults to the PR
+    /// for the current branch.
+    target: Option<String>,
 
     #[command(flatten)]
     options: TuiOptions,
@@ -338,8 +341,7 @@ pub enum LineSideArg {
 
 impl From<Cli> for CliArgs {
     fn from(cli: Cli) -> Self {
-        let (options, pr_target, review_command, update_version, update_command) = match cli.command
-        {
+        let (options, pr, review_command, update_version, update_command) = match cli.command {
             Some(Subcmd::Tui(command)) => match command.command {
                 Some(TuiSubcmd::Pr(pr)) => (
                     cli.tui_options.merge(command.options).merge(pr.options),
@@ -380,7 +382,8 @@ impl From<Cli> for CliArgs {
             file_path: options.file_path,
             all_files: options.all_files,
             start_line: options.start_line,
-            pr_target,
+            pr_current_branch: matches!(pr, Some(None)),
+            pr_target: pr.flatten(),
             repo_url: options.repo_url,
             remote: options.remote,
             review_command,
@@ -438,13 +441,14 @@ impl Cli {
             )),
             _ => {
                 let args: CliArgs = self.into();
-                if args.start_line.is_some() && args.pr_target.is_some() {
+                let pr_mode = args.pr_target.is_some() || args.pr_current_branch;
+                if args.start_line.is_some() && pr_mode {
                     return Err(clap::Error::raw(
                         clap::error::ErrorKind::ArgumentConflict,
                         "--line cannot be used with `tuicr pr`\n",
                     ));
                 }
-                if args.pr_target.is_some() {
+                if pr_mode {
                     for (flag, given) in [
                         ("--revisions", args.revisions.is_some()),
                         ("--working-tree", args.working_tree),
@@ -990,9 +994,37 @@ mod tests {
     }
 
     #[test]
-    fn should_error_when_pr_target_is_missing() {
-        let err = parse_for_test(&["tuicr", "pr"]).expect_err("parse should fail");
-        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    fn should_use_current_branch_when_pr_target_is_missing() {
+        for argv in [
+            &["tuicr", "pr"][..],
+            &["tuicr", "mr"],
+            &["tuicr", "tui", "pr"],
+            &["tuicr", "pr", "--theme", "dark"],
+        ] {
+            let parsed = parse_for_test(argv).expect("parse should succeed");
+            assert_eq!(parsed.pr_target, None, "{argv:?}");
+            assert!(parsed.pr_current_branch, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn should_not_use_current_branch_when_pr_target_is_given() {
+        let parsed = parse_for_test(&["tuicr", "pr", "125"]).expect("parse should succeed");
+        assert!(!parsed.pr_current_branch);
+        let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
+        assert!(!parsed.pr_current_branch);
+    }
+
+    #[test]
+    fn should_reject_local_review_flags_with_current_branch_pr() {
+        for flag in [&["-w"][..], &["-r", "HEAD~1"], &["--file", "a.rs"], &["-A"]] {
+            let mut argv = vec!["tuicr", "pr"];
+            argv.extend_from_slice(flag);
+            let err = parse_for_test(&argv).expect_err("parse should fail");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{argv:?}");
+        }
+        let err = parse_for_test(&["tuicr", "pr", "--line", "3"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]

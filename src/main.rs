@@ -252,6 +252,7 @@ fn main() -> anyhow::Result<()> {
                 diff_whitespace_mode,
                 commit_selection,
                 pr_target: cli_args.pr_target.as_deref(),
+                pr_current_branch: cli_args.pr_current_branch,
                 repo_url_override,
             },
         )
