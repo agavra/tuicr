@@ -71,6 +71,10 @@ impl App {
         // Keep the old snapshot as the merge base: the new file's contents are
         // then external changes to merge, not local deletions.
         self.session_file_state = None;
+        // Move the active registration with the path (one entry per pid), so
+        // `review delete` still sees the open review as active before the
+        // next save.
+        self.mark_current_session_active_at(&resolved);
         self.session_path = Some(resolved);
     }
 

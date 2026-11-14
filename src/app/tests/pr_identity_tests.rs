@@ -275,3 +275,80 @@ fn should_reresolve_session_path_on_same_head_reload() {
     assert!(texts.contains(&"app draft".to_string()), "{texts:?}");
     assert!(texts.contains(&"other tui draft".to_string()), "{texts:?}");
 }
+
+// The registry entry must follow the re-resolved path before any save.
+#[test]
+fn should_keep_reloaded_pr_session_path_active_before_autosave() {
+    let reviews = TestReviewsDir::new();
+    let key = ghe_key();
+    let session = pr_session(&key, "legacy draft");
+    let sessions = reviews.dir.path().join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let legacy_hash = {
+        let crate::slug::Slug::Pr(slug) = crate::slug::Slug::from(&key) else {
+            unreachable!()
+        };
+        let mut hasher = crate::hash::Fnv1aHasher::new();
+        hasher.write(format!("pr|{}|{}", slug.hostless(), key.head_sha).as_bytes());
+        format!("{:016x}", hasher.finish())
+    };
+    let legacy = sessions.join(format!("{legacy_hash}.json"));
+    std::fs::write(&legacy, serde_json::to_string_pretty(&session).unwrap()).unwrap();
+    let mut app = build_pr_app(session);
+    app.ensure_ephemeral_session_file().unwrap();
+    assert!(
+        storage::active_session_paths_in_dir(reviews.dir.path())
+            .unwrap()
+            .contains(&storage::normalize_path_for_comparison(&legacy))
+    );
+    assert_eq!(app.session_path.as_deref(), Some(legacy.as_path()));
+
+    let other = pr_session(&key, "other tui draft");
+    let new_path = {
+        let mut hasher = crate::hash::Fnv1aHasher::new();
+        hasher.write(format!("pr2|gh|ghe.internal|owner/repo|42|{}", key.head_sha).as_bytes());
+        sessions.join(format!("{:016x}.json", hasher.finish()))
+    };
+    let legacy_bytes = std::fs::read(&legacy).unwrap();
+    std::fs::write(&legacy, "{temporarily corrupt").unwrap();
+    assert_eq!(storage::save_session(&other).unwrap(), new_path);
+    std::fs::write(&legacy, legacy_bytes).unwrap();
+
+    app.session.review_comments.push(Comment::new(
+        "app draft".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
+    app.dirty = true;
+    assert!(app.save_current_session_merging_external().is_err());
+
+    app.apply_same_head_pr_reload(crate::forge::pr_open::OpenedPullRequest {
+        details: test_details(&key),
+        diff_files: Vec::new(),
+        session: app.session.clone(),
+        key: key.clone(),
+        commits: Vec::new(),
+        review_metadata: Default::default(),
+        pr_info: crate::forge::traits::PullRequestInfo::from_details(test_details(&key)),
+    });
+    assert_eq!(app.session_path.as_deref(), Some(new_path.as_path()));
+    assert!(app.dirty);
+    // No save after :e: this must still be protected as the open review.
+    let store = crate::review_store::ReviewStore::with_reviews_dir(reviews.dir.path());
+    let deletion = store
+        .delete_review(&crate::review_store::SessionRef::from_path(
+            new_path.clone(),
+        ))
+        .unwrap();
+    assert_eq!(deletion, storage::DeleteOutcome::Active);
+    let path = app.save_current_session_merging_external().unwrap();
+    assert_eq!(path, new_path);
+    let texts: Vec<_> = storage::load_session(&path)
+        .unwrap()
+        .review_comments
+        .iter()
+        .map(|c| c.content.clone())
+        .collect();
+    assert!(texts.contains(&"app draft".to_string()), "{texts:?}");
+    assert!(texts.contains(&"other tui draft".to_string()), "{texts:?}");
+}
