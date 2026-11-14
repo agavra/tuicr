@@ -14,14 +14,16 @@ sc_quit() { e2e_keys "$1" Escape ":q!" Enter; e2e_wait_exit "$1"; }
 sc_cmd() { e2e_keys "$1" Escape; e2e_keys "$1" ":$2" Enter; }
 # sc_cursor_on <name> <regex>: j until the cursor row (▶) matches the regex (max 80 steps).
 sc_cursor_on() {
-  local n=$1 re=$2 i=0 scr rc
+  local n=$1 re=$2 i=0 scr rc cur
   scr=$(e2e_screen "$n") || { _e2e_no_pane "$n"; return 2; }
   while [ $i -lt 80 ]; do
-    grep -E '▶' <<<"$scr" | grep -Eq -- "$re" && return 0
+    # (the cursor row is captured first: `grep ▶ | grep -q` fails under pipefail when -q exits early, i.e. exactly on a match)
+    cur=$(grep -E '▶' <<<"$scr" || true); ! grep -Eq -- "$re" <<<"$cur" || return 0
     e2e_keys "$n" j
     # the cursor moving redraws the screen; at the end of the diff it cannot move, so stop waiting after 0.5 s
     rc=0; e2e_wait_screen_change "$n" "$scr" 0.5 2>/dev/null || rc=$?
     [ $rc -ne 2 ] || return 2
+    e2e_settle "$n" 0.1 || return 2   # the first changed frame can be a partial redraw: judge the cursor row on a settled screen
     scr=$(e2e_screen "$n") || { _e2e_no_pane "$n"; return 2; }
     i=$((i+1))
   done
