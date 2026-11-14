@@ -21,6 +21,5 @@ e2e_keys $n g; cur 'README\.md'; e2e_keys $n ']'; cur 'gone\.txt'
 e2e_keys $n ']'; cur 'notes_cjk\.txt'
 e2e_keys $n '['; cur 'gone\.txt'
 e2e_keys $n '['; cur 'README\.md'
-# paging does not break the layout
-e2e_keys $n C-d C-d C-u; e2e_expect $n 'Files · 0/8'
+# (paging and hunk steps inside one file: local/navigation_hunks_and_paging_in_long_file)
 sc_quit $n
