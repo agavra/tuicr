@@ -649,8 +649,78 @@ impl PullRequestInfo {
     }
 }
 
+/// Open PRs read per request while looking for the one on the current branch.
+const BRANCH_SCAN_PAGE_SIZE: usize = 50;
+/// Upper bound on that scan (1,000 open PRs). Past it the lookup refuses
+/// instead of guessing, like every other bounded forge loop (FORGES.md G8a).
+const BRANCH_SCAN_MAX_PAGES: usize = 20;
+
+/// Pick the PR a branch lookup found: exactly one match wins, none or several
+/// are errors that tell the user to name the PR instead.
+pub(crate) fn single_branch_match(
+    repository: &ForgeRepository,
+    branch: &str,
+    mut numbers: Vec<u64>,
+) -> Result<u64> {
+    numbers.sort_unstable();
+    numbers.dedup();
+    match numbers.as_slice() {
+        [number] => Ok(*number),
+        [] => Err(TuicrError::Forge(format!(
+            "No open pull request found for branch `{branch}` in {}. \
+             Pass a target: tuicr pr <number>.",
+            repository.display_name()
+        ))),
+        many => Err(TuicrError::Forge(format!(
+            "Branch `{branch}` matches several open pull requests in {} ({}). \
+             Pass a target: tuicr pr <number>.",
+            repository.display_name(),
+            many.iter()
+                .map(|n| format!("#{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
 pub trait ForgeBackend {
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests>;
+    /// Number of the open pull request for `branch` (`tuicr pr` with no
+    /// target). The default scans the open list for a matching head branch and
+    /// stops at the first page that has a match, so a very large repository
+    /// costs one page per 50 PRs, bounded by [`BRANCH_SCAN_MAX_PAGES`].
+    /// Backends whose list does not carry branch names override it.
+    fn find_pull_request_for_branch(
+        &self,
+        repository: &ForgeRepository,
+        branch: &str,
+    ) -> Result<u64> {
+        let mut loaded = 0;
+        for _ in 0..BRANCH_SCAN_MAX_PAGES {
+            let page = self.list_pull_requests(PullRequestListQuery {
+                repository: repository.clone(),
+                already_loaded: loaded,
+                page_size: BRANCH_SCAN_PAGE_SIZE,
+                scope: PullRequestListScope::Open,
+            })?;
+            let matches = page
+                .pull_requests
+                .iter()
+                .filter(|pr| pr.head_ref_name == branch)
+                .map(|pr| pr.number)
+                .collect::<Vec<_>>();
+            if !matches.is_empty() || !page.has_more {
+                return single_branch_match(repository, branch, matches);
+            }
+            loaded = page.total_loaded;
+        }
+        Err(TuicrError::ForgeLimit(format!(
+            "More than {} open pull requests in {}; cannot tell which one is on branch \
+             `{branch}`. Pass a target: tuicr pr <number>.",
+            BRANCH_SCAN_MAX_PAGES * BRANCH_SCAN_PAGE_SIZE,
+            repository.display_name()
+        )))
+    }
     fn get_pull_request(&self, target: PullRequestTarget) -> Result<PullRequestDetails>;
     /// Fetch PR metadata for the description panel. The default builds a
     /// minimal [`PullRequestInfo`] from [`Self::get_pull_request`].
@@ -906,5 +976,168 @@ mod tests {
             PullRequestListScope::PersonallyRequested.next_for(ForgeKind::GitLab),
             PullRequestListScope::Open
         );
+    }
+}
+
+#[cfg(test)]
+mod branch_lookup_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    fn repo() -> ForgeRepository {
+        ForgeRepository::github("github.com", "agavra", "tuicr")
+    }
+
+    fn summary(number: u64, head: &str) -> PullRequestSummary {
+        PullRequestSummary {
+            repository: repo(),
+            number,
+            title: String::new(),
+            author: None,
+            head_ref_name: head.to_string(),
+            base_ref_name: "main".to_string(),
+            updated_at: None,
+            last_commit_at: None,
+            url: String::new(),
+            state: "OPEN".to_string(),
+            is_draft: false,
+        }
+    }
+
+    /// Serves `rows` as open PRs and records each page query's offset.
+    struct ListingBackend {
+        rows: Vec<PullRequestSummary>,
+        offsets: Mutex<Vec<usize>>,
+    }
+
+    impl ListingBackend {
+        fn new(rows: Vec<PullRequestSummary>) -> Self {
+            Self {
+                rows,
+                offsets: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ForgeBackend for ListingBackend {
+        fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests> {
+            assert_eq!(query.scope, PullRequestListScope::Open);
+            self.offsets.lock().unwrap().push(query.already_loaded);
+            let pull_requests = self
+                .rows
+                .iter()
+                .skip(query.already_loaded)
+                .take(query.page_size)
+                .cloned()
+                .collect::<Vec<_>>();
+            Ok(PagedPullRequests {
+                has_more: self.rows.len() > query.already_loaded + pull_requests.len(),
+                total_loaded: query.already_loaded + pull_requests.len(),
+                pull_requests,
+            })
+        }
+        fn get_pull_request(&self, _: PullRequestTarget) -> Result<PullRequestDetails> {
+            unimplemented!()
+        }
+        fn get_pull_request_diff(&self, _: &PullRequestDetails) -> Result<Vec<FilePatch>> {
+            unimplemented!()
+        }
+        fn list_review_threads(&self, _: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>> {
+            unimplemented!()
+        }
+        fn list_pull_request_commits(
+            &self,
+            _: &PullRequestDetails,
+        ) -> Result<Vec<PullRequestCommit>> {
+            unimplemented!()
+        }
+        fn get_pull_request_commit_range_diff(
+            &self,
+            _: &PullRequestDetails,
+            _: &str,
+            _: &str,
+        ) -> Result<Vec<FilePatch>> {
+            unimplemented!()
+        }
+        fn create_review(
+            &self,
+            _: &PullRequestDetails,
+            _: CreateReviewRequest<'_>,
+        ) -> Result<GhCreateReviewResponse> {
+            unimplemented!()
+        }
+    }
+
+    #[test]
+    fn should_find_the_pr_whose_head_is_the_branch() {
+        let backend = ListingBackend::new(vec![summary(3, "other"), summary(7, "feature")]);
+        assert_eq!(
+            backend
+                .find_pull_request_for_branch(&repo(), "feature")
+                .unwrap(),
+            7
+        );
+    }
+
+    #[test]
+    fn should_stop_at_the_first_page_with_a_match() {
+        let mut rows = (1..=60).map(|n| summary(n, "other")).collect::<Vec<_>>();
+        rows[10] = summary(11, "feature");
+        let backend = ListingBackend::new(rows);
+        assert_eq!(
+            backend
+                .find_pull_request_for_branch(&repo(), "feature")
+                .unwrap(),
+            11
+        );
+        assert_eq!(*backend.offsets.lock().unwrap(), vec![0]);
+    }
+
+    #[test]
+    fn should_page_until_the_match_is_found() {
+        let mut rows = (1..=120).map(|n| summary(n, "other")).collect::<Vec<_>>();
+        rows[100] = summary(101, "feature");
+        let backend = ListingBackend::new(rows);
+        assert_eq!(
+            backend
+                .find_pull_request_for_branch(&repo(), "feature")
+                .unwrap(),
+            101
+        );
+        assert_eq!(*backend.offsets.lock().unwrap(), vec![0, 50, 100]);
+    }
+
+    #[test]
+    fn should_error_when_no_open_pr_has_the_branch() {
+        let backend = ListingBackend::new(vec![summary(3, "other")]);
+        let err = backend
+            .find_pull_request_for_branch(&repo(), "feature")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("No open pull request found for branch `feature`"),
+            "{err}"
+        );
+        assert!(err.contains("tuicr pr <number>"), "{err}");
+    }
+
+    #[test]
+    fn should_error_when_several_open_prs_share_the_branch() {
+        let backend = ListingBackend::new(vec![summary(3, "feature"), summary(9, "feature")]);
+        let err = backend
+            .find_pull_request_for_branch(&repo(), "feature")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("several open pull requests"), "{err}");
+        assert!(err.contains("#3, #9"), "{err}");
+    }
+
+    #[test]
+    fn should_refuse_rather_than_truncate_past_the_scan_bound() {
+        let rows = (1..=1_100).map(|n| summary(n, "other")).collect();
+        let err = ListingBackend::new(rows)
+            .find_pull_request_for_branch(&repo(), "feature")
+            .unwrap_err();
+        assert!(matches!(err, TuicrError::ForgeLimit(_)), "{err:?}");
     }
 }

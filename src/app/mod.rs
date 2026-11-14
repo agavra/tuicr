@@ -1997,6 +1997,9 @@ pub struct AppStartupOptions<'a> {
     /// Direct PR target (`tuicr pr <target>`). Mutually exclusive with the
     /// other selectors above; the binary validates that before reaching here.
     pub pr_target: Option<&'a str>,
+    /// `tuicr pr` without a target: open the PR for the checkout's current
+    /// branch. Mutually exclusive with `pr_target`.
+    pub pr_current_branch: bool,
     /// `--repo-url` or `--remote` override for PR operations, resolved into a
     /// `ForgeRepository`. When `Some`, the canonical resolver short-circuits
     /// the `gh api` parent lookup and uses this value directly.

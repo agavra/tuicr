@@ -1900,6 +1900,7 @@ mod tests {
             diff_whitespace_mode: mode.clone(),
             commit_selection: CommitSelectionStart::All,
             pr_target: None,
+            pr_current_branch: false,
             repo_url_override: None,
         };
         let captured = options.vcs_open_options();
