@@ -289,7 +289,11 @@ class Scenario:
         return p.stdout
 
     def cli_result(
-        self, *args: object, env: dict[str, str] | None = None, path: str | None = None, name: str | None = None,
+        self,
+        *args: object,
+        env: dict[str, str] | None = None,
+        path: str | None = None,
+        name: str | None = None,
         cwd: str | os.PathLike[str] | None = None,
     ) -> CliResult:
         """Run tuicr with stdin closed; stdout+stderr and the exit status. Never fails."""
