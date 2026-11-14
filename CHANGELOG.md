@@ -2,6 +2,134 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.29.0] - 2026-11-14
+
+### Bug Fixes
+
+- **ui:** Match the single-file hints to what j/k actually do (#811)
+- Preserve working-tree review for empty ranges (#804)
+- Allow deleting local comments from summary (#813)
+- **gerrit:** Show your drafts after submitting a review as Draft (#825)
+- **ui:** Show remote comments on lines outside the diff hunks (#828)
+- **ui:** Keep cycled commits visible in the inline selector (#835)
+- **clipboard:** Prefer OSC 52 in Rex sessions (#837)
+- **git:** Detect renames in libgit2 reviews (#838)
+- **comments:** Show tabs in suggestions and comments (#839)
+- **skills:** Wait for a running tuicr instead of exiting 0 (#840)
+- **skills:** Read Rex block ref from JSON and document :q to quit (#829)
+- **git:** Resolve worktree for separate git dirs (#819)
+- **ui:** Do not leave a blank row when a wrapped word does not fit after the indent (#820)
+- **bitbucket:** Recognize ssh.bitbucket.org remotes (#847)
+- **gitlab:** Paginate merge request picker beyond API limit (#864)
+- **ui:** Draw the change bar on the row's background (#861)
+- **gitlab:** Strip a relative-URL install's subfolder from API project ids (#862)
+- **pr:** Tidy and harden commit messages on pull requests (#848 follow-up) (#867)
+- **pr:** Keep the cumulative PR diff cache fresh and submit what is displayed (#868)
+- **cli:** Re-check option conflicts after merging subcommand flags (#869)
+- **git:** Reload the index in the libgit2 backend and fix EOF/binary/symlink handling (#870)
+- **hg:** Pair Mercurial file metadata with its patch by path (#875)
+- **forge:** Read submitted drafts back on Gitea and GitLab (#876)
+- **forge:** Encode file paths in forge content requests and keep Unix backslashes (#878)
+- **pr:** Drop late reload, range and submit results that belong to another PR (#879)
+- **editor:** Keep PR snapshots in a private directory keyed by the full head (#880)
+- **ui:** Drop stale file-list hit areas and map partly visible wrapped lines (#881)
+- **input:** Keep visual selections in one file and guard comment edits and gap jumps (#885)
+- **gerrit:** Take thread resolution from the latest reply and fix root-revision and detail fetches (#884)
+- **ui:** Show old-side comments on side-by-side context rows (#887)
+- **slug:** Parse forge: paths faithfully and strip .git before the empty check (#886)
+- **ui:** Scroll and fill by display width in the diff and file tree (#888)
+- **gitlab:** Mark outdated discussions and keep replied general comments (#891)
+- **bitbucket:** Keep file-level comments and replies to deleted roots (#892)
+- **pr:** Reject a PR open when the head moved between metadata and diff requests (#893)
+- **app:** Reset the commit pane when switching local targets and on session resume (#896)
+- **forge:** Parse Azure/Gerrit PR URLs with query strings, fragments and path prefixes (#897)
+- **git:** Harden the git CLI diff adapter (color config, merge conflicts, unborn HEAD, untracked symlinks) (#899)
+- **input:** Route keys to the open file-tree prompt and paste only where text is accepted (#900)
+- **forge:** Keep receipts for comments that posted before a submit failed (#898)
+- **submit:** Accept old-side context lines in range comments and share the type-label resolver (#902)
+- **gitea:** Take commit-range paths from git, not patch headers (#903)
+- **ui:** Clamp help scroll after a resize (#905)
+- **ui:** Measure comment input, titles, filters and branch chips by display width (#906)
+- **syntax:** Color container grammars for --file reviews and skip malformed user grammars (#907)
+- **selector:** Keep loaded PR rows when load-more fails (#908)
+- **ui:** Lay out the PR info panel at the real width and cache its rows (#904)
+- **update:** Detect Cargo installs behind symlinked homes and send a tuicr User-Agent (#909)
+- **theme:** Preview and apply themes fully, including transparent backgrounds (#901)
+- **app:** Keep reviewed marks when narrowing commits and merge external hunk marks (#912)
+- **ui:** Scroll the submit resolver so the selected row and footer stay visible (#911)
+- **forge:** Resolve SSH aliases before host matching and route GitLab subgroup targets (#910)
+- **export:** Escape remote comment bodies and replies (#913)
+- **app:** Restore the local VCS after leaving PR mode (#916)
+- **github:** Pass repository coordinates to gh api as strings (#915)
+- **gitea:** Keep the decisive review vote and fetch PR details once (#914)
+- **forge:** Fetch every page of commits, threads and PR lists (#917)
+- **azure:** Anchor inline comments to the reviewed iteration (#918)
+- **config:** Default wrap to false, as documented (#924)
+- **persistence:** Include the forge host in PR session identity, with a safe migration (#925)
+- **persistence:** Write session edits back to the referenced file and recover a corrupt manifest (#930)
+- **app:** Never discard a session with agent-added comments on quit, and make ZZ fail like :wq (#932)
+
+### Documentation
+
+- **agents:** Compress AGENTS.md (#877)
+- Require e2e scenarios for user-visible changes (#926)
+
+### Features
+
+- **skills:** Add a Rex wrapper for launching tuicr (#821)
+- **azure:** Support self-hosted Azure DevOps Server / TFS (#796)
+- **comments:** Prefill suggestions from visual code selections (#793)
+- **editor:** Open fresh and flow at the cursor line (#836)
+- **syntax:** Load user grammars from the config syntaxes directory (#792)
+- **bitbucket:** Support request-changes and draft submits (#849)
+- **commits:** Enter in the inline commit selector selects only that commit (#851)
+- **pr:** Show the last commit time on GitHub pull request rows (#858)
+- **pr:** Collapse the PR description with r (#857)
+- **ui:** Add a <leader>p file picker popup (#859)
+- **pr:** Add a GitHub scope for PRs requesting you by name (#855)
+- **ui:** Add file_list_position config to show the file list on the right (#856)
+
+### Miscellaneous
+
+- Remove dead code and duplicated forge range-diff helpers (#921)
+
+### Performance
+
+- **pr:** Skip the fork-parent lookup when the target names its repository (#843)
+- **pr:** Read every changed file's line count in one batch on open (#844)
+
+### README
+
+- Add Home Manager install and config examples (#863)
+
+### Refactor
+
+- **forge:** Share remote URL, SSH and detail helpers across backends (#920)
+- **ui:** Share the review-comments section and EOF culling between renderers (#919)
+- **ui:** Share the file preamble, inter-hunk gap and EOF-gap blocks between renderers (#922)
+
+### Testing
+
+- **e2e:** Add a tmux-driven end-to-end suite with fake forges (#923)
+- **e2e:** Plain fixture names; Windows-safe special-path fixtures with a name guard (#927)
+- **e2e:** Python driver beside the bash library, with a ported self-test (#933)
+- **e2e:** Port the diff tree input theme ui help syntax scenarios to Python (#934)
+- **e2e:** Port the cli export scenarios to Python (#937)
+- **e2e:** Port the pr gitlab gitea bitbucket gerrit azure scenarios to Python (#938)
+- **e2e:** Ruff check/format and ty check for the Python e2e code, with type annotations (#935)
+- **e2e:** Remove the bash scenario library; Python only (#939)
+
+### Build
+
+- Enable fat LTO, codegen-units=1 and strip for release builds (#929)
+
+### Diff
+
+- Show commit messages on pull requests (#848)
+
+### E2e
+
+- Port the local, review and comments scenarios to Python (#936)
 ## [0.28.0] - 2026-10-26
 
 ### Bug Fixes
