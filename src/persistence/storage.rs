@@ -709,11 +709,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     })?;
     fs::create_dir_all(parent)?;
 
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("session");
-    let tmp_path = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+    // Fixed-length name: embedding the target's basename would overflow
+    // NAME_MAX for a valid long target.
+    let tmp_path = parent.join(format!(".{}.tmp", uuid::Uuid::new_v4().simple()));
 
     {
         let mut tmp = fs::File::create(&tmp_path)?;
@@ -2491,6 +2489,132 @@ mod tests {
     }
 
     #[test]
+    fn should_edit_a_session_file_with_a_name_near_name_max() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let managed = save_session(&session).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let long = outside.path().join(format!("{}.json", "x".repeat(230)));
+        assert_eq!(long.file_name().unwrap().len(), 235);
+        fs::copy(&managed, &long).unwrap();
+
+        update_session_in_dir(&long, &reviews_dir, add_note).unwrap();
+
+        assert_eq!(load_session(&long).unwrap().review_comments.len(), 1);
+    }
+
+    #[test]
+    fn should_not_index_an_external_file_whose_slot_is_absent() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let checkout = make_repo_with_origin("https://github.com/a/one.git");
+        let session = make_local_session(
+            checkout.path().to_path_buf(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let managed = save_session(&session).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let external = outside.path().join("custom.json");
+        fs::copy(&managed, &external).unwrap();
+        git2::Repository::open(checkout.path())
+            .unwrap()
+            .remote_set_url("origin", "https://github.com/b/two.git")
+            .unwrap();
+
+        update_session_in_dir(&external, &reviews_dir, add_note).unwrap();
+
+        assert_eq!(load_session(&external).unwrap().review_comments.len(), 1);
+        let listed = manifest_paths(&reviews_dir);
+        assert_eq!(listed.len(), 1);
+        assert!(listed.iter().all(|p| p.starts_with(SESSIONS_DIRNAME)));
+    }
+
+    #[test]
+    fn should_not_create_the_registry_when_an_unregistered_pid_exits() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        assert!(!reviews_dir.join(ACTIVE_SESSIONS_FILENAME).exists());
+
+        clear_active_session_for_pid_in_dir(&reviews_dir).unwrap();
+
+        assert!(!reviews_dir.join(ACTIVE_SESSIONS_FILENAME).exists());
+    }
+
+    #[test]
+    fn should_not_let_another_checkouts_slot_block_a_rekey() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let a = make_repo_with_origin("https://github.com/a/one.git");
+        let b = make_repo_with_origin("https://github.com/b/two.git");
+        let make = |p: &Path| {
+            make_local_session(
+                p.to_path_buf(),
+                "abc1234",
+                Some("main"),
+                SessionDiffSource::WorkingTree,
+                None,
+            )
+        };
+        let a_path = save_session(&make(a.path())).unwrap();
+        let b_path = save_session(&make(b.path())).unwrap();
+        git2::Repository::open(a.path())
+            .unwrap()
+            .remote_set_url("origin", "https://github.com/b/two.git")
+            .unwrap();
+
+        update_session_in_dir(&a_path, &reviews_dir, add_note).unwrap();
+
+        let listed = list_all_sessions_in_dir(&reviews_dir).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().all(|(slug, _)| slug.starts_with("b/two")));
+        assert!(
+            listed
+                .iter()
+                .any(|(_, e)| e.path == manifest_relative_path(&b_path, &reviews_dir))
+        );
+    }
+
+    #[test]
+    fn should_not_let_a_missing_slot_file_block_a_rekey() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let repo = make_repo_with_origin("https://github.com/a/one.git");
+        let make = || {
+            make_local_session(
+                repo.path().to_path_buf(),
+                "abc1234",
+                Some("main"),
+                SessionDiffSource::WorkingTree,
+                None,
+            )
+        };
+        let old = save_session(&make()).unwrap();
+        git2::Repository::open(repo.path())
+            .unwrap()
+            .remote_set_url("origin", "https://github.com/b/two.git")
+            .unwrap();
+        let current = save_session(&make()).unwrap();
+        fs::remove_file(current).unwrap();
+
+        update_session_in_dir(&old, &reviews_dir, add_note).unwrap();
+
+        let listed = list_all_sessions_in_dir(&reviews_dir).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].0.starts_with("b/two"));
+        assert_eq!(listed[0].1.path, manifest_relative_path(&old, &reviews_dir));
+    }
+
+    #[test]
     fn should_prune_the_manifest_by_path_when_the_slug_drifted() {
         let _g = with_test_reviews_dir();
         let reviews_dir = get_reviews_dir().unwrap();
@@ -2593,7 +2717,7 @@ mod tests {
         let names = [
             ACTIVE_SESSIONS_FILENAME.to_string(),
             STORAGE_LOCK_FILENAME.to_string(),
-            format!(".abc.json.{}.tmp", uuid::Uuid::new_v4()),
+            format!(".{}.tmp", uuid::Uuid::new_v4().simple()),
             format!("{MANIFEST_FILENAME}.tmp"),
         ];
         for name in names {
