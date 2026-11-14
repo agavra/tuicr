@@ -1141,6 +1141,7 @@ impl App {
                     self.vcs.as_ref(),
                     &self.vcs_info.root_path,
                     &fetch_source,
+                    self.revision_range.as_ref(),
                     highlighter,
                     self.path_filter.as_deref(),
                 ) {
