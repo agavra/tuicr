@@ -647,4 +647,27 @@ mod tests {
         }
         assert_eq!(entry.canonical_repo_path, None);
     }
+
+    #[test]
+    fn should_rebuild_with_the_newest_file_winning_a_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Utc::now();
+        // Many files so an unsorted directory walk is all but certain to end
+        // on a file that is not the newest.
+        for n in 0..40 {
+            fs::write(dir.path().join(format!("f{n}.json")), n.to_string()).unwrap();
+        }
+        let manifest = rebuild_from_files(dir.path(), |path| {
+            let n: i64 = fs::read_to_string(path).ok()?.parse().ok()?;
+            // Newest is f17, not the last number.
+            let age = if n == 17 { 1000 } else { n };
+            let mut e = entry(base + chrono::Duration::seconds(age), "a");
+            e.path = path.to_path_buf();
+            Some(("slug".to_string(), e))
+        })
+        .unwrap();
+        let bucket = &manifest.entries["slug"];
+        assert_eq!(bucket.len(), 1);
+        assert!(bucket[0].path.ends_with("f17.json"), "{:?}", bucket[0].path);
+    }
 }

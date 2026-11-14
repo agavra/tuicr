@@ -559,9 +559,47 @@ fn write_back_local_unlocked(
     };
     target.relative = relative.to_path_buf();
     let mut manifest = manifest_for_update(reviews_dir)?;
-    remove_path_entries(&mut manifest, &target.relative);
-    insert_session_entry(&mut manifest, session, &target);
+    if slot_held_by_other_file(&manifest, session, &target, reviews_dir) {
+        // The session's current identity already names a live file (the TUI
+        // saved it after `origin` changed). Keep that entry and refresh this
+        // file's own entries in place, so neither file leaves the index.
+        let fresh =
+            manifest::entry_from_session(session, target.relative.clone(), target.anchor.clone());
+        for entry in manifest.entries.values_mut().flatten() {
+            if entry.path == target.relative {
+                let kind = entry.kind.clone();
+                *entry = fresh.clone();
+                entry.kind = kind;
+            }
+        }
+    } else {
+        remove_path_entries(&mut manifest, &target.relative);
+        insert_session_entry(&mut manifest, session, &target);
+    }
     manifest::save_manifest(reviews_dir, &manifest)
+}
+
+/// True when `target`'s manifest slot holds a different, existing session file.
+fn slot_held_by_other_file(
+    manifest: &manifest::Manifest,
+    session: &ReviewSession,
+    target: &SessionTarget,
+    reviews_dir: &Path,
+) -> bool {
+    let canonical = fs::canonicalize(&session.repo_path)
+        .ok()
+        .or_else(|| Some(session.repo_path.clone()));
+    manifest
+        .entries
+        .get(&target.manifest_slug)
+        .is_some_and(|bucket| {
+            bucket.iter().any(|e| {
+                matches!(e.kind, ManifestKind::Local)
+                    && e.canonical_repo_path == canonical
+                    && e.path != target.relative
+                    && reviews_dir.join(&e.path).exists()
+            })
+        })
 }
 
 fn remove_path_entries(manifest: &mut manifest::Manifest, relative: &Path) {
@@ -598,6 +636,9 @@ fn upsert_session_manifest(
 /// recovered (under the lock) instead of reading as empty.
 fn read_manifest(reviews_dir: &Path) -> Result<manifest::Manifest> {
     match manifest::load_manifest(reviews_dir) {
+        Ok(_) if index_missing_with_sessions(reviews_dir) => {
+            with_reviews_dir_lock(reviews_dir, || manifest_for_update(reviews_dir))
+        }
         Err(TuicrError::CorruptedSession(_)) => {
             with_reviews_dir_lock(reviews_dir, || manifest_for_update(reviews_dir))
         }
@@ -610,6 +651,11 @@ fn read_manifest(reviews_dir: &Path) -> Result<manifest::Manifest> {
 /// `sessions/`, so the next save does not drop every other session.
 fn manifest_for_update(reviews_dir: &Path) -> Result<manifest::Manifest> {
     match manifest::load_manifest(reviews_dir) {
+        Ok(_) if index_missing_with_sessions(reviews_dir) => {
+            let rebuilt = rebuild_manifest(reviews_dir)?;
+            manifest::save_manifest(reviews_dir, &rebuilt)?;
+            Ok(rebuilt)
+        }
         Err(TuicrError::CorruptedSession(_)) => {
             let index = reviews_dir.join(MANIFEST_FILENAME);
             let _ = fs::rename(
@@ -622,6 +668,16 @@ fn manifest_for_update(reviews_dir: &Path) -> Result<manifest::Manifest> {
         }
         other => other,
     }
+}
+
+/// `index.json` is absent while `sessions/` already holds session files
+/// (deleted by hand, or lost): reading it as empty would make the next save
+/// overwrite it with a single entry.
+fn index_missing_with_sessions(reviews_dir: &Path) -> bool {
+    !reviews_dir.join(MANIFEST_FILENAME).exists()
+        && fs::read_dir(reviews_dir.join(SESSIONS_DIRNAME)).is_ok_and(|mut d| {
+            d.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".json")))
+        })
 }
 
 /// Re-index every readable session file under `sessions/`.
@@ -2533,21 +2589,126 @@ mod tests {
 
     #[test]
     fn should_not_treat_registry_bookkeeping_as_a_legacy_layout() {
+        // A dir an older tuicr left holding only bookkeeping, with no sessions/.
+        let names = [
+            ACTIVE_SESSIONS_FILENAME.to_string(),
+            STORAGE_LOCK_FILENAME.to_string(),
+            format!(".abc.json.{}.tmp", uuid::Uuid::new_v4()),
+            format!("{MANIFEST_FILENAME}.tmp"),
+        ];
+        for name in names {
+            let _g = with_test_reviews_dir();
+            let reviews_dir = get_reviews_dir().unwrap();
+            let _ = fs::remove_dir_all(reviews_dir.join(SESSIONS_DIRNAME));
+            fs::write(reviews_dir.join(&name), "{}").unwrap();
+
+            maybe_migrate(&reviews_dir).unwrap();
+
+            assert!(reviews_dir.join(&name).exists(), "{name} was moved aside");
+            assert!(reviews_dir.join(SESSIONS_DIRNAME).is_dir());
+            let backup = reviews_dir.with_file_name(format!(
+                "{}.bak1",
+                reviews_dir.file_name().unwrap().to_string_lossy()
+            ));
+            assert!(!backup.exists(), "{name}: no spurious migration backup");
+        }
+    }
+
+    #[test]
+    fn should_keep_the_index_of_a_corrupt_manifest_when_deleting_a_session() {
         let _g = with_test_reviews_dir();
         let reviews_dir = get_reviews_dir().unwrap();
+        let mut paths = Vec::new();
+        for commit in ["aaa1111", "bbb2222"] {
+            let session = make_local_session(
+                make_repo(),
+                commit,
+                Some("main"),
+                SessionDiffSource::WorkingTree,
+                None,
+            );
+            paths.push(save_session(&session).unwrap());
+        }
+        fs::write(reviews_dir.join(MANIFEST_FILENAME), "{corrupt").unwrap();
 
-        clear_active_session_for_pid_in_dir(&reviews_dir).unwrap();
-        assert!(!reviews_dir.join(ACTIVE_SESSIONS_FILENAME).exists());
+        assert!(delete_session_in_dir(&paths[0], &reviews_dir).unwrap());
 
-        fs::write(reviews_dir.join(ACTIVE_SESSIONS_FILENAME), "{}").unwrap();
-        maybe_migrate(&reviews_dir).unwrap();
+        let left = manifest_paths(&reviews_dir);
+        assert_eq!(left.len(), 1, "the other session stays indexed: {left:?}");
+        assert!(reviews_dir.join("index.json.corrupt").exists());
+    }
 
-        assert!(reviews_dir.join(ACTIVE_SESSIONS_FILENAME).exists());
-        assert!(reviews_dir.join(SESSIONS_DIRNAME).is_dir());
-        let backup = reviews_dir.with_file_name(format!(
-            "{}.bak1",
-            reviews_dir.file_name().unwrap().to_string_lossy()
-        ));
-        assert!(!backup.exists(), "no spurious migration backup");
+    #[test]
+    fn should_rebuild_a_missing_manifest_when_sessions_exist() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        for commit in ["aaa1111", "bbb2222"] {
+            let session = make_local_session(
+                make_repo(),
+                commit,
+                Some("main"),
+                SessionDiffSource::WorkingTree,
+                None,
+            );
+            save_session(&session).unwrap();
+        }
+        fs::remove_file(reviews_dir.join(MANIFEST_FILENAME)).unwrap();
+
+        assert_eq!(list_all_sessions_in_dir(&reviews_dir).unwrap().len(), 2);
+
+        fs::remove_file(reviews_dir.join(MANIFEST_FILENAME)).unwrap();
+        let third = make_local_session(
+            make_repo(),
+            "ccc3333",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        save_session(&third).unwrap();
+
+        assert_eq!(list_all_sessions_in_dir(&reviews_dir).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn should_not_evict_the_current_identity_file_on_write_back_to_an_old_file() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let checkout = make_repo_with_origin("https://github.com/a/one.git");
+        let make = || {
+            make_local_session(
+                checkout.path().to_path_buf(),
+                "abc1234",
+                Some("main"),
+                SessionDiffSource::WorkingTree,
+                None,
+            )
+        };
+        let old_path = save_session(&make()).unwrap();
+        git2::Repository::open(checkout.path())
+            .unwrap()
+            .remote_set_url("origin", "https://github.com/b/two.git")
+            .unwrap();
+        let new_path = save_session(&make()).unwrap();
+        assert_ne!(old_path, new_path);
+
+        update_session_in_dir(&old_path, &reviews_dir, add_note).unwrap();
+
+        let listed = manifest_paths(&reviews_dir);
+        let rel = |p: &Path| manifest_relative_path(p, &reviews_dir);
+        assert!(
+            listed.contains(&rel(&new_path)),
+            "current file dropped: {listed:?}"
+        );
+        assert!(
+            listed.contains(&rel(&old_path)),
+            "edited file dropped: {listed:?}"
+        );
+        let counts: Vec<_> = list_all_sessions_in_dir(&reviews_dir)
+            .unwrap()
+            .into_iter()
+            .map(|(_, e)| (e.path.clone(), e.display.comment_count))
+            .collect();
+        assert!(counts.contains(&(rel(&old_path), 1)), "{counts:?}");
+        assert!(counts.contains(&(rel(&new_path), 0)), "{counts:?}");
     }
 }
