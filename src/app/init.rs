@@ -18,12 +18,14 @@ impl App {
         // `tuicr pr <target>` mode: enter PR review directly, skipping the
         // selector. Errors here surface before TUI startup like other
         // startup failures.
-        if let Some(target) = options.pr_target {
+        // `tuicr pr` with no target (`pr_current_branch`) resolves the PR for
+        // the checkout's branch once the forge backend exists.
+        if options.pr_target.is_some() || options.pr_current_branch {
             return Self::new_from_pr_target_with_pr_display_options(
                 theme,
                 comment_type_configs,
                 output_to_stdout,
-                target,
+                options.pr_target,
                 options.repo_url_override.clone(),
                 options.commit_selection,
                 PrDisplayOptions {
@@ -778,7 +780,7 @@ impl App {
             theme,
             comment_type_configs,
             output_to_stdout,
-            target,
+            Some(target),
             repo_url_override,
             commit_selection,
             PrDisplayOptions {
@@ -795,7 +797,7 @@ impl App {
         theme: Theme,
         comment_type_configs: Option<Vec<CommentTypeConfig>>,
         output_to_stdout: bool,
-        target: &str,
+        target: Option<&str>,
         repo_url_override: Option<ForgeRepository>,
         commit_selection: CommitSelectionStart,
         display_options: PrDisplayOptions,
@@ -819,12 +821,18 @@ impl App {
         // GitHub URLs, GitLab handles `/-/merge_requests/<n>`, and the Azure
         // (`/pullrequest/<n>`) and Gerrit (`/c/<project>/+/<n>`) URL shapes
         // fall through last.
-        let parsed = parse_pull_request_target_bitbucket(target)
-            .or_else(|_| parse_pull_request_target_gitea(target))
-            .or_else(|_| parse_pull_request_target(target))
-            .or_else(|_| parse_pull_request_target_gitlab(target))
-            .or_else(|_| parse_pull_request_target_azure(target))
-            .or_else(|_| parse_pull_request_target_gerrit(target))?;
+        // `None` is `tuicr pr` with no target: the PR is looked up below,
+        // once the repository and backend are known.
+        let parsed = target
+            .map(|target| {
+                parse_pull_request_target_bitbucket(target)
+                    .or_else(|_| parse_pull_request_target_gitea(target))
+                    .or_else(|_| parse_pull_request_target(target))
+                    .or_else(|_| parse_pull_request_target_gitlab(target))
+                    .or_else(|_| parse_pull_request_target_azure(target))
+                    .or_else(|_| parse_pull_request_target_gerrit(target))
+            })
+            .transpose()?;
 
         // Resolution order when the target lacks an explicit repo
         // (`tuicr pr 125`):
@@ -844,7 +852,9 @@ impl App {
             .and_then(|dir| checkout_root_for_launch_dir(dir, &vcs_open_options));
 
         let target_repo = pr_target_repository(
-            parsed.repository.as_ref(),
+            parsed
+                .as_ref()
+                .and_then(|parsed| parsed.repository.as_ref()),
             repo_url_override.as_ref(),
             detected_repo.as_ref(),
             &SystemGhRunner,
@@ -870,6 +880,23 @@ impl App {
             display_options.show_checks,
             display_options.show_comments,
         );
+        let parsed = match parsed {
+            Some(parsed) => parsed,
+            None => {
+                let branch = launch_dir
+                    .as_deref()
+                    .and_then(|dir| current_branch_for_launch_dir(dir, &vcs_open_options))
+                    .ok_or_else(|| {
+                        TuicrError::Forge(
+                            "Cannot tell which branch is checked out (detached HEAD, or not in a \
+                             checkout). Pass a target: tuicr pr <number>."
+                                .to_string(),
+                        )
+                    })?;
+                let number = backend.find_pull_request_for_branch(&target_repo, &branch)?;
+                crate::forge::traits::PullRequestTarget::number(number, format!("branch {branch}"))
+            }
+        };
         let mut opened = open_pull_request(
             backend.as_ref(),
             parsed,
@@ -991,6 +1018,21 @@ impl App {
         }
         Ok(app)
     }
+}
+
+/// Branch checked out in the checkout containing `dir`, if it has one.
+fn current_branch_for_launch_dir(
+    dir: &std::path::Path,
+    options: &VcsOpenOptions,
+) -> Option<String> {
+    crate::vcs::detect_vcs_in(
+        dir,
+        options.git_backend_preference,
+        options.diff_whitespace_mode.clone(),
+    )
+    .ok()
+    .and_then(|vcs| vcs.info().branch_name.clone())
+    .filter(|branch| !branch.is_empty())
 }
 
 /// The checkout root a `tuicr pr` launch directory belongs to, or `None`

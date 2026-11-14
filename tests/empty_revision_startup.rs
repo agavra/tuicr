@@ -45,6 +45,7 @@ fn startup_options(working_tree: bool) -> AppStartupOptions<'static> {
         diff_whitespace_mode: DiffWhitespaceMode::default(),
         commit_selection: CommitSelectionStart::All,
         pr_target: None,
+        pr_current_branch: false,
         repo_url_override: None,
     }
 }
