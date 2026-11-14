@@ -284,6 +284,42 @@ pub(super) fn apply_search_highlight_text<P: SearchMatcher + ?Sized>(
     ))
 }
 
+/// Patch `emphasis` over the byte `ranges` of the pairs' joined text, the
+/// changed words found by `word_diff`. The ranges index `DiffLine::content`,
+/// so pairs whose text does not line up with them are returned unchanged
+/// rather than split mid-character.
+pub(super) fn apply_word_emphasis_pairs(
+    pairs: Vec<(Style, String)>,
+    ranges: &[std::ops::Range<usize>],
+    emphasis: Style,
+) -> Vec<(Style, String)> {
+    let text: String = pairs.iter().map(|(_, t)| t.as_str()).collect();
+    let fits = ranges.iter().all(|r| {
+        r.end <= text.len() && text.is_char_boundary(r.start) && text.is_char_boundary(r.end)
+    });
+    if ranges.is_empty() || !fits {
+        return pairs;
+    }
+    let ranges = ranges.iter().map(|r| (r.start, r.end)).collect();
+    split_pairs_at_ranges(&pairs, ranges, emphasis)
+}
+
+/// `apply_word_emphasis_pairs` over spans.
+pub(super) fn apply_word_emphasis_spans(
+    spans: Vec<Span<'static>>,
+    ranges: &[std::ops::Range<usize>],
+    emphasis: Style,
+) -> Vec<Span<'static>> {
+    let pairs = spans
+        .into_iter()
+        .map(|span| (span.style, span.content.into_owned()))
+        .collect();
+    apply_word_emphasis_pairs(pairs, ranges, emphasis)
+        .into_iter()
+        .map(|(style, text)| Span::styled(text, style))
+        .collect()
+}
+
 pub(super) fn apply_search_highlight_spans<P: SearchMatcher + ?Sized>(
     spans: Vec<Span<'static>>,
     pattern: &P,

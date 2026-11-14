@@ -217,6 +217,8 @@ pub struct AppConfig {
     /// `"gutter"`.
     pub wrap_style: Option<String>,
     pub relative_line_numbers: Option<bool>,
+    /// Emphasize the changed words of paired deletion/addition lines.
+    pub word_diff: Option<bool>,
     pub export_legend: Option<bool>,
     pub cursor_line: Option<bool>,
     pub search_highlight: Option<bool>,
@@ -299,6 +301,7 @@ const KNOWN_KEYS: &[&str] = &[
     "wrap",
     "wrap_style",
     "relative_line_numbers",
+    "word_diff",
     "export_legend",
     "cursor_line",
     "search_highlight",
@@ -658,6 +661,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             &mut warnings,
         ),
         relative_line_numbers: read_bool(table, "relative_line_numbers", &mut warnings),
+        word_diff: read_bool(table, "word_diff", &mut warnings),
         commit_order: read_enum(
             table,
             "commit_order",
@@ -1285,6 +1289,16 @@ mod tests {
             None
         );
         assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    #[test]
+    fn should_parse_word_diff() {
+        let outcome = parse_config("word_diff = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.word_diff),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
     }
 
     #[test]

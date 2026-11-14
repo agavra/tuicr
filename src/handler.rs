@@ -60,6 +60,9 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         &["set relativenumber!"],
         CommandKind::ToggleRelativeLineNumbers,
     ),
+    CommandSpec::new(&["set worddiff"], CommandKind::SetWordDiff(true)),
+    CommandSpec::new(&["set noworddiff"], CommandKind::SetWordDiff(false)),
+    CommandSpec::new(&["set worddiff!"], CommandKind::ToggleWordDiff),
     CommandSpec::new(&["vim", "set vim!"], CommandKind::ToggleVim),
     CommandSpec::new(&["set vim"], CommandKind::SetVim(true)),
     CommandSpec::new(&["novim", "set novim"], CommandKind::SetVim(false)),
@@ -151,6 +154,8 @@ enum CommandKind {
     ToggleWrap,
     SetRelativeLineNumbers(bool),
     ToggleRelativeLineNumbers,
+    SetWordDiff(bool),
+    ToggleWordDiff,
     ToggleVim,
     SetVim(bool),
     SetCommitsVisible(bool),
@@ -1009,6 +1014,14 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::ToggleRelativeLineNumbers => {
             app.relative_line_numbers = !app.relative_line_numbers;
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetWordDiff(enabled) => {
+            app.set_word_diff(enabled);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleWordDiff => {
+            app.set_word_diff(!app.word_diff);
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::ToggleVim => {
@@ -2066,6 +2079,22 @@ mod command_tests {
         assert_eq!(
             command_spec_for("set relativenumber!").map(|spec| spec.kind),
             Some(CommandKind::ToggleRelativeLineNumbers)
+        );
+    }
+
+    #[test]
+    fn parses_word_diff_commands() {
+        assert_eq!(
+            command_spec_for("set worddiff").map(|spec| spec.kind),
+            Some(CommandKind::SetWordDiff(true))
+        );
+        assert_eq!(
+            command_spec_for("set noworddiff").map(|spec| spec.kind),
+            Some(CommandKind::SetWordDiff(false))
+        );
+        assert_eq!(
+            command_spec_for("set worddiff!").map(|spec| spec.kind),
+            Some(CommandKind::ToggleWordDiff)
         );
     }
 

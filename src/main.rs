@@ -379,6 +379,7 @@ fn main() -> anyhow::Result<()> {
             app.wrap_style = app::WrapStyle::Gutter;
         }
         app.relative_line_numbers = cfg.relative_line_numbers.unwrap_or(false);
+        app.word_diff = cfg.word_diff.unwrap_or(true);
         // Open in single-file view when the user opts in. Pristine
         // `--all-files` already turned it on inside `App::new`, so we
         // only toggle if it's still off.

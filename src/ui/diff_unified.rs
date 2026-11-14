@@ -487,7 +487,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 }
 
                 // Diff lines
-                for diff_line in &hunk.lines {
+                let word_ranges = app.hunk_word_ranges(file_idx, hunk_idx);
+                for (line_in_hunk, diff_line) in hunk.lines.iter().enumerate() {
                     // Hot path: skip span/style allocation entirely for diff
                     // lines outside the viewport. Comment handling below still
                     // runs so `line_idx` stays exact and any comment box that
@@ -574,6 +575,25 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             // Zero-width marker span carrying the background style.
                             Span::styled(String::new(), eol_style)
                         });
+
+                        // After the EOL marker, which copies the last span's
+                        // style: a changed last word must not tint the row fill.
+                        if let Some(changed) = word_ranges
+                            .as_deref()
+                            .and_then(|ranges| ranges.get(line_in_hunk))
+                            .and_then(Option::as_ref)
+                        {
+                            let content_spans = line_spans.split_off(content_start);
+                            line_spans.extend(crate::ui::text_utils::apply_word_emphasis_spans(
+                                content_spans,
+                                changed,
+                                styles::word_emphasis_style(
+                                    &app.theme,
+                                    diff_line.origin,
+                                    diff_line.highlighted_spans.is_some(),
+                                ),
+                            ));
+                        }
 
                         if let Some(needle) = app.search_paint_at(line_idx) {
                             let content_spans = line_spans.split_off(content_start);
@@ -2987,5 +3007,113 @@ mod remote_comments_snapshot_tests {
                 buffer[(x, y)].symbol()
             );
         }
+    }
+
+    /// Top-left cell of the first occurrence of `needle` on screen.
+    fn find_cell(buffer: &Buffer, needle: &str) -> (u16, u16) {
+        let width = buffer.area.width;
+        for y in 0..buffer.area.height {
+            let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+            if let Some(byte_idx) = row.find(needle) {
+                return (row[..byte_idx].chars().count() as u16, y);
+            }
+        }
+        panic!("could not find {needle:?} in rendered buffer");
+    }
+
+    /// The background a changed word of `line` is expected to have.
+    fn word_emphasis_bg(app: &App, line: &DiffLine) -> Option<ratatui::style::Color> {
+        crate::ui::styles::word_emphasis_style(
+            &app.theme,
+            line.origin,
+            line.highlighted_spans.is_some(),
+        )
+        .bg
+    }
+
+    fn changed_number_file() -> DiffFile {
+        let lines = vec![
+            DiffLine {
+                origin: LineOrigin::Deletion,
+                content: "let total = 17;".to_string(),
+                raw_content: None,
+                old_lineno: Some(1),
+                new_lineno: None,
+                highlighted_spans: None,
+            },
+            DiffLine {
+                origin: LineOrigin::Addition,
+                content: "let total = 14;".to_string(),
+                raw_content: None,
+                old_lineno: None,
+                new_lineno: Some(1),
+                highlighted_spans: None,
+            },
+        ];
+        let hunks = vec![DiffHunk {
+            header: "@@ -1,1 +1,1 @@".to_string(),
+            lines,
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    #[test]
+    fn should_emphasize_only_the_changed_word_of_a_paired_line_in_unified() {
+        let mut app = make_revision_app(vec![changed_number_file()]);
+        app.rebuild_annotations();
+        app.color_visible_hunks(12);
+
+        let buffer = draw_diff(&mut app);
+
+        for (idx, needle) in [(0, "= 17;"), (1, "= 14;")] {
+            let line = &app.diff_files[0].hunks[0].lines[idx];
+            let emphasis = word_emphasis_bg(&app, line).expect("rgb theme blends");
+            let (x, y) = find_cell(&buffer, needle);
+            assert_ne!(buffer[(x, y)].bg, emphasis, "{needle}: `=` is unchanged");
+            assert_eq!(
+                buffer[(x + 2, y)].bg,
+                emphasis,
+                "{needle}: the number changed"
+            );
+            assert_eq!(
+                buffer[(x + 3, y)].bg,
+                emphasis,
+                "{needle}: the number changed"
+            );
+            assert_ne!(
+                buffer[(x + 4, y)].bg,
+                emphasis,
+                "{needle}: `;` is unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn should_not_emphasize_words_when_word_diff_is_off() {
+        let mut app = make_revision_app(vec![changed_number_file()]);
+        app.rebuild_annotations();
+        app.color_visible_hunks(12);
+        app.set_word_diff(false);
+
+        let buffer = draw_diff(&mut app);
+
+        let line = &app.diff_files[0].hunks[0].lines[1];
+        let emphasis = word_emphasis_bg(&app, line).expect("rgb theme blends");
+        let (x, y) = find_cell(&buffer, "= 14;");
+        assert_ne!(buffer[(x + 2, y)].bg, emphasis);
     }
 }

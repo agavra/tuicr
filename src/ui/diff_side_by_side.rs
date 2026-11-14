@@ -21,9 +21,32 @@ use crate::ui::diff_view::{
 use crate::ui::styles;
 use crate::ui::text_utils::{
     apply_search_highlight_pairs, apply_search_highlight_spans, apply_search_highlight_text,
-    truncate_or_pad_spans, wrap_spans,
+    apply_word_emphasis_pairs, truncate_or_pad_spans, wrap_spans,
 };
 use crate::vcs::git::calculate_gap;
+use crate::word_diff::ChangedRanges;
+
+/// Changed-word ranges of one line, from `App::hunk_word_ranges`.
+type Changed<'a> = Option<&'a [std::ops::Range<usize>]>;
+
+/// Patch the word-diff emphasis over a line's styled pairs, before search
+/// highlighting so a search match still wins where they overlap.
+fn emphasize_changed(
+    theme: &Theme,
+    dl: &DiffLine,
+    origin: LineOrigin,
+    pairs: Vec<(Style, String)>,
+    changed: Changed,
+) -> Vec<(Style, String)> {
+    match changed {
+        Some(ranges) => apply_word_emphasis_pairs(
+            pairs,
+            ranges,
+            styles::word_emphasis_style(theme, origin, dl.highlighted_spans.is_some()),
+        ),
+        None => pairs,
+    }
+}
 
 #[derive(Clone, Default)]
 struct SbsRowMeta {
@@ -71,24 +94,29 @@ fn content_spans_for_diff_line(
     dl: &DiffLine,
     origin: LineOrigin,
     search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
+    changed: Changed,
 ) -> Vec<Span<'static>> {
     let base = match origin {
         LineOrigin::Context => styles::diff_context_style(theme),
         LineOrigin::Addition => styles::diff_add_style(theme),
         LineOrigin::Deletion => styles::diff_del_style(theme),
     };
-    let spans: Vec<Span<'static>> = if let Some(ref h) = dl.highlighted_spans {
+    let pairs: Vec<(Style, String)> = if let Some(ref h) = dl.highlighted_spans {
         h.iter()
             .map(|(s, t)| {
-                Span::styled(
-                    t.clone(),
+                (
                     styles::patch_highlighted_span_bg(*s, theme, origin),
+                    t.clone(),
                 )
             })
             .collect()
     } else {
-        vec![Span::styled(dl.content.clone(), base)]
+        vec![(base, dl.content.clone())]
     };
+    let spans: Vec<Span<'static>> = emphasize_changed(theme, dl, origin, pairs, changed)
+        .into_iter()
+        .map(|(style, text)| Span::styled(text, style))
+        .collect();
     match search {
         Some((needle, hl)) => apply_search_highlight_spans(spans, needle, hl),
         None => spans,
@@ -786,8 +814,10 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 }
 
                 // Process diff lines in side-by-side format
+                let word_ranges = app.hunk_word_ranges(file_idx, hunk_idx);
                 let (new_line_idx, cursor_info) = render_hunk_lines_side_by_side(
                     &hunk.lines,
+                    word_ranges.as_deref(),
                     line_comments,
                     &ctx,
                     file_idx,
@@ -1164,6 +1194,7 @@ fn render_sbs_expanded_context_line(
 /// Returns (new_line_idx, optional cursor info for inline comment input)
 fn render_hunk_lines_side_by_side(
     hunk_lines: &[crate::model::DiffLine],
+    word_ranges: Option<&[Option<ChangedRanges>]>,
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
     ctx: &SideBySideContext,
     file_idx: usize,
@@ -1221,6 +1252,7 @@ fn render_hunk_lines_side_by_side(
                 let (new_line_idx, lines_processed, cursor_info) =
                     render_deletion_addition_pair_side_by_side(
                         hunk_lines,
+                        word_ranges,
                         i,
                         line_comments,
                         ctx,
@@ -1320,7 +1352,7 @@ fn render_context_line_side_by_side(
         lines.push(Line::from(spans));
 
         let content =
-            content_spans_for_diff_line(ctx.theme, diff_line, LineOrigin::Context, search);
+            content_spans_for_diff_line(ctx.theme, diff_line, LineOrigin::Context, search, None);
         let ctx_style = styles::diff_context_style(ctx.theme);
         let (lp, rp) = sbs_row_prefixes(
             ctx.theme,
@@ -1383,8 +1415,10 @@ fn render_context_line_side_by_side(
 
 /// Render paired deletions and additions side-by-side
 /// Returns (line_idx, skip_count, optional cursor info for inline comment input)
+#[allow(clippy::too_many_arguments)]
 fn render_deletion_addition_pair_side_by_side(
     hunk_lines: &[crate::model::DiffLine],
+    word_ranges: Option<&[Option<ChangedRanges>]>,
     start_idx: usize,
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
     ctx: &SideBySideContext,
@@ -1414,6 +1448,13 @@ fn render_deletion_addition_pair_side_by_side(
     for offset in 0..max_lines {
         let del_opt = (offset < del_count).then(|| &hunk_lines[start_idx + offset]);
         let add_opt = (offset < add_count).then(|| &hunk_lines[add_start + offset]);
+        let changed_at = |idx: usize| {
+            word_ranges
+                .and_then(|ranges| ranges.get(idx))
+                .and_then(Option::as_deref)
+        };
+        let del_changed = changed_at(start_idx + offset);
+        let add_changed = changed_at(add_start + offset);
         if ctx.is_visible(line_idx) {
             let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
 
@@ -1432,6 +1473,7 @@ fn render_deletion_addition_pair_side_by_side(
                     ctx.lineno_width,
                     ctx.display_lineno(del_line.old_lineno, line_idx),
                     ctx.search_for(line_idx),
+                    del_changed,
                 );
             } else {
                 add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
@@ -1449,6 +1491,7 @@ fn render_deletion_addition_pair_side_by_side(
                     ctx.lineno_width,
                     ctx.display_lineno(add_line.new_lineno, line_idx),
                     ctx.search_for(line_idx),
+                    add_changed,
                 );
             } else {
                 add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
@@ -1465,6 +1508,7 @@ fn render_deletion_addition_pair_side_by_side(
                             dl,
                             LineOrigin::Deletion,
                             ctx.search_for(line_idx),
+                            del_changed,
                         ),
                         column_pad_style(ctx.theme, dl, LineOrigin::Deletion),
                         "▌",
@@ -1485,6 +1529,7 @@ fn render_deletion_addition_pair_side_by_side(
                             al,
                             LineOrigin::Addition,
                             ctx.search_for(line_idx),
+                            add_changed,
                         ),
                         column_pad_style(ctx.theme, al, LineOrigin::Addition),
                         "▌",
@@ -1617,6 +1662,7 @@ fn render_standalone_addition_side_by_side(
             ctx.lineno_width,
             ctx.display_lineno(diff_line.new_lineno, line_idx),
             ctx.search_for(line_idx),
+            None,
         );
 
         lines.push(Line::from(spans));
@@ -1627,6 +1673,7 @@ fn render_standalone_addition_side_by_side(
             diff_line,
             LineOrigin::Addition,
             ctx.search_for(line_idx),
+            None,
         );
         let right_pad = column_pad_style(ctx.theme, diff_line, LineOrigin::Addition);
         let (lp, rp) = sbs_row_prefixes(
@@ -1754,6 +1801,7 @@ fn render_commit_message_line_side_by_side(
 }
 
 /// Add deletion line spans to the spans vector
+#[allow(clippy::too_many_arguments)]
 fn add_deletion_spans(
     theme: &Theme,
     spans: &mut Vec<Span>,
@@ -1762,6 +1810,7 @@ fn add_deletion_spans(
     lw: usize,
     display_lineno: Option<u32>,
     search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
+    changed: Changed,
 ) {
     let line_num = display_lineno
         .map(|n| format!("{n:>lw$}"))
@@ -1792,8 +1841,14 @@ fn add_deletion_spans(
                 )
             })
             .collect();
+        let patched = emphasize_changed(theme, diff_line, LineOrigin::Deletion, patched, changed);
         let content_spans = searched_cell_spans(&patched, content_width, syntax_pad_style, search);
         spans.extend(content_spans);
+    } else if changed.is_some() {
+        let style = styles::diff_del_style(theme);
+        let pairs = vec![(style, diff_line.content.clone())];
+        let pairs = emphasize_changed(theme, diff_line, LineOrigin::Deletion, pairs, changed);
+        spans.extend(searched_cell_spans(&pairs, content_width, style, search));
     } else {
         spans.extend(plain_cell_spans(
             &diff_line.content,
@@ -1805,6 +1860,7 @@ fn add_deletion_spans(
 }
 
 /// Add addition line spans to the spans vector
+#[allow(clippy::too_many_arguments)]
 fn add_addition_spans(
     theme: &Theme,
     spans: &mut Vec<Span>,
@@ -1813,6 +1869,7 @@ fn add_addition_spans(
     lw: usize,
     display_lineno: Option<u32>,
     search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
+    changed: Changed,
 ) {
     let line_num = display_lineno
         .map(|n| format!("{n:>lw$}"))
@@ -1843,8 +1900,14 @@ fn add_addition_spans(
                 )
             })
             .collect();
+        let patched = emphasize_changed(theme, diff_line, LineOrigin::Addition, patched, changed);
         let content_spans = searched_cell_spans(&patched, content_width, syntax_pad_style, search);
         spans.extend(content_spans);
+    } else if changed.is_some() {
+        let style = styles::diff_add_style(theme);
+        let pairs = vec![(style, diff_line.content.clone())];
+        let pairs = emphasize_changed(theme, diff_line, LineOrigin::Addition, pairs, changed);
+        spans.extend(searched_cell_spans(&pairs, content_width, style, search));
     } else {
         spans.extend(plain_cell_spans(
             &diff_line.content,
@@ -3079,6 +3142,54 @@ mod remote_comments_side_by_side_snapshot_tests {
                 assert_eq!(buffer[(bar_x, y)].symbol(), "▌", "wrap={wrap} {needle}");
                 assert_eq!(buffer[(bar_x, y)].bg, bg, "wrap={wrap} {needle}: bar");
                 assert_eq!(buffer[(text_x, y)].bg, bg, "wrap={wrap} {needle}: text");
+            }
+        }
+    }
+
+    /// Top-left cell of the first occurrence of `needle` on screen.
+    fn find_cell(buffer: &Buffer, needle: &str) -> (u16, u16) {
+        let width = buffer.area.width;
+        for y in 0..buffer.area.height {
+            let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+            if let Some(byte_idx) = row.find(needle) {
+                return (row[..byte_idx].chars().count() as u16, y);
+            }
+        }
+        panic!("could not find {needle:?} in rendered buffer");
+    }
+
+    /// The background a changed word of `line` is expected to have.
+    fn word_emphasis_bg(app: &App, line: &DiffLine) -> Option<ratatui::style::Color> {
+        crate::ui::styles::word_emphasis_style(
+            &app.theme,
+            line.origin,
+            line.highlighted_spans.is_some(),
+        )
+        .bg
+    }
+
+    #[test]
+    fn should_emphasize_only_the_changed_word_on_both_sides() {
+        for wrap in [false, true] {
+            let mut app = make_pr_app();
+            app.diff_files = vec![diff_file_with_pair("let total = 17;", "let total = 14;")];
+            app.set_diff_wrap(wrap);
+            app.rebuild_annotations();
+            app.color_visible_hunks(20);
+
+            let buffer = draw_sbs(&mut app, 160, 20);
+
+            for (idx, needle) in [(0, "= 17;"), (1, "= 14;")] {
+                let line = &app.diff_files[0].hunks[0].lines[idx];
+                let emphasis = word_emphasis_bg(&app, line).expect("rgb theme blends");
+                let (x, y) = find_cell(&buffer, needle);
+                assert_ne!(buffer[(x, y)].bg, emphasis, "wrap={wrap} {needle}: `=`");
+                assert_eq!(
+                    buffer[(x + 2, y)].bg,
+                    emphasis,
+                    "wrap={wrap} {needle}: number"
+                );
+                assert_ne!(buffer[(x + 4, y)].bg, emphasis, "wrap={wrap} {needle}: `;`");
             }
         }
     }
