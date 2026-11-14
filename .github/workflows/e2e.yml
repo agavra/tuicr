@@ -40,16 +40,17 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install tmux mercurial
       - name: Jujutsu
+        # Linux: the musl release binary panics on startup in some environments (pest stack check), so build the gnu one.
         run: |
-          case "$(uname -s)-$(uname -m)" in
-            Linux-x86_64) t=x86_64-unknown-linux-musl ;;
-            Linux-aarch64) t=aarch64-unknown-linux-musl ;;
-            Darwin-arm64) t=aarch64-apple-darwin ;;
-            Darwin-x86_64) t=x86_64-apple-darwin ;;
-          esac
           mkdir -p "$RUNNER_TEMP/jj"
-          curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-$t.tar.gz" | tar -xz -C "$RUNNER_TEMP/jj"
-          echo "E2E_JJ_DIR=$RUNNER_TEMP/jj" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" = Linux ]; then
+            cargo install --locked --root "$RUNNER_TEMP/jjroot" jj-cli --version "$JJ_VERSION"
+            echo "E2E_JJ_DIR=$RUNNER_TEMP/jjroot/bin" >> "$GITHUB_ENV"
+          else
+            case "$(uname -m)" in arm64) t=aarch64-apple-darwin ;; *) t=x86_64-apple-darwin ;; esac
+            curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-$t.tar.gz" | tar -xz -C "$RUNNER_TEMP/jj"
+            echo "E2E_JJ_DIR=$RUNNER_TEMP/jj" >> "$GITHUB_ENV"
+          fi
       - name: Versions
         run: |
           tmux -V

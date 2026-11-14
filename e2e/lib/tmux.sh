@@ -93,6 +93,8 @@ e2e_wait_exit() {
     dead=$(_tmux display-message -p -t "$(_e2e_sess "$n")" '#{pane_dead}' 2>/dev/null) || { _e2e_no_pane "$n"; return 2; }
     if [ "$dead" = 1 ]; then
       st=$(e2e_exit_status "$n")
+      # tmux 3.4 marks a pane dead (fd closed) a moment before it has collected the exit status: wait for it.
+      for _ in $(seq 40); do [ -n "$st" ] && break; sleep 0.05; st=$(e2e_exit_status "$n"); done
       [ "$want" = any ] || [ "$st" = "$want" ] && return 0
       echo "e2e: '$n' exited with status ${st:-?}, expected $want. Screen:" >&2; e2e_screen "$n" >&2; return 1
     fi
