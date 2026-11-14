@@ -2,8 +2,9 @@
 # Covers the snapshot cache dir name limit: with a 260-char owner the old `<slug>-pr1-<short>` dir exceeded NAME_MAX,
 # so `e`
 # failed to open the snapshot at all. Same private-snapshot checks as editor_snapshot_private_dir.
-from e2e import Scenario, scenario
 from e2e.forge import pr_editor_snapshot
+
+from e2e import Scenario, scenario
 
 
 @scenario
