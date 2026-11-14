@@ -26,7 +26,7 @@ e2e_start() {
   e2e_forge_unexpected_ok || E2E_FORGE_UNEXPECTED=1   # remember calls logged before the log is truncated
   [ -n "${E2E_KEEP:-}" ] || rm -rf "$d"/{home,config,data,state,tmp,work}
   mkdir -p "$d"/{home,config,data,state,tmp,work}  # always keeps $d/repo etc.
-  : > "$d/forge.log"
+  : > "$d/forge.log"; rm -f "$d/exit.status"
   export E2E_FORGE_LOG="$d/forge.log"
   _E2E_FORGE_LOGS+=("$d/forge.log")
   local cwd=${E2E_CWD:-$d/work}
@@ -34,6 +34,7 @@ e2e_start() {
   _tmux kill-session -t "$(_e2e_sess "$name")" 2>/dev/null || true
   # shellcheck disable=SC2086
   _tmux new-session -d -x "$E2E_COLS" -y "$E2E_ROWS" -s "$(_e2e_sess "$name")" -c "$cwd" -- \
+    sh -c '"$@"; rc=$?; echo $rc > "$0"; exit $rc' "$d/exit.status" \
     env -i HOME="$d/home" XDG_CONFIG_HOME="$d/config" XDG_DATA_HOME="$d/data" \
       XDG_STATE_HOME="$d/state" TMPDIR="$d/tmp" \
       PATH="${E2E_PRE_PATH:+$E2E_PRE_PATH:}$E2E_DIR/bin:$E2E_TOOL_PATH" \
@@ -58,7 +59,12 @@ e2e_screen() { _tmux capture-pane -p -J -t "$(_e2e_sess "$1")" 2>/dev/null; }
 e2e_pane_exists() { _tmux display-message -p -t "$(_e2e_sess "$1")" '#{pane_id}' >/dev/null 2>&1; }
 e2e_alive() { [ "$(_tmux display-message -p -t "$(_e2e_sess "$1")" '#{pane_dead}' 2>/dev/null)" = 0 ]; }
 # e2e_exit_status <name>: exit status of the finished process (empty while running / no pane).
-e2e_exit_status() { _tmux display-message -p -t "$(_e2e_sess "$1")" '#{pane_dead_status}' 2>/dev/null; }
+# tmux 3.4 (Ubuntu 24.04) can leave #{pane_dead_status} empty for a dead pane, so the start wrapper also records it in a file.
+e2e_exit_status() {
+  local st; st=$(_tmux display-message -p -t "$(_e2e_sess "$1")" '#{pane_dead_status}' 2>/dev/null)
+  [ -n "$st" ] || st=$(cat "$(e2e_dir "$1")/exit.status" 2>/dev/null)
+  echo "$st"
+}
 
 _e2e_no_pane() { echo "e2e: no pane for '$1' (tmux session gone or never started)" >&2; }
 
@@ -93,8 +99,6 @@ e2e_wait_exit() {
     dead=$(_tmux display-message -p -t "$(_e2e_sess "$n")" '#{pane_dead}' 2>/dev/null) || { _e2e_no_pane "$n"; return 2; }
     if [ "$dead" = 1 ]; then
       st=$(e2e_exit_status "$n")
-      # tmux 3.4 marks a pane dead (fd closed) a moment before it has collected the exit status: wait for it.
-      for _ in $(seq 40); do [ -n "$st" ] && break; sleep 0.05; st=$(e2e_exit_status "$n"); done
       [ "$want" = any ] || [ "$st" = "$want" ] && return 0
       echo "e2e: '$n' exited with status ${st:-?}, expected $want. Screen:" >&2; e2e_screen "$n" >&2; return 1
     fi
