@@ -10,11 +10,11 @@
 
 See e2e/README.md ("Writing a scenario") for the API.
 """
-from .core import (E2E_DIR, OUT, ROOT, TUICR_BIN, CliResult, Failure, NoPane, Scenario, Skip, grep, must_fail, scenario)
+from .core import (E2E_DIR, OUT, ROOT, TUICR_BIN, CliResult, Failure, NoPane, Scenario, Skip, because, grep, must_fail, scenario)
 from .tui import Tui, tmux
 from .waits import wait_cmd, wait_file, wait_grep
 from . import flows, forge, repos
 from .forge import pr_comment
 
-__all__ = ["E2E_DIR", "OUT", "ROOT", "TUICR_BIN", "CliResult", "Failure", "NoPane", "Scenario", "Skip", "Tui", "flows",
+__all__ = ["E2E_DIR", "OUT", "ROOT", "TUICR_BIN", "CliResult", "Failure", "because", "NoPane", "Scenario", "Skip", "Tui", "flows",
            "forge", "grep", "must_fail", "pr_comment", "repos", "scenario", "tmux", "wait_cmd", "wait_file", "wait_grep"]

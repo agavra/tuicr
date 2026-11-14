@@ -115,7 +115,7 @@ Fixtures: `s.diff()` / `s.open(*args)` (git fixture, tuicr started), `s.pr_open(
 `s.fake_clipboard()` (create it before starting; `.text()` waits for what was copied, `.copied` says whether anything was),
 `s.minimal_path(dir, "git")` (a PATH holding only those tools; pass as `path=` to `s.cli`), `s.use_hg()` / `s.use_jj()`
 (SKIP without the real tool, FAIL with `E2E_REQUIRE_HG=1`/`E2E_REQUIRE_JJ=1`), and in `e2e.repos`: `git_repo`,
-`git_merge_base` (`.repo .base .main .topic`), `pr_repo`, `wide_repo`, `long_file_repo`, `hg_repo`, `jj_repo`, `git(repo, *args)`,
+`empty_repo` (empty git repo on main), `git_merge_base` (`.repo .base .main .topic`), `pr_repo`, `wide_repo`, `long_file_repo`, `hg_repo`, `jj_repo`, `git(repo, *args)`,
 `run(cwd, *argv)`, `write(path, text_or_bytes)`.
 
 `Tui`: input `keys(*tmux_keys)`, `type(text)` (literal, `send-keys -l`), `click(col, row)`, `paste(text)`,
@@ -126,7 +126,7 @@ Fixtures: `s.diff()` / `s.open(*args)` (git fixture, tuicr started), `s.pr_open(
 `save()`, `comment(text, key="c")`, `cursor_on(regex)`; fake-forge log `posts()` (review POSTs of the fake `gh`),
 `forge_posts(tool)`, `forge_calls()`, `forge_count(regex)`, `forge_expect` / `forge_reject`, `wait_forge_log(regex, timeout,
 count=1)`. Timeouts default to `E2E_TIMEOUT` (10 s). Module functions: `wait_file(path)`, `wait_grep(path, regex)`,
-`wait_cmd(timeout, argv_or_callable)`, `grep(regex, text)`, `must_fail(fn, message, exc)` (harness self-tests).
+`wait_cmd(timeout, argv_or_callable)`, `grep(regex, text)`, `because(message)` (context manager: a failing wait inside reports your message plus the evidence), `must_fail(fn, message, exc)` (harness self-tests).
 
 Rules that keep scenarios reliable:
 
