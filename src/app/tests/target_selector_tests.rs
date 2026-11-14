@@ -4738,3 +4738,127 @@ fn should_keep_wrap_preference_when_opening_a_pr() {
     assert!(matches!(app.diff_source, DiffSource::PullRequest(_)));
     assert!(app.diff_state.wrap_lines, "PR open reset wrap");
 }
+
+/// A dirty app with no comments in memory whose session file was saved with
+/// `disk_comment` (as `tuicr review add` would), unknown to the app.
+fn app_with_external_comment_on_disk() -> App {
+    let mut app = build_app();
+    let path = PathBuf::from("src/main.rs");
+    app.session.add_file(path.clone(), FileStatus::Modified, 0);
+    app.save_current_session_merging_external().unwrap();
+    let mut external = app.session.clone();
+    external
+        .get_file_mut(&path)
+        .unwrap()
+        .add_file_comment(crate::model::Comment::new(
+            "agent note".to_string(),
+            crate::model::CommentType::from_id("note"),
+            None,
+        ));
+    crate::persistence::storage::save_session(&external).unwrap();
+    app.session.get_file_mut(&path).unwrap().reviewed = true;
+    app.dirty = true;
+    app
+}
+
+#[test]
+fn should_not_discard_agent_comment_on_colon_q_before_poll() {
+    let mut app = app_with_external_comment_on_disk();
+    app.command_buffer = "q".to_string();
+
+    crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+
+    assert!(!app.should_quit);
+    assert!(app.session_path.as_ref().unwrap().exists());
+    assert!(app.session.has_comments(), "agent comment merged into view");
+    assert!(matches!(
+        app.message.as_ref().map(|m| &m.message_type),
+        Some(MessageType::Error)
+    ));
+}
+
+#[test]
+fn should_not_discard_agent_comment_on_q_before_poll() {
+    let mut app = app_with_external_comment_on_disk();
+
+    crate::handler::handle_normal_action(&mut app, crate::input::Action::Quit);
+
+    assert!(!app.should_quit);
+    assert!(app.session_path.as_ref().unwrap().exists());
+    assert!(app.session.has_comments());
+}
+
+#[test]
+fn should_not_discard_saved_comment_deleted_in_memory_on_q() {
+    let mut app = build_app();
+    let path = PathBuf::from("src/main.rs");
+    app.session.add_file(path.clone(), FileStatus::Modified, 0);
+    app.session
+        .get_file_mut(&path)
+        .unwrap()
+        .add_file_comment(crate::model::Comment::new(
+            "saved".to_string(),
+            crate::model::CommentType::from_id("note"),
+            None,
+        ));
+    app.save_current_session_merging_external().unwrap();
+    app.session
+        .get_file_mut(&path)
+        .unwrap()
+        .file_comments
+        .clear();
+    app.dirty = true;
+
+    crate::handler::handle_normal_action(&mut app, crate::input::Action::Quit);
+
+    assert!(!app.should_quit);
+    assert!(app.session_path.as_ref().unwrap().exists());
+}
+
+#[test]
+fn should_delete_reviewed_only_session_file_on_q() {
+    let mut app = build_app();
+    let path = PathBuf::from("src/main.rs");
+    app.session.add_file(path.clone(), FileStatus::Modified, 0);
+    app.save_current_session_merging_external().unwrap();
+    app.session.get_file_mut(&path).unwrap().reviewed = true;
+    app.dirty = true;
+    let file = app.session_path.clone().unwrap();
+    assert!(file.exists());
+
+    crate::handler::handle_normal_action(&mut app, crate::input::Action::Quit);
+
+    assert!(app.should_quit);
+    assert!(!file.exists());
+}
+
+#[test]
+fn should_not_quit_on_zz_when_save_fails() {
+    let mut app = build_app();
+    app.session
+        .add_file(PathBuf::from("a.rs"), FileStatus::Modified, 0);
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("file");
+    std::fs::write(&blocker, "x").unwrap();
+    crate::persistence::storage::set_test_reviews_dir(Some(blocker.join("reviews")));
+
+    crate::handler::handle_write_and_quit(&mut app);
+    crate::persistence::storage::set_test_reviews_dir(None);
+
+    assert!(!app.should_quit);
+    assert!(matches!(
+        app.message.as_ref().map(|m| &m.message_type),
+        Some(MessageType::Error)
+    ));
+}
+
+#[test]
+fn should_quit_on_zz_when_save_succeeds() {
+    let mut app = build_app();
+    app.session
+        .add_file(PathBuf::from("a.rs"), FileStatus::Modified, 0);
+
+    crate::handler::handle_write_and_quit(&mut app);
+
+    assert!(app.should_quit);
+}

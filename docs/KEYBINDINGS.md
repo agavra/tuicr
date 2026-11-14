@@ -293,10 +293,10 @@ In command mode,
 | `:messages` | Open full details for the current error |
 | `:version` | Show tuicr version |
 | `:update` | Check for updates |
-| `:q` (`:quit`) | Quit (warns on unsaved comments; discards review-only state) |
+| `:q` (`:quit`) | Quit (warns on unsaved comments; discards review-only state unless the saved session holds comments, e.g. added by `tuicr review add`) |
 | `:q!` (`:quit!`) | Force quit |
 | `:x` / `:wq` | Save and quit (prompts to copy if comments exist) |
-| `ZZ` | Save and quit |
+| `ZZ` | Save and quit (stays open and reports the error if the save fails, like `:wq`) |
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
 

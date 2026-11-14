@@ -231,17 +231,23 @@ fn is_session_active_unlocked(reviews_dir: &Path, path: &Path) -> bool {
         .any(|entry| entry.is_fresh() && normalize_active_path(&entry.path) == target)
 }
 
-/// Delete a session file and its manifest entry unconditionally. Returns
-/// `false` when there was no file to remove.
-///
-/// Unlike [`delete_session_if_empty`], this discards a session even when it
-/// has reviewed-file markers. It backs the "discard reviewed-only state on
-/// quit" path, where the session carries no comments worth keeping.
-pub(crate) fn delete_session(path: &Path) -> Result<bool> {
+/// Delete a session file and its manifest entry, even one with reviewed-file
+/// markers (the "discard reviewed-only state on quit" path), but keep a file whose on-disk copy holds
+/// comments (for instance ones `tuicr review add` wrote since the last poll).
+/// The check and the removal happen under one lock. Returns `false` when the
+/// file was kept or absent.
+pub(crate) fn delete_session_unless_commented(path: &Path) -> Result<bool> {
     let reviews_dir = get_reviews_dir()?;
-    delete_session_in_dir(path, &reviews_dir)
+    maybe_migrate(&reviews_dir)?;
+    with_reviews_dir_lock(&reviews_dir, || {
+        if path.exists() && load_session(path)?.has_comments() {
+            return Ok(false);
+        }
+        delete_session_unlocked(path, &reviews_dir)
+    })
 }
 
+#[cfg(test)]
 pub(crate) fn delete_session_in_dir(path: &Path, reviews_dir: &Path) -> Result<bool> {
     maybe_migrate(reviews_dir)?;
     with_reviews_dir_lock(reviews_dir, || delete_session_unlocked(path, reviews_dir))
@@ -1608,7 +1614,7 @@ mod tests {
         assert!(!delete_session_if_empty(&path).unwrap());
         assert!(path.exists(), "reviewed session must survive empty-delete");
 
-        assert!(delete_session(&path).unwrap());
+        assert!(delete_session_unless_commented(&path).unwrap());
         assert!(!path.exists(), "reviewed-only session should be discarded");
     }
 
@@ -1617,7 +1623,7 @@ mod tests {
         let _g = with_test_reviews_dir();
         let reviews_dir = get_reviews_dir().unwrap();
         let missing = reviews_dir.join("does-not-exist.json");
-        assert!(!delete_session(&missing).unwrap());
+        assert!(!delete_session_unless_commented(&missing).unwrap());
     }
 
     #[test]

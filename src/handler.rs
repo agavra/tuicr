@@ -527,6 +527,16 @@ pub fn handle_export_and_quit(app: &mut App) {
     app.should_quit = true;
 }
 
+/// ZZ: save the session, then export and quit. A failed save reports the error
+/// and stays open, like `:wq`.
+pub fn handle_write_and_quit(app: &mut App) {
+    match app.save_current_session_merging_external() {
+        Ok(_) if app.session.has_comments() => handle_export_and_quit(app),
+        Ok(_) => app.should_quit = true,
+        Err(e) => app.set_error(format!("Save failed: {e}")),
+    }
+}
+
 fn comment_line_start(buffer: &str, cursor: usize) -> usize {
     let cursor = cursor.min(buffer.len());
     match buffer[..cursor].rfind('\n') {
