@@ -4,7 +4,16 @@ Two purposes: orient coding agents in the tuicr codebase, and explain how to rea
 
 tuicr is a Rust TUI and library for code review. `src/` layout is self-describing (`ls src/`); `src/lib.rs` is the public crate surface (`ReviewStore`, session/comment types). Notes below are only what the code does not say.
 
+`e2e/`: tmux-driven end-to-end suite that runs the real binary against fake forges (`e2e/fakeforge/`); see `e2e/README.md`, coverage map in `e2e/COVERAGE.md`.
+
 Repository-managed agent integration: `skills/tuicr/` (shared skill bundle that launches tuicr in a cmux, Rex, tmux, Zellij, or Herdr split pane).
+
+## Testing rules
+
+- Every user-visible bug fix or behaviour change adds or updates an e2e scenario `e2e/scenarios/<area>/<behaviour>.sh`, named after the behaviour, with the PR/issue in its header comment. It must FAIL on the parent commit and PASS with the change. Unit tests are still required.
+- Run: `cargo build --release && TUICR_BIN=target/release/tuicr e2e/run.sh [<area>/<behaviour>…]` (needs tmux, python3; hg/jj scenarios SKIP without them). CI job `e2e` runs it on ubuntu and macOS. Authoring guide: `e2e/README.md`.
+- Forges are always faked (`e2e/fakeforge/`, `e2e/bin/{gh,glab,tea,bkt}`, fake Gerrit). Never call a real forge, network or credentials from a scenario.
+- Adding a scenario: update `e2e/COVERAGE.md`.
 
 ## Key types and invariants
 
@@ -87,6 +96,7 @@ configuration options in `docs/CONFIG.md` only.
 | `docs/KEYBINDINGS.md`  | Any keybinding or `:` command: add a row to the pane's key table and the `:` command table, plus prose for new behavior  |
 | `AGENTS.md`            | Key types, invariants, non-obvious behavior, general gotchas, repo-managed agent integrations (forge detail goes in `docs/FORGES.md`) |
 | `docs/FORGES.md`       | Forge backend contracts, detection, session/submit rules, F*/G* gotchas (new forge-specific gotchas go here)             |
+| `e2e/COVERAGE.md`      | Adding, renaming or removing an e2e scenario, or closing a listed gap (authoring rules stay in `e2e/README.md`)         |
 | `docs/CONFIG.md`       | Any `config.toml` key: add a row to the Options table and a line to the Full example block                               |
 
 ---

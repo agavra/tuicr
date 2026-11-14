@@ -18,6 +18,20 @@ cargo test
 cargo fmt
 ```
 
+## Testing
+
+`cargo test` runs the unit and integration tests. User-visible bug fixes and behaviour changes also need an
+end-to-end scenario under `e2e/scenarios/<area>/<behaviour>.sh` that fails without the change:
+
+```bash
+cargo build --release
+TUICR_BIN=target/release/tuicr e2e/run.sh            # or filter: e2e/run.sh pr/submit
+```
+
+Prerequisites: tmux, python3, plus `hg` and `jj` for their scenarios (they skip without them). Forges are
+faked; no credentials or network needed. CI runs the suite on Linux and macOS. See [e2e/README.md](e2e/README.md)
+and [e2e/COVERAGE.md](e2e/COVERAGE.md).
+
 ## Guidelines
 
 - Keep it simple—this is a focused tool, not a platform

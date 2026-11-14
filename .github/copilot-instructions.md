@@ -16,6 +16,8 @@ Run a single test by name:
 cargo test test_name_fragment   # matches any test whose name contains the fragment
 ```
 
+End-to-end tests (real binary in tmux, fake forges): `TUICR_BIN=target/release/tuicr e2e/run.sh` after `cargo build --release`. Every user-visible bug fix or behaviour change adds or updates `e2e/scenarios/<area>/<behaviour>.sh` (fails on the parent, passes with the change) and `e2e/COVERAGE.md`; never use a real forge. See `e2e/README.md`.
+
 ## Architecture
 
 ### Central state: `App` (`src/app.rs`)
