@@ -1,20 +1,21 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
 };
 
 use crate::app::{
-    AnnotatedLine, App, DiffViewMode, ExpandDirection, GAP_EXPAND_BATCH, VisualSelection,
+    AnnotatedLine, App, DiffViewMode, ExpandDirection, GAP_EXPAND_BATCH, GapId, VisualSelection,
 };
-use crate::model::{Comment, DiffFile, DiffHunk, DiffLine, LineOrigin, LineSide};
+use crate::model::{Comment, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_side_by_side::render_side_by_side_diff;
 use crate::ui::diff_unified::render_unified_diff;
 use crate::ui::styles;
 use crate::ui::text_utils::col_of_char;
+use crate::vcs::git::calculate_gap;
 use unicode_width::UnicodeWidthStr;
 
 /// Static header rule used for file/section headers; avoids `"═".repeat(40)` per frame.
@@ -1433,6 +1434,308 @@ pub(super) fn append_review_comments_section<'a>(
     }
 
     state
+}
+
+/// What follows a file's preamble in the continuous/single-file diff.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum FileBody {
+    /// A reviewed file collapsed to its header: no body and no spacing row.
+    Collapsed,
+    /// Binary, too large or empty: the preamble already pushed a label row.
+    NoHunks,
+    /// The caller renders the hunks.
+    Hunks,
+}
+
+/// Build the per-file preamble shared by both renderers: the file header
+/// (continuous view), the reviewed banner (single-file view), file-level
+/// comments or their inline editor, remote threads outside hunks and the
+/// binary/empty label. `panel_width` is the inner diff width.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn append_file_preamble<'a>(
+    app: &App,
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    file_idx: usize,
+    file: &DiffFile,
+    panel_width: usize,
+    visible: (usize, usize),
+    input: &mut ReviewSectionState,
+) -> FileBody {
+    use crate::app::InputMode;
+    let path = file.display_path();
+    let comment_width = panel_width.saturating_sub(1);
+
+    // The `═══ filename ═══` separator is redundant in single-file view: the
+    // status bar and file list already name the file, and the wide bar of `═`
+    // characters confuses horizontal scrolling.
+    if !app.is_single_file_view {
+        let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
+        let header_text = file_header_prefix_text(app, file);
+        lines.push(Line::from(vec![
+            Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+            Span::styled(header_text, styles::file_header_style(&app.theme)),
+            Span::styled(HEADER_RULE, styles::file_header_style(&app.theme)),
+        ]));
+        *line_idx += 1;
+    }
+
+    // Reviewed files normally collapse in continuous view. A summary jump
+    // may reveal one target body without changing its reviewed marker.
+    if app.should_collapse_file(file_idx) {
+        return FileBody::Collapsed;
+    }
+    if app.session.is_file_reviewed(path) && app.is_single_file_view {
+        let indicator = cursor_indicator(*line_idx, current_line_idx);
+        lines.push(Line::from(vec![
+            Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+            Span::styled(
+                REVIEWED_BANNER_TEXT,
+                Style::default()
+                    .fg(app.theme.fg_secondary)
+                    .add_modifier(Modifier::DIM),
+            ),
+        ]));
+        *line_idx += 1;
+    }
+
+    // Are we editing/adding a file-level comment for this file?
+    let is_file_comment_mode = app.input_mode == InputMode::Comment
+        && app.comment_is_file_level
+        && file_idx == app.diff_state.current_file_idx;
+    let input_lines = |is_editing: bool| {
+        comment_panel::format_comment_input_lines(
+            &app.theme,
+            comment_type_presentation(app, &app.comment_type),
+            &app.comment_buffer,
+            app.comment_cursor,
+            None,
+            is_editing,
+            comment_width,
+            app.comment_vim_mode_label()
+                .as_ref()
+                .map(|(t, w)| (t.as_str(), *w)),
+            app.supports_keyboard_enhancement,
+        )
+    };
+
+    if let Some(review) = app.session.files.get(path) {
+        for comment in &review.file_comments {
+            if !app.comment_visible(comment) {
+                continue;
+            }
+            let is_being_edited =
+                app.editing_comment_id.as_ref() == Some(&comment.id) && is_file_comment_mode;
+            let replaced = App::comment_display_lines(comment, panel_width);
+
+            if is_being_edited {
+                // Render the inline input instead
+                let (rows, cursor_info) = input_lines(true);
+                input.cursor_logical_line = Some(*line_idx + cursor_info.line_offset);
+                input.cursor_column = 1 + cursor_info.column;
+                input.input_box_range = Some((*line_idx, *line_idx + rows.len().saturating_sub(1)));
+                input.annotation_offset = Some((*line_idx, rows.len(), replaced));
+                push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
+            } else {
+                if !comment_box_visible(*line_idx, replaced, visible) {
+                    skip_comment_box(lines, line_idx, replaced);
+                    continue;
+                }
+                let rows = comment_panel::format_comment_lines(
+                    &app.theme,
+                    comment_type_presentation(app, &comment.comment_type),
+                    &comment.content,
+                    None,
+                    comment_width,
+                    (comment.author != app.username).then_some(comment.author.as_str()),
+                );
+                push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
+            }
+        }
+    }
+
+    // Inline input for a new file-level comment
+    if is_file_comment_mode && app.editing_comment_id.is_none() {
+        let (rows, cursor_info) = input_lines(false);
+        input.cursor_logical_line = Some(*line_idx + cursor_info.line_offset);
+        input.cursor_column = 1 + cursor_info.column;
+        input.input_box_range = Some((*line_idx, *line_idx + rows.len().saturating_sub(1)));
+        input.annotation_offset = Some((*line_idx, rows.len(), 0));
+        push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
+    }
+
+    render_remote_threads_outside_hunks(lines, line_idx, current_line_idx, app, file);
+
+    if file.is_too_large || file.is_binary || file.hunks.is_empty() {
+        let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
+        lines.push(Line::from(vec![
+            Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+            Span::styled(binary_or_empty_label(file), styles::dim_style(&app.theme)),
+        ]));
+        *line_idx += 1;
+        return FileBody::NoHunks;
+    }
+    FileBody::Hunks
+}
+
+/// Emit one gap's expander/hidden-lines stubs between its expanded runs.
+/// `render` builds one expanded context line (renderer-specific).
+#[allow(clippy::too_many_arguments)]
+fn append_gap_runs<'a>(
+    app: &App,
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    visible: (usize, usize),
+    gap_id: GapId,
+    gap: usize,
+    stubs: GapStubs,
+    render: &mut impl FnMut(&mut Vec<Line<'a>>, &mut usize, &DiffLine),
+) {
+    let top_lines = app.expanded_top.get(&gap_id);
+    let bot_lines = app.expanded_bottom.get(&gap_id);
+    let top_len = top_lines.map_or(0, |v| v.len());
+    let bot_len = bot_lines.map_or(0, |v| v.len());
+    let remaining = gap.saturating_sub(top_len + bot_len);
+    let theme = &app.theme;
+
+    if let Some(top) = top_lines {
+        render_culled_run(lines, line_idx, top, visible, &mut *render);
+    }
+
+    if remaining > 0 {
+        let expander = |lines: &mut Vec<Line<'a>>, line_idx: &mut usize, dir| {
+            render_expander_line(lines, line_idx, current_line_idx, dir, remaining, theme);
+        };
+        match stubs {
+            GapStubs::TopOfFile => {
+                if remaining > GAP_EXPAND_BATCH {
+                    render_hidden_lines(lines, line_idx, current_line_idx, remaining, theme);
+                }
+                expander(lines, line_idx, ExpandDirection::Up);
+            }
+            GapStubs::Between => {
+                if remaining >= GAP_EXPAND_BATCH {
+                    expander(lines, line_idx, ExpandDirection::Down);
+                    render_hidden_lines(lines, line_idx, current_line_idx, remaining, theme);
+                    expander(lines, line_idx, ExpandDirection::Up);
+                } else {
+                    expander(lines, line_idx, ExpandDirection::Both);
+                }
+            }
+            GapStubs::EndOfFile => {
+                expander(lines, line_idx, ExpandDirection::Down);
+                if remaining > GAP_EXPAND_BATCH {
+                    render_hidden_lines(lines, line_idx, current_line_idx, remaining, theme);
+                }
+            }
+        }
+    }
+
+    if let Some(bot) = bot_lines {
+        render_culled_run(lines, line_idx, bot, visible, &mut *render);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum GapStubs {
+    TopOfFile,
+    Between,
+    EndOfFile,
+}
+
+/// Build the gap before `hunk` (if any is shown) and the hunk header row,
+/// shared by both renderers. Returns `true` when the hunk is collapsed and
+/// its body must be skipped.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn append_gap_and_hunk_header<'a>(
+    app: &App,
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    visible: (usize, usize),
+    file: &DiffFile,
+    file_idx: usize,
+    hunk_idx: usize,
+    mut render: impl FnMut(&mut Vec<Line<'a>>, &mut usize, &DiffLine),
+) -> bool {
+    let hunk = &file.hunks[hunk_idx];
+    let prev_hunk = hunk_idx.checked_sub(1).and_then(|i| file.hunks.get(i));
+    let gap = calculate_gap(
+        prev_hunk.map(|h| (&h.new_start, &h.new_count)),
+        hunk.new_start,
+    );
+
+    if gap > 0 && app.should_render_gap_before_hunk(file_idx, hunk_idx) {
+        let stubs = if hunk_idx == 0 {
+            GapStubs::TopOfFile
+        } else {
+            GapStubs::Between
+        };
+        append_gap_runs(
+            app,
+            lines,
+            line_idx,
+            current_line_idx,
+            visible,
+            GapId { file_idx, hunk_idx },
+            gap as usize,
+            stubs,
+            &mut render,
+        );
+    }
+
+    let is_hunk_reviewed = app.is_hunk_reviewed(file_idx, hunk_idx);
+    let (hunk_header_text, hunk_header_style) =
+        hunk_header_text_and_style(&app.theme, hunk, is_hunk_reviewed);
+    let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
+    lines.push(Line::from(vec![
+        Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+        Span::styled(hunk_header_text, hunk_header_style),
+    ]));
+    *line_idx += 1;
+    app.should_collapse_hunk(file_idx, hunk_idx)
+}
+
+/// Build the end-of-file gap (after all hunks, never for deleted files),
+/// shared by both renderers.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn append_eof_gap<'a>(
+    app: &App,
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    visible: (usize, usize),
+    file: &DiffFile,
+    file_idx: usize,
+    mut render: impl FnMut(&mut Vec<Line<'a>>, &mut usize, &DiffLine),
+) {
+    if file.status == FileStatus::Deleted || !app.eof_gap_enabled() {
+        return;
+    }
+    let Some(last_hunk) = file.hunks.last() else {
+        return;
+    };
+    let eof_start = last_hunk.new_start + last_hunk.new_count;
+    if let Some(&total) = app.file_line_count_cache.get(&file_idx)
+        && eof_start <= total
+    {
+        append_gap_runs(
+            app,
+            lines,
+            line_idx,
+            current_line_idx,
+            visible,
+            GapId {
+                file_idx,
+                hunk_idx: file.hunks.len(),
+            },
+            (total - eof_start + 1) as usize,
+            GapStubs::EndOfFile,
+            &mut render,
+        );
+    }
 }
 
 /// Render a run of one-row-per-item lines, building only the rows inside

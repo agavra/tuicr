@@ -1,29 +1,28 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode};
-use crate::model::{DiffLine, FileStatus, LineOrigin, LineRange, LineSide};
+use crate::app::{App, FocusedPanel, InputMode};
+use crate::model::{DiffLine, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_view::{
+    FileBody, append_eof_gap, append_file_preamble, append_gap_and_hunk_header,
     apply_horizontal_scroll, comment_box_row, comment_type_presentation, cursor_indicator,
-    cursor_indicator_spaced, diff_stat_title, hunk_header_text_and_style,
-    paint_cursor_line_highlight, paint_visual_selection_overlay, populate_row_to_annotation,
-    render_expander_line, render_hidden_lines, scroll_comment_input_into_view, skip_comment_box,
+    diff_stat_title, paint_cursor_line_highlight, paint_visual_selection_overlay,
+    populate_row_to_annotation, scroll_comment_input_into_view, skip_comment_box,
 };
 use crate::ui::styles;
 use crate::ui::text_utils::{
     apply_search_highlight_pairs, apply_search_highlight_spans, apply_search_highlight_text,
     truncate_or_pad_spans, wrap_spans,
 };
-use crate::vcs::git::calculate_gap;
 
 #[derive(Clone, Default)]
 struct SbsRowMeta {
@@ -460,10 +459,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         ctx.panel_width,
         (ctx.visible_start, ctx.visible_end),
     );
-    let mut comment_cursor_logical_line = review_section.cursor_logical_line;
-    let mut comment_cursor_column = review_section.cursor_column;
-    let mut comment_input_box_range = review_section.input_box_range;
-    let mut annotation_offset = review_section.annotation_offset;
+    let mut input = review_section;
 
     crate::ui::pr_info_panel::append_issue_comments_section(
         app,
@@ -485,172 +481,21 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             continue;
         }
         let path = file.display_path();
-        let is_reviewed = app.session.is_file_reviewed(path);
-
-        if !app.is_single_file_view {
-            let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
-            let header_text = crate::ui::diff_view::file_header_prefix_text(app, file);
-            lines.push(Line::from(vec![
-                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                Span::styled(header_text, styles::file_header_style(&app.theme)),
-                Span::styled(
-                    crate::ui::diff_view::HEADER_RULE,
-                    styles::file_header_style(&app.theme),
-                ),
-            ]));
-            line_idx += 1;
-        }
-
-        // Reviewed files normally collapse in continuous view. A summary jump
-        // may reveal one target body without changing its reviewed marker.
-        if app.should_collapse_file(file_idx) {
-            continue;
-        }
-        if is_reviewed && app.is_single_file_view {
-            let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-            lines.push(Line::from(vec![
-                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                Span::styled(
-                    crate::ui::diff_view::REVIEWED_BANNER_TEXT,
-                    Style::default()
-                        .fg(app.theme.fg_secondary)
-                        .add_modifier(Modifier::DIM),
-                ),
-            ]));
-            line_idx += 1;
-        }
-
-        // Check if we're editing/adding a file-level comment for this file
-        let is_file_comment_mode = app.input_mode == InputMode::Comment
-            && app.comment_is_file_level
-            && file_idx == app.diff_state.current_file_idx;
-
-        // Show file-level comments
-        if let Some(review) = app.session.files.get(path) {
-            for comment in &review.file_comments {
-                if !app.comment_visible(comment) {
-                    continue;
-                }
-                // Skip rendering this comment if it's being edited
-                let is_being_edited =
-                    app.editing_comment_id.as_ref() == Some(&comment.id) && is_file_comment_mode;
-
-                if is_being_edited {
-                    // Render the inline input instead
-                    let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
-                        &app.theme,
-                        comment_type_presentation(app, &app.comment_type),
-                        &app.comment_buffer,
-                        app.comment_cursor,
-                        None,
-                        true,
-                        ctx.panel_width.saturating_sub(1),
-                        app.comment_vim_mode_label()
-                            .as_ref()
-                            .map(|(t, w)| (t.as_str(), *w)),
-                        app.supports_keyboard_enhancement,
-                    );
-                    comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
-                    comment_cursor_column = 1 + cursor_info.column;
-                    comment_input_box_range =
-                        Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-                    let annotations_replaced =
-                        App::comment_display_lines(comment, inner.width as usize);
-                    annotation_offset = Some((line_idx, input_lines.len(), annotations_replaced));
-
-                    for mut input_line in input_lines {
-                        let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-                        input_line.spans.insert(
-                            0,
-                            Span::styled(
-                                indicator,
-                                styles::current_line_indicator_style(&app.theme),
-                            ),
-                        );
-                        lines.push(input_line);
-                        line_idx += 1;
-                    }
-                } else {
-                    let rows = App::comment_display_lines(comment, ctx.panel_width);
-                    if !ctx.box_visible(line_idx, rows) {
-                        skip_comment_box(&mut lines, &mut line_idx, rows);
-                        continue;
-                    }
-                    let comment_lines = comment_panel::format_comment_lines(
-                        &app.theme,
-                        comment_type_presentation(app, &comment.comment_type),
-                        &comment.content,
-                        None,
-                        ctx.panel_width.saturating_sub(1),
-                        (comment.author != app.username).then_some(comment.author.as_str()),
-                    );
-                    for mut comment_line in comment_lines {
-                        let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-                        comment_line.spans.insert(
-                            0,
-                            Span::styled(
-                                indicator,
-                                styles::current_line_indicator_style(&app.theme),
-                            ),
-                        );
-                        lines.push(comment_line);
-                        line_idx += 1;
-                    }
-                }
-            }
-        }
-
-        // Render inline input for new file-level comment
-        if is_file_comment_mode && app.editing_comment_id.is_none() {
-            let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
-                &app.theme,
-                comment_type_presentation(app, &app.comment_type),
-                &app.comment_buffer,
-                app.comment_cursor,
-                None,
-                false,
-                ctx.panel_width.saturating_sub(1),
-                app.comment_vim_mode_label()
-                    .as_ref()
-                    .map(|(t, w)| (t.as_str(), *w)),
-                app.supports_keyboard_enhancement,
-            );
-            comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
-            comment_cursor_column = 1 + cursor_info.column;
-            comment_input_box_range =
-                Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-            annotation_offset = Some((line_idx, input_lines.len(), 0));
-
-            for mut input_line in input_lines {
-                let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-                input_line.spans.insert(
-                    0,
-                    Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                );
-                lines.push(input_line);
-                line_idx += 1;
-            }
-        }
-
-        crate::ui::diff_view::render_remote_threads_outside_hunks(
+        let file_body = append_file_preamble(
+            app,
             &mut lines,
             &mut line_idx,
             ctx.current_line_idx,
-            app,
+            file_idx,
             file,
+            ctx.panel_width,
+            (ctx.visible_start, ctx.visible_end),
+            &mut input,
         );
-
-        if file.is_too_large || file.is_binary || file.hunks.is_empty() {
-            let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
-            lines.push(Line::from(vec![
-                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                Span::styled(
-                    crate::ui::diff_view::binary_or_empty_label(file),
-                    styles::dim_style(&app.theme),
-                ),
-            ]));
-            line_idx += 1;
-        } else {
+        if file_body == FileBody::Collapsed {
+            continue;
+        }
+        if file_body == FileBody::Hunks {
             let line_comments = app
                 .session
                 .files
@@ -659,129 +504,19 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 .unwrap_or(&crate::ui::diff_view::EMPTY_LINE_COMMENTS);
 
             for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
-                // Calculate and render gap before this hunk
-                let prev_hunk = if hunk_idx > 0 {
-                    file.hunks.get(hunk_idx - 1)
-                } else {
-                    None
-                };
-                let gap = calculate_gap(
-                    prev_hunk.map(|h| (&h.new_start, &h.new_count)),
-                    hunk.new_start,
-                );
-
-                let gap_id = GapId { file_idx, hunk_idx };
-
-                if gap > 0 && app.should_render_gap_before_hunk(file_idx, hunk_idx) {
-                    let top_lines = app.expanded_top.get(&gap_id);
-                    let bot_lines = app.expanded_bottom.get(&gap_id);
-                    let top_len = top_lines.map_or(0, |v| v.len());
-                    let bot_len = bot_lines.map_or(0, |v| v.len());
-                    let remaining = (gap as usize).saturating_sub(top_len + bot_len);
-                    let is_top_of_file = hunk_idx == 0;
-
-                    // Render top expanded lines
-                    if let Some(top) = top_lines {
-                        for expanded_line in top {
-                            if !ctx.is_visible(line_idx) {
-                                lines.push(Line::default());
-                                line_idx += 1;
-                                continue;
-                            }
-                            render_sbs_expanded_context_line(
-                                &mut lines,
-                                &mut line_idx,
-                                expanded_line,
-                                &ctx,
-                            );
-                        }
-                    }
-
-                    // Render expanders / hidden lines
-                    if remaining > 0 {
-                        if is_top_of_file {
-                            if remaining > GAP_EXPAND_BATCH {
-                                render_hidden_lines(
-                                    &mut lines,
-                                    &mut line_idx,
-                                    ctx.current_line_idx,
-                                    remaining,
-                                    &app.theme,
-                                );
-                            }
-                            render_expander_line(
-                                &mut lines,
-                                &mut line_idx,
-                                ctx.current_line_idx,
-                                ExpandDirection::Up,
-                                remaining,
-                                &app.theme,
-                            );
-                        } else if remaining >= GAP_EXPAND_BATCH {
-                            render_expander_line(
-                                &mut lines,
-                                &mut line_idx,
-                                ctx.current_line_idx,
-                                ExpandDirection::Down,
-                                remaining,
-                                &app.theme,
-                            );
-                            render_hidden_lines(
-                                &mut lines,
-                                &mut line_idx,
-                                ctx.current_line_idx,
-                                remaining,
-                                &app.theme,
-                            );
-                            render_expander_line(
-                                &mut lines,
-                                &mut line_idx,
-                                ctx.current_line_idx,
-                                ExpandDirection::Up,
-                                remaining,
-                                &app.theme,
-                            );
-                        } else {
-                            render_expander_line(
-                                &mut lines,
-                                &mut line_idx,
-                                ctx.current_line_idx,
-                                ExpandDirection::Both,
-                                remaining,
-                                &app.theme,
-                            );
-                        }
-                    }
-
-                    // Render bottom expanded lines
-                    if let Some(bot) = bot_lines {
-                        for expanded_line in bot {
-                            if !ctx.is_visible(line_idx) {
-                                lines.push(Line::default());
-                                line_idx += 1;
-                                continue;
-                            }
-                            render_sbs_expanded_context_line(
-                                &mut lines,
-                                &mut line_idx,
-                                expanded_line,
-                                &ctx,
-                            );
-                        }
-                    }
-                }
-
-                // Hunk header
-                let is_hunk_reviewed = app.is_hunk_reviewed(file_idx, hunk_idx);
-                let (hunk_header_text, hunk_header_style) =
-                    hunk_header_text_and_style(&app.theme, hunk, is_hunk_reviewed);
-                let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
-                lines.push(Line::from(vec![
-                    Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                    Span::styled(hunk_header_text, hunk_header_style),
-                ]));
-                line_idx += 1;
-                if app.should_collapse_hunk(file_idx, hunk_idx) {
+                if append_gap_and_hunk_header(
+                    app,
+                    &mut lines,
+                    &mut line_idx,
+                    ctx.current_line_idx,
+                    (ctx.visible_start, ctx.visible_end),
+                    file,
+                    file_idx,
+                    hunk_idx,
+                    |lines, line_idx, expanded_line| {
+                        render_sbs_expanded_context_line(lines, line_idx, expanded_line, &ctx);
+                    },
+                ) {
                     continue;
                 }
 
@@ -796,83 +531,27 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 );
                 line_idx = new_line_idx;
                 if let Some((line, col, box_start, box_end, annotations_replaced)) = cursor_info {
-                    comment_cursor_logical_line = Some(line);
-                    comment_cursor_column = col;
-                    comment_input_box_range = Some((box_start, box_end));
+                    input.cursor_logical_line = Some(line);
+                    input.cursor_column = col;
+                    input.input_box_range = Some((box_start, box_end));
                     let box_len = box_end - box_start + 1;
-                    annotation_offset = Some((box_start, box_len, annotations_replaced));
+                    input.annotation_offset = Some((box_start, box_len, annotations_replaced));
                 }
             }
         }
 
-        // End-of-file gap (after all hunks, not for deleted files)
-        if file.status != FileStatus::Deleted
-            && app.eof_gap_enabled()
-            && let Some(last_hunk) = file.hunks.last()
-        {
-            let eof_start = last_hunk.new_start + last_hunk.new_count;
-            if let Some(&total) = app.file_line_count_cache.get(&file_idx)
-                && eof_start <= total
-            {
-                let gap = (total - eof_start + 1) as usize;
-                let eof_gap_id = GapId {
-                    file_idx,
-                    hunk_idx: file.hunks.len(),
-                };
-                let top_lines = app.expanded_top.get(&eof_gap_id);
-                let bot_lines = app.expanded_bottom.get(&eof_gap_id);
-                let top_len = top_lines.map_or(0, |v| v.len());
-                let bot_len = bot_lines.map_or(0, |v| v.len());
-                let remaining = gap.saturating_sub(top_len + bot_len);
-
-                // Render top expanded lines (↓ direction)
-                if let Some(top) = top_lines {
-                    crate::ui::diff_view::render_culled_run(
-                        &mut lines,
-                        &mut line_idx,
-                        top,
-                        (ctx.visible_start, ctx.visible_end),
-                        |lines, line_idx, expanded_line| {
-                            render_sbs_expanded_context_line(lines, line_idx, expanded_line, &ctx);
-                        },
-                    );
-                }
-
-                // Expander / hidden lines
-                if remaining > 0 {
-                    render_expander_line(
-                        &mut lines,
-                        &mut line_idx,
-                        ctx.current_line_idx,
-                        ExpandDirection::Down,
-                        remaining,
-                        &app.theme,
-                    );
-                    if remaining > GAP_EXPAND_BATCH {
-                        render_hidden_lines(
-                            &mut lines,
-                            &mut line_idx,
-                            ctx.current_line_idx,
-                            remaining,
-                            &app.theme,
-                        );
-                    }
-                }
-
-                // Render bottom expanded lines
-                if let Some(bot) = bot_lines {
-                    crate::ui::diff_view::render_culled_run(
-                        &mut lines,
-                        &mut line_idx,
-                        bot,
-                        (ctx.visible_start, ctx.visible_end),
-                        |lines, line_idx, expanded_line| {
-                            render_sbs_expanded_context_line(lines, line_idx, expanded_line, &ctx);
-                        },
-                    );
-                }
-            }
-        }
+        append_eof_gap(
+            app,
+            &mut lines,
+            &mut line_idx,
+            ctx.current_line_idx,
+            (ctx.visible_start, ctx.visible_end),
+            file,
+            file_idx,
+            |lines, line_idx, expanded_line| {
+                render_sbs_expanded_context_line(lines, line_idx, expanded_line, &ctx);
+            },
+        );
 
         // Spacing between files
         let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
@@ -892,15 +571,15 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         std::mem::take(&mut *m)
     };
     drop(ctx);
-    app.comment_input_annotation_offset = annotation_offset;
+    app.comment_input_annotation_offset = input.annotation_offset;
 
     // Auto-scroll so the comment input box stays visible while the user types.
     let wrap = app.diff_state.wrap_lines;
     let viewport_width = inner.width as usize;
     scroll_comment_input_into_view(
         &mut app.diff_state.scroll_offset,
-        comment_input_box_range,
-        comment_cursor_logical_line,
+        input.input_box_range,
+        input.cursor_logical_line,
         inner.height as usize,
         lines.len(),
         |idx| sbs_row_height(&lines, &sbs_meta, idx, wrap, content_width, viewport_width),
@@ -1059,7 +738,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     crate::ui::diff_view::paint_comment_box_right_border(frame, &overlay_ctx);
 
     // Calculate screen position for comment cursor if in Comment mode
-    if let Some(cursor_logical_line) = comment_cursor_logical_line {
+    if let Some(cursor_logical_line) = input.cursor_logical_line {
         let scroll_offset = app.diff_state.scroll_offset;
         let visible_lines_count = app.diff_state.visible_line_count.max(1);
 
@@ -1081,7 +760,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 visual_row = logical_offset as u16;
             }
 
-            let screen_col = inner.x + comment_cursor_column;
+            let screen_col = inner.x + input.cursor_column;
             let screen_row_abs = inner.y + visual_row;
 
             app.comment_cursor_screen_pos = Some((screen_col, screen_row_abs));

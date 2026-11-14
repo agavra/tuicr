@@ -1602,4 +1602,567 @@ mod tests {
             );
         }
     }
+
+    // ---- shared file preamble, gap/hunk-header and EOF-gap builders ----
+
+    /// Text of every screen row the shared builders produce (file header,
+    /// reviewed banner, hunk header, expander and hidden-lines stubs, file
+    /// comment, binary label, spacing), keyed by annotation kind, drawn by the
+    /// real renderer of `mode`.
+    fn shared_builder_rows(app: &mut App, mode: DiffViewMode) -> Vec<(&'static str, String)> {
+        app.diff_view_mode = mode;
+        app.rebuild_annotations();
+        let (w, h) = (120u16, 300u16);
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal
+            .draw(|frame| match mode {
+                DiffViewMode::Unified => {
+                    crate::ui::diff_unified::render_unified_diff(frame, app, Rect::new(0, 0, w, h));
+                }
+                DiffViewMode::SideBySide => {
+                    crate::ui::diff_side_by_side::render_side_by_side_diff(
+                        frame,
+                        app,
+                        Rect::new(0, 0, w, h),
+                    );
+                }
+            })
+            .expect("draw");
+        let buf = terminal.backend().buffer().clone();
+        let mut out = Vec::new();
+        for row in 0..h {
+            let text: String = (0..w).map(|x| buf[(x, row)].symbol().to_string()).collect();
+            let inner = text.trim_matches('│').trim();
+            let kind = if inner.starts_with("═══") {
+                "FileHeader"
+            } else if inner.starts_with("Marked reviewed") {
+                "ReviewedBanner"
+            } else if inner.starts_with("@@") || inner.starts_with("✓ @@") {
+                "HunkHeader"
+            } else if inner.starts_with("... ") && inner.contains("expand (") {
+                "Expander"
+            } else if inner.starts_with("... ") && inner.contains("lines hidden") {
+                "HiddenLines"
+            } else if inner.starts_with("(binary file)") {
+                "BinaryOrEmpty"
+            } else if inner.contains("overall the file looks good") {
+                "FileComment"
+            } else {
+                continue;
+            };
+            out.push((kind, text.trim_end().to_string()));
+        }
+        out
+    }
+
+    fn assert_shared_rows_match(app: &mut App, required: &[&str]) {
+        let unified = shared_builder_rows(app, DiffViewMode::Unified);
+        let sbs = shared_builder_rows(app, DiffViewMode::SideBySide);
+        for r in required {
+            assert!(
+                unified.iter().any(|(b, _)| b == r),
+                "fixture lacks {r}: {unified:?}"
+            );
+        }
+        assert_eq!(unified, sbs);
+    }
+
+    #[test]
+    fn should_draw_identical_shared_rows_in_both_renderers() {
+        let mut app = make_app();
+        // A trailing gap with hidden lines and expanders for the first code file.
+        let idx = app.diff_files.iter().position(|f| !f.is_binary).unwrap();
+        app.file_line_count_cache.insert(idx, 10101);
+        assert_shared_rows_match(
+            &mut app,
+            &[
+                "FileHeader",
+                "HunkHeader",
+                "Expander",
+                "HiddenLines",
+                "FileComment",
+                "BinaryOrEmpty",
+            ],
+        );
+    }
+
+    #[test]
+    fn should_draw_identical_shared_rows_for_expanded_eof_in_both_renderers() {
+        for bottom in [false, true] {
+            let (mut app, _) = eof_gap_app(DiffViewMode::Unified, bottom);
+            // Keep the fixture's top-of-file/EOF stubs but shrink the run so
+            // the 300-row viewport shows the whole file.
+            let eof = app
+                .expanded_top
+                .keys()
+                .chain(app.expanded_bottom.keys())
+                .next()
+                .cloned()
+                .unwrap();
+            for map in [&mut app.expanded_top, &mut app.expanded_bottom] {
+                if let Some(v) = map.get_mut(&eof) {
+                    v.truncate(20);
+                }
+            }
+            app.file_line_count_cache.insert(eof.file_idx, 10101);
+            assert_shared_rows_match(&mut app, &["Expander", "HiddenLines"]);
+        }
+    }
+
+    #[test]
+    fn should_draw_identical_shared_rows_for_reviewed_file_in_both_renderers() {
+        // Collapsed continuous view, then single-file view with the banner.
+        let mut app = make_app();
+        let path = app.diff_files[0].display_path().clone();
+        app.session.get_file_mut(&path).unwrap().reviewed = true;
+        assert_shared_rows_match(&mut app, &["FileHeader"]);
+        app.is_single_file_view = true;
+        app.diff_state.current_file_idx = 0;
+        app.session.get_file_mut(&path).unwrap().reviewed = true;
+        let unified = shared_builder_rows(&mut app, DiffViewMode::Unified);
+        assert!(
+            unified.iter().any(|(b, _)| *b == "ReviewedBanner"),
+            "{unified:?}"
+        );
+        assert_eq!(
+            unified,
+            shared_builder_rows(&mut app, DiffViewMode::SideBySide)
+        );
+    }
+
+    #[test]
+    fn should_replace_existing_file_comment_with_inline_editor() {
+        let mut app = section_app();
+        let idx = app.diff_files.iter().position(|f| !f.is_binary).unwrap();
+        app.input_mode = InputMode::Comment;
+        app.comment_is_file_level = true;
+        app.diff_state.current_file_idx = idx;
+        let file = &app.diff_files[idx];
+        let comment = &app
+            .session
+            .files
+            .get(file.display_path())
+            .unwrap()
+            .file_comments[0];
+        app.editing_comment_id = Some(comment.id.clone());
+        app.comment_buffer = "edited file comment".to_string();
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        let mut input = crate::ui::diff_view::ReviewSectionState::default();
+        crate::ui::diff_view::append_file_preamble(
+            &app,
+            &mut lines,
+            &mut line_idx,
+            0,
+            idx,
+            file,
+            60,
+            (0, 1000),
+            &mut input,
+        );
+        assert!(
+            input.annotation_offset.is_some(),
+            "editing a file comment must replace its annotations"
+        );
+        assert!(
+            input.cursor_logical_line.is_some(),
+            "editing a file comment must place its cursor"
+        );
+        assert!(
+            lines
+                .iter()
+                .map(row_text)
+                .any(|s| s.contains("edited file comment"))
+        );
+        assert!(
+            !lines
+                .iter()
+                .map(row_text)
+                .any(|s| s.contains("overall the file looks good"))
+        );
+    }
+
+    #[test]
+    fn should_collapse_reviewed_file_hunks_in_both_renderers() {
+        let mut app = section_app();
+        let idx = app.diff_files.iter().position(|f| !f.is_binary).unwrap();
+        let path = app.diff_files[idx].display_path().clone();
+        app.session.get_file_mut(&path).unwrap().reviewed = true;
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            let rows = shared_builder_rows(&mut app, mode);
+            assert!(
+                !rows.iter().any(|(kind, _)| *kind == "HunkHeader"),
+                "reviewed file must collapse: {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_stub_between_gap_of_exactly_one_batch_with_three_rows() {
+        let mut app = section_app();
+        app.expanded_top.clear();
+        app.expanded_bottom.clear();
+        let idx = app.diff_files.iter().position(|f| !f.is_binary).unwrap();
+        let mut file = app.diff_files[idx].clone();
+        file.hunks[1].new_start =
+            file.hunks[0].new_start + file.hunks[0].new_count + crate::app::GAP_EXPAND_BATCH as u32;
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        crate::ui::diff_view::append_gap_and_hunk_header(
+            &app,
+            &mut lines,
+            &mut line_idx,
+            0,
+            (0, 1000),
+            &file,
+            idx,
+            1,
+            |_, _, _| panic!("no expansions"),
+        );
+        assert_eq!(
+            line_idx, 4,
+            "Down, hidden-lines, Up, hunk-header at exactly one batch"
+        );
+        assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
+    fn should_expand_single_trailing_line_at_eof() {
+        let mut app = section_app();
+        app.expanded_top.clear();
+        app.expanded_bottom.clear();
+        let idx = app.diff_files.iter().position(|f| !f.is_binary).unwrap();
+        let file = &app.diff_files[idx];
+        let last = file.hunks.last().unwrap();
+        app.file_line_count_cache
+            .insert(idx, last.new_start + last.new_count);
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        crate::ui::diff_view::append_eof_gap(
+            &app,
+            &mut lines,
+            &mut line_idx,
+            0,
+            (0, 1000),
+            file,
+            idx,
+            |_, _, _| panic!("no expansions"),
+        );
+        assert_eq!(line_idx, 1, "one trailing source line must be expandable");
+        assert_eq!(lines.len(), 1);
+        assert!(row_text(&lines[0]).contains("expand"));
+    }
+
+    // ---- HABIT 4: remaining preamble / gap / hunk-header / EOF guards ----
+
+    fn preamble_state(
+        app: &App,
+        file: &DiffFile,
+        idx: usize,
+        visible: (usize, usize),
+    ) -> (
+        Vec<String>,
+        usize,
+        crate::ui::diff_view::ReviewSectionState,
+        crate::ui::diff_view::FileBody,
+    ) {
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        let mut input = crate::ui::diff_view::ReviewSectionState::default();
+        let body = crate::ui::diff_view::append_file_preamble(
+            app,
+            &mut lines,
+            &mut line_idx,
+            0,
+            idx,
+            file,
+            60,
+            visible,
+            &mut input,
+        );
+        (lines.iter().map(row_text).collect(), line_idx, input, body)
+    }
+
+    fn code_idx(app: &App) -> usize {
+        app.diff_files.iter().position(|f| !f.is_binary).unwrap()
+    }
+
+    fn start_file_comment_edit(app: &mut App, idx: usize, editing: bool) {
+        app.input_mode = InputMode::Comment;
+        app.comment_is_file_level = true;
+        app.diff_state.current_file_idx = idx;
+        app.comment_buffer = "edited file comment".to_string();
+        app.comment_cursor = 6;
+        if editing {
+            let path = app.diff_files[idx].display_path().clone();
+            let id = app.session.files[&path].file_comments[0].id.clone();
+            app.editing_comment_id = Some(id);
+        }
+    }
+
+    #[test]
+    fn should_report_editor_geometry_for_edited_file_comment() {
+        let mut app = section_app();
+        let idx = code_idx(&app);
+        start_file_comment_edit(&mut app, idx, true);
+        let file = app.diff_files[idx].clone();
+        let (rows, _, input, _) = preamble_state(&app, &file, idx, (0, 1000));
+        let boxes = rows
+            .iter()
+            .filter(|r| r.contains("edited file comment"))
+            .count();
+        assert_eq!(
+            boxes, 1,
+            "only the replacing editor, no extra new-input box"
+        );
+        let (exp, info) = crate::ui::comment_panel::format_comment_input_lines(
+            &app.theme,
+            crate::ui::diff_view::comment_type_presentation(&app, &app.comment_type),
+            &app.comment_buffer,
+            app.comment_cursor,
+            None,
+            true,
+            59,
+            None,
+            app.supports_keyboard_enhancement,
+        );
+        assert_eq!(input.cursor_column, 1 + info.column);
+        assert!(input.cursor_column > 0);
+        let (start, n, replaced) = input.annotation_offset.unwrap();
+        assert_eq!(n, exp.len());
+        assert!(
+            replaced > 0,
+            "replaced rows of the old comment are reported"
+        );
+        assert_eq!(input.input_box_range, Some((start, start + exp.len() - 1)));
+    }
+
+    #[test]
+    fn should_report_geometry_for_new_file_comment_input() {
+        let mut app = section_app();
+        let idx = code_idx(&app);
+        start_file_comment_edit(&mut app, idx, false);
+        let file = app.diff_files[idx].clone();
+        let (rows, _, input, _) = preamble_state(&app, &file, idx, (0, 1000));
+        assert!(rows.iter().any(|r| r.contains("edited file comment")));
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("overall the file looks good"))
+        );
+        let (start, n, replaced) = input.annotation_offset.expect("new input annotation");
+        assert_eq!(replaced, 0);
+        assert!(n >= 3 && input.cursor_column >= 1);
+        assert_eq!(input.input_box_range, Some((start, start + n - 1)));
+    }
+
+    #[test]
+    fn should_show_vim_label_in_file_comment_input() {
+        let mut app = section_app();
+        let idx = code_idx(&app);
+        start_file_comment_edit(&mut app, idx, false);
+        app.comment_vim_enabled = true;
+        let file = app.diff_files[idx].clone();
+        let (rows, ..) = preamble_state(&app, &file, idx, (0, 1000));
+        assert!(rows.iter().any(|r| r.contains("INSERT")), "{rows:?}");
+        app.comment_vim_enabled = false;
+        let (rows, ..) = preamble_state(&app, &file, idx, (0, 1000));
+        assert!(!rows.iter().any(|r| r.contains("INSERT")));
+    }
+
+    #[test]
+    fn should_hide_file_comments_of_unselected_commits() {
+        let mut app = section_app();
+        let idx = code_idx(&app);
+        let path = app.diff_files[idx].display_path().clone();
+        app.session.get_file_mut(&path).unwrap().file_comments[0].commit_id =
+            Some("other".to_string());
+        let file = app.diff_files[idx].clone();
+        let (rows, ..) = preamble_state(&app, &file, idx, (0, 1000));
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("overall the file looks good"))
+        );
+        app.commit_selection_range = Some((0, 0));
+        let (rows, ..) = preamble_state(&app, &file, idx, (0, 1000));
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.contains("overall the file looks good"))
+        );
+    }
+
+    #[test]
+    fn should_cull_offscreen_file_comment_but_keep_its_rows() {
+        let app = section_app();
+        let idx = code_idx(&app);
+        let file = app.diff_files[idx].clone();
+        let (full, full_idx, ..) = preamble_state(&app, &file, idx, (0, 1000));
+        let (culled, culled_idx, ..) = preamble_state(&app, &file, idx, (500, 600));
+        assert!(
+            full.iter()
+                .any(|r| r.contains("overall the file looks good"))
+        );
+        assert!(
+            !culled
+                .iter()
+                .any(|r| r.contains("overall the file looks good"))
+        );
+        assert_eq!((culled.len(), culled_idx), (full.len(), full_idx));
+    }
+
+    #[test]
+    fn should_name_foreign_author_of_file_comment() {
+        let mut app = section_app();
+        let idx = code_idx(&app);
+        let path = app.diff_files[idx].display_path().clone();
+        let file = app.diff_files[idx].clone();
+        let (rows, ..) = preamble_state(&app, &file, idx, (0, 1000));
+        assert!(!rows.iter().any(|r| r.contains("bob-the-author")));
+        app.session.get_file_mut(&path).unwrap().file_comments[0].author =
+            "bob-the-author".to_string();
+        let (rows, ..) = preamble_state(&app, &file, idx, (0, 1000));
+        assert!(rows.iter().any(|r| r.contains("bob-the-author")));
+    }
+
+    #[test]
+    fn should_report_no_hunks_for_large_binary_or_empty_files() {
+        use crate::ui::diff_view::FileBody;
+        let app = section_app();
+        let idx = code_idx(&app);
+        let base = app.diff_files[idx].clone();
+        let (_, _, _, body) = preamble_state(&app, &base, idx, (0, 1000));
+        assert!(matches!(body, FileBody::Hunks));
+        for tweak in [
+            (|f: &mut DiffFile| f.is_too_large = true) as fn(&mut DiffFile),
+            |f| f.is_binary = true,
+            |f| f.hunks.clear(),
+        ] {
+            let mut f = base.clone();
+            tweak(&mut f);
+            let (rows, _, _, body) = preamble_state(&app, &f, idx, (0, 1000));
+            assert!(matches!(body, FileBody::NoHunks));
+            assert!(!rows.is_empty());
+        }
+    }
+
+    fn gap_rows(app: &App, file: &DiffFile, idx: usize, hunk_idx: usize) -> (usize, bool) {
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        let collapsed = crate::ui::diff_view::append_gap_and_hunk_header(
+            app,
+            &mut lines,
+            &mut line_idx,
+            0,
+            (0, 1000),
+            file,
+            idx,
+            hunk_idx,
+            |_, _, _| panic!("no expansions"),
+        );
+        (line_idx, collapsed)
+    }
+
+    #[test]
+    fn should_stub_top_of_file_gap_of_exactly_one_batch_with_expander_only() {
+        let mut app = section_app();
+        app.expanded_top.clear();
+        app.expanded_bottom.clear();
+        let idx = code_idx(&app);
+        let mut file = app.diff_files[idx].clone();
+        file.hunks[0].new_start = crate::app::GAP_EXPAND_BATCH as u32 + 1;
+        assert_eq!(gap_rows(&app, &file, idx, 0), (2, false));
+        file.hunks[0].new_start += 1;
+        assert_eq!(gap_rows(&app, &file, idx, 0), (3, false));
+    }
+
+    #[test]
+    fn should_stub_eof_gap_of_exactly_one_batch_with_expander_only() {
+        let mut app = section_app();
+        app.expanded_top.clear();
+        app.expanded_bottom.clear();
+        let idx = code_idx(&app);
+        let file = app.diff_files[idx].clone();
+        let last = file.hunks.last().unwrap();
+        let eof_start = last.new_start + last.new_count;
+        let rows = |app: &App| {
+            let mut lines = Vec::new();
+            let mut line_idx = 0;
+            crate::ui::diff_view::append_eof_gap(
+                app,
+                &mut lines,
+                &mut line_idx,
+                0,
+                (0, 1000),
+                &file,
+                idx,
+                |_, _, _| panic!("no expansions"),
+            );
+            line_idx
+        };
+        let mut app = app;
+        app.file_line_count_cache
+            .insert(idx, eof_start + crate::app::GAP_EXPAND_BATCH as u32 - 1);
+        assert_eq!(rows(&app), 1);
+        app.file_line_count_cache
+            .insert(idx, eof_start + crate::app::GAP_EXPAND_BATCH as u32);
+        assert_eq!(rows(&app), 2);
+    }
+
+    #[test]
+    fn should_not_render_eof_gap_for_deleted_files() {
+        let mut app = section_app();
+        let idx = code_idx(&app);
+        let mut file = app.diff_files[idx].clone();
+        let last = file.hunks.last().unwrap();
+        app.file_line_count_cache
+            .insert(idx, last.new_start + last.new_count + 50);
+        file.status = FileStatus::Deleted;
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        crate::ui::diff_view::append_eof_gap(
+            &app,
+            &mut lines,
+            &mut line_idx,
+            0,
+            (0, 1000),
+            &file,
+            idx,
+            |_, _, _| panic!("no expansions"),
+        );
+        assert_eq!((lines.len(), line_idx), (0, 0));
+        file.status = FileStatus::Modified;
+        crate::ui::diff_view::append_eof_gap(
+            &app,
+            &mut lines,
+            &mut line_idx,
+            0,
+            (0, 1000),
+            &file,
+            idx,
+            |_, _, _| panic!("no expansions"),
+        );
+        assert!(line_idx > 0);
+    }
+
+    #[test]
+    fn should_collapse_reviewed_hunk_and_drop_gap_next_to_it() {
+        let mut app = section_app();
+        app.expanded_top.clear();
+        app.expanded_bottom.clear();
+        let idx = code_idx(&app);
+        let file = app.diff_files[idx].clone();
+        let path = file.display_path().clone();
+        // not reviewed: gap + header, body kept
+        let (rows, collapsed) = gap_rows(&app, &file, idx, 1);
+        assert!(rows > 1 && !collapsed);
+        // review hunk 0: hunk 1's gap is dropped, header only, hunk 0 collapsed
+        let key = file.hunk_review_key(0).unwrap();
+        app.session
+            .get_file_mut(&path)
+            .unwrap()
+            .reviewed_hunks
+            .insert(key);
+        assert_eq!(gap_rows(&app, &file, idx, 1), (1, false));
+        assert!(gap_rows(&app, &file, idx, 0).1, "reviewed hunk collapses");
+    }
 }
