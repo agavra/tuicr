@@ -10,7 +10,7 @@
 #
 # Environment: TUICR_BIN (required); E2E_ROOT (scratch, default a fresh mktemp dir), E2E_OUT (logs, screenshots,
 # results.tsv; default $E2E_ROOT/out), E2E_SOCKET (tmux socket, default unique), E2E_SCENARIO_TIMEOUT (s, default 120),
-# E2E_SCENARIO_DIR (default e2e/scenarios), E2E_KEEP_ROOT=1 (keep scratch dirs of passing scenarios), E2E_REQUIRE_HG=1.
+# E2E_SCENARIO_DIR (default e2e/scenarios; a scenario is <area>/<behaviour>.sh or .py, never both), E2E_KEEP_ROOT=1 (keep scratch dirs of passing scenarios), E2E_REQUIRE_HG=1.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 
@@ -21,13 +21,16 @@ for a in "$@"; do case $a in -l|--list) list_only=1;; *) filters+=("$a");; esac;
 scen_dir=${E2E_SCENARIO_DIR:-$here/scenarios}
 selected=()
 while IFS= read -r s; do
-  name=${s#"$scen_dir"/}; name=${name%.sh}
+  name=${s#"$scen_dir"/}; name=${name%.sh}; name=${name%.py}
   if [ ${#filters[@]} -gt 0 ]; then
     ok=; for f in "${filters[@]}"; do [[ "$name" == *"$f"* ]] && ok=1; done
     [ -n "$ok" ] || continue
   fi
   selected+=("$name")
-done < <(find "$scen_dir" -name '*.sh' | sort)
+done < <(find "$scen_dir" \( -name '*.sh' -o -name '*.py' \) | sort)
+# a behaviour lives in exactly one language: <area>/<behaviour>.sh and .py side by side is an error
+dups=$(printf '%s\n' "${selected[@]:-}" | sort | uniq -d)
+[ -z "$dups" ] || { echo "e2e: scenario in both bash and python: $dups" >&2; exit 2; }
 
 if [ ${#selected[@]} -eq 0 ]; then echo "e2e: no scenario matches '${filters[*]:-}' under $scen_dir" >&2; exit 2; fi
 if [ -n "$list_only" ]; then printf '%s\n' "${selected[@]}"; exit 0; fi
@@ -35,6 +38,7 @@ if [ -n "$list_only" ]; then printf '%s\n' "${selected[@]}"; exit 0; fi
 : "${TUICR_BIN:?set TUICR_BIN to the tuicr binary}"
 [ -x "$TUICR_BIN" ] || { echo "e2e: TUICR_BIN=$TUICR_BIN is not an executable file" >&2; exit 2; }
 export TUICR_BIN; TUICR_BIN="$(cd "$(dirname "$TUICR_BIN")" && pwd)/$(basename "$TUICR_BIN")"
+export PYTHONPATH="$here/lib${PYTHONPATH:+:$PYTHONPATH}"   # python scenarios: `from e2e import scenario`
 own_root=
 if [ -z "${E2E_ROOT:-}" ]; then E2E_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/tuicr-e2e.XXXXXX"); own_root=1; fi
 export E2E_ROOT E2E_SOCKET="${E2E_SOCKET:-tuicr-e2e-$$}"
@@ -55,7 +59,8 @@ pass=0; fail=0; skip=0; qpass=0; qfail=0
 for name in "${selected[@]}"; do
   mkdir -p "$E2E_OUT/$(dirname "$name")"
   log="$E2E_OUT/$name.log"; start=$(date +%s)
-  E2E_SCENARIO="$scen_dir/$name.sh" python3 "$here/lib/run_scenario.py" "$timeout_s" bash "$scen_dir/$name.sh" >"$log" 2>&1
+  if [ -f "$scen_dir/$name.py" ]; then script=$scen_dir/$name.py; interp=python3; else script=$scen_dir/$name.sh; interp=bash; fi
+  E2E_SCENARIO="$script" python3 "$here/lib/run_scenario.py" "$timeout_s" "$interp" "$script" >"$log" 2>&1
   rc=$?; secs=$(( $(date +%s) - start ))
   if reason=$(quarantined "$name"); then
     if [ $rc -eq 0 ]; then res=QPASS; qpass=$((qpass+1)); else res=QFAIL; qfail=$((qfail+1)); fi

@@ -59,7 +59,7 @@ jobs:
           git fetch --no-tags origin site:refs/remotes/origin/site || true
       - run: cargo build --locked --release
       - name: Harness self-test
-        run: e2e/selftest/run.sh
+        run: e2e/selftest/run.py
       - name: E2E
         env:
           TUICR_BIN: target/release/tuicr
