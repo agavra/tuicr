@@ -234,7 +234,7 @@ pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
 /// For hot paths such as [`crate::slug::resolve_owner_repo`], which runs on
 /// every session save, and only where an unrecognized remote has a usable
 /// fallback. Prefer [`parse_any_remote_url`] everywhere else: it recognizes
-/// more remotes, at the cost of a `glab config get host` spawn and up to three
+/// more remotes, at the cost of `glab config get` spawns and up to three
 /// `~/.ssh/config` reads per call.
 ///
 /// GitHub is excluded on purpose. Its parser accepts any host and reads the

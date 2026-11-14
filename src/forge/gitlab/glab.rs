@@ -963,9 +963,23 @@ enum HostLookup {
 /// (`ssh://git@gitlab.com/owner/repo.git`). Returns `Some` when the host
 /// looks like GitLab — either its name contains "gitlab", or it has been
 /// configured as a GitLab host in `glab`'s config file (self-hosted
-/// instances such as `git.example.com`).
+/// instances such as `git.example.com`). A host that is the `ssh_host` of
+/// `glab`'s default host is replaced by that host.
 pub fn parse_gitlab_remote_url(remote_url: &str) -> Option<ForgeRepository> {
-    parse_gitlab_remote(remote_url, HostLookup::WithConfig)
+    parse_gitlab_remote_url_with(remote_url, &SystemGlabRunner)
+}
+
+/// `runner` serves only the `ssh_host` mapping, so tests can fake it; host
+/// recognition still asks the real `glab`.
+fn parse_gitlab_remote_url_with(
+    remote_url: &str,
+    runner: &impl GlabCommandRunner,
+) -> Option<ForgeRepository> {
+    let mut repo = parse_gitlab_remote(remote_url, HostLookup::WithConfig)?;
+    if let Some(host) = glab_host_for_ssh_host(&repo.host, runner) {
+        repo.host = host;
+    }
+    Some(repo)
 }
 
 /// Like [`parse_gitlab_remote_url`], but recognizes GitLab by hostname alone:
@@ -1027,7 +1041,7 @@ fn is_gitlab_host(host: &str, lookup: HostLookup) -> bool {
         return false;
     }
 
-    glab_default_host().is_some_and(|known| known.eq_ignore_ascii_case(host))
+    glab_default_host(&SystemGlabRunner).is_some_and(|known| known.eq_ignore_ascii_case(host))
 }
 
 /// Read the default host configured in `glab` via `glab config get host`.
@@ -1041,9 +1055,30 @@ fn is_gitlab_host(host: &str, lookup: HostLookup) -> bool {
 /// claimed as GitLab at all. The path it may carry is deliberately ignored:
 /// `glab` prefixes its API URLs from the `subfolder` key alone, so inferring an
 /// install subfolder from this value would break requests that work today.
-fn glab_default_host() -> Option<String> {
-    let output = run_command_output("glab", None, ["config", "get", "host"]).ok()?;
+fn glab_default_host(runner: &impl GlabCommandRunner) -> Option<String> {
+    let output = runner
+        .run(&["config", "get", "host"].map(String::from))
+        .ok()?;
     instance::parse_configured_hostname(&output)
+}
+
+/// The default `glab` host when `host` is that host's `ssh_host`, e.g.
+/// `gitlab.example.org` for a `gitlabssh.example.org` remote. That is the host
+/// `glab` must be given: it reads the host's `api_host` from its config itself.
+/// Hosts other than the default one are not checked.
+fn glab_host_for_ssh_host(host: &str, runner: &impl GlabCommandRunner) -> Option<String> {
+    // gitlab.com serves its own API, and a host without "gitlab" in its name
+    // was only recognized by being the default host.
+    if host.eq_ignore_ascii_case(DEFAULT_GITLAB_HOST) || !host.contains("gitlab") {
+        return None;
+    }
+    let default_host = glab_default_host(runner)?;
+    if default_host.eq_ignore_ascii_case(host) {
+        return None;
+    }
+    let args = ["config", "get", "ssh_host", "--host", default_host.as_str()].map(String::from);
+    let ssh_host = instance::parse_configured_hostname(&runner.run(&args).ok()?)?;
+    ssh_host.eq_ignore_ascii_case(host).then_some(default_host)
 }
 
 fn parse_numeric_target(target: &str) -> Option<PullRequestTarget> {
@@ -2963,6 +2998,94 @@ mod tests {
         assert_eq!(
             normalize_ssh_transport_host("gitlab.example.com"),
             "gitlab.example.com"
+        );
+    }
+
+    #[test]
+    fn maps_glab_ssh_host_back_to_the_default_host() {
+        // #748: the remote names the default host's SSH endpoint, not its API.
+        let runner = RecordingRunner::new_with_responses(vec![
+            "gitlab.uk.mycomp.org\n".to_string(),
+            "gitlabssh.uk.mycomp.org\n".to_string(),
+        ]);
+        assert_eq!(
+            glab_host_for_ssh_host("gitlabssh.uk.mycomp.org", &runner).as_deref(),
+            Some("gitlab.uk.mycomp.org")
+        );
+        let calls = runner.calls.borrow();
+        assert_eq!(calls[0].0, vec!["config", "get", "host"]);
+        assert_eq!(
+            calls[1].0,
+            vec![
+                "config",
+                "get",
+                "ssh_host",
+                "--host",
+                "gitlab.uk.mycomp.org"
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_an_ssh_host_remote_as_the_default_host() {
+        // The host contains "gitlab", so only the mapping asks `glab`.
+        let runner = RecordingRunner::new_with_responses(vec![
+            "gitlab.uk.mycomp.org\n".to_string(),
+            "gitlabssh.uk.mycomp.org\n".to_string(),
+        ]);
+        let repo = parse_gitlab_remote_url_with(
+            "ssh://git@gitlabssh.uk.mycomp.org:30001/group/my-project.git",
+            &runner,
+        )
+        .unwrap();
+        assert_eq!(
+            repo,
+            ForgeRepository::gitlab("gitlab.uk.mycomp.org", "group", "my-project")
+        );
+        assert_eq!(runner.calls.borrow().len(), 2);
+    }
+
+    #[test]
+    fn keeps_hosts_that_are_not_the_default_hosts_ssh_host() {
+        for ssh_host in ["", "ssh.gitlab.uk.mycomp.org"] {
+            let runner = RecordingRunner::new_with_responses(vec![
+                "gitlab.uk.mycomp.org".to_string(),
+                ssh_host.to_string(),
+            ]);
+            assert_eq!(
+                glab_host_for_ssh_host("gitlabssh.uk.mycomp.org", &runner),
+                None
+            );
+        }
+        // No default host, or the remote is the default host: no second lookup.
+        for (host, default_host) in [
+            ("gitlabssh.uk.mycomp.org", ""),
+            ("gitlab.uk.mycomp.org", "gitlab.uk.mycomp.org"),
+        ] {
+            let runner = RecordingRunner::new_with_responses(vec![default_host.to_string()]);
+            assert_eq!(glab_host_for_ssh_host(host, &runner), None);
+            assert_eq!(runner.calls.borrow().len(), 1);
+        }
+    }
+
+    #[test]
+    fn skips_glab_for_gitlab_com_and_custom_domains() {
+        for host in ["gitlab.com", "git.example.com"] {
+            let runner = RecordingRunner::new_with_responses(Vec::new());
+            assert_eq!(glab_host_for_ssh_host(host, &runner), None);
+            assert!(runner.calls.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn hostname_only_parse_keeps_the_remote_host() {
+        let repo = parse_gitlab_remote_url_by_hostname(
+            "ssh://git@gitlabssh.uk.mycomp.org:30001/group/my-project.git",
+        )
+        .unwrap();
+        assert_eq!(
+            repo,
+            ForgeRepository::gitlab("gitlabssh.uk.mycomp.org", "group", "my-project")
         );
     }
 
