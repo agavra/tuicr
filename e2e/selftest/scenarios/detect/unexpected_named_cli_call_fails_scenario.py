@@ -2,6 +2,8 @@
 # Runner self-test (expect FAIL): s.cli_result(name=...) logs to its own forge log; an unknown call there must fail too.
 from e2e import Scenario, scenario
 
+EXPECTED = "FAIL"  # asserted by e2e/selftest/run.py
+
 
 @scenario
 def main(s: Scenario) -> None:

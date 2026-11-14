@@ -18,7 +18,20 @@ import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .core import E2E_DIR, OUT, ROOT, SOCKET, TIMEOUT, TOOL_PATH, UNEXPECTED_MARK, Failure, NoPane, child_env, grep
+from .core import (
+    E2E_DIR,
+    OUT,
+    ROOT,
+    SETTLE_QUIET,
+    SOCKET,
+    TIMEOUT,
+    TOOL_PATH,
+    UNEXPECTED_MARK,
+    Failure,
+    NoPane,
+    child_env,
+    grep,
+)
 from .waits import polls
 
 if TYPE_CHECKING:
@@ -243,7 +256,7 @@ class Tui:
             raise Failure(f"{message} (no /{pattern}/ on screen)", scr)
         return self
 
-    def settle(self, quiet: float = 0.25, timeout: float = TIMEOUT) -> Tui:
+    def settle(self, quiet: float = SETTLE_QUIET, timeout: float = TIMEOUT) -> Tui:
         """Wait until the screen has not changed for `quiet` seconds (polls every 50 ms). For "the UI finished reacting"
         when nothing specific is to appear; prefer wait_for."""
         need, stable, prev = int(quiet * 20 + 0.5), 0, self.screen()

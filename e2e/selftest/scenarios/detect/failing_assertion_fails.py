@@ -2,6 +2,8 @@
 # Runner self-test (expect FAIL): text that is not on screen is a failure, with the screen in the log.
 from e2e import Scenario, scenario
 
+EXPECTED = "FAIL"  # asserted by e2e/selftest/run.py
+
 
 @scenario
 def main(s: Scenario) -> None:

@@ -21,15 +21,15 @@ cargo fmt
 ## Testing
 
 `cargo test` runs the unit and integration tests. User-visible bug fixes and behaviour changes also need an
-end-to-end scenario under `e2e/scenarios/<area>/<behaviour>.sh` that fails without the change:
+end-to-end scenario under `e2e/scenarios/<area>/<behaviour>.py` that fails without the change:
 
 ```bash
 cargo build --release
-TUICR_BIN=target/release/tuicr e2e/run.sh            # or filter: e2e/run.sh pr/submit
+TUICR_BIN=target/release/tuicr uv run --python 3.12 e2e/run.py   # or filter: ... e2e/run.py pr/submit
 ```
 
-Prerequisites: the Rust toolchain, python3 >= 3.9, tmux, [uv](https://docs.astral.sh/uv/) (provides `uvx` for the
-Python checks below), plus `hg` and `jj` for their scenarios (they skip without them). Forges are
+Prerequisites: the Rust toolchain, tmux, [uv](https://docs.astral.sh/uv/) (provides Python >= 3.11 for the e2e runner,
+stdlib only, and `uvx` for the Python checks below), plus `hg` and `jj` for their scenarios (they skip without them). Forges are
 faked; no credentials or network needed. CI runs the suite on Linux and macOS. See [e2e/README.md](e2e/README.md)
 and [e2e/COVERAGE.md](e2e/COVERAGE.md).
 
@@ -40,9 +40,9 @@ All Python in the repo (the e2e suite, its fake forges, `scripts/`) is linted, f
 versions are pinned to match CI (`RUFF_VERSION` / `TY_VERSION` in `.github/workflows/ci.yml`; bump both together):
 
 ```bash
-uvx ruff@0.15.16 format --check --config e2e/pyproject.toml e2e scripts/demo   # drop --check to rewrite
-uvx ruff@0.15.16 check --config e2e/pyproject.toml e2e scripts/demo           # add --fix for safe autofixes
-(cd e2e && uvx ty@0.0.44 check . ../scripts/demo)
+uvx ruff@0.15.16 format --check --config e2e/pyproject.toml e2e e2e/bin/* scripts/demo   # drop --check to rewrite
+uvx ruff@0.15.16 check --config e2e/pyproject.toml e2e e2e/bin/* scripts/demo           # add --fix for safe autofixes
+(cd e2e && uvx ty@0.0.44 check . bin/* ../scripts/demo)
 ```
 
 CI runs `format --check` in the Format job and `check` plus `ty check` in the Clippy job.

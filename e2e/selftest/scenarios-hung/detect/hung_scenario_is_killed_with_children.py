@@ -5,6 +5,8 @@ import subprocess
 
 from e2e import ROOT, Scenario, scenario
 
+EXPECTED = "FAIL"  # asserted by e2e/selftest/run.py
+
 
 @scenario
 def main(s: Scenario) -> None:

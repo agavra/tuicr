@@ -5,6 +5,8 @@ from e2e.tui import Tui
 
 from e2e import NoPane, Scenario, must_fail, scenario
 
+EXPECTED = "PASS"  # asserted by e2e/selftest/run.py
+
 
 @scenario
 def main(s: Scenario) -> None:

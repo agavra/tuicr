@@ -1,7 +1,7 @@
 """Run environment, isolation, failure reporting and composed cleanup.
 
 A scenario is a script whose body is a function decorated with @scenario. The decorator owns the process exit status:
-0 pass, 1 fail, 77 skip, 124 timeout (set by run_scenario.py), 130/143 interrupted.
+0 pass, 1 fail, 77 skip, 124 timeout (set by run.py), 130/143 interrupted.
 
 Importing this module sets up the harness environment (git/hg/locale isolation, scratch dirs), so it needs TUICR_BIN.
 """
@@ -33,6 +33,7 @@ TUICR_BIN = os.environ.get("TUICR_BIN") or sys.exit("set TUICR_BIN to the tuicr 
 COLS = int(os.environ.get("E2E_COLS", "160"))
 ROWS = int(os.environ.get("E2E_ROWS", "45"))
 TIMEOUT = float(os.environ.get("E2E_TIMEOUT", "10"))
+SETTLE_QUIET = float(os.environ.get("E2E_SETTLE_QUIET", "0.25"))  # default in e2e/pyproject.toml, set by run.py
 UNEXPECTED_MARK = '"note": "UNEXPECTED'
 
 
