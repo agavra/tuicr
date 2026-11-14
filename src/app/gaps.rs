@@ -209,11 +209,7 @@ impl App {
     }
 
     /// Look up an expanded context line by sequential index across top + bottom.
-    pub(in crate::app) fn get_expanded_line(
-        &self,
-        gap_id: &GapId,
-        idx: usize,
-    ) -> Option<&DiffLine> {
+    pub(crate) fn get_expanded_line(&self, gap_id: &GapId, idx: usize) -> Option<&DiffLine> {
         let top = self.expanded_top.get(gap_id);
         let top_len = top.map_or(0, |v| v.len());
         if idx < top_len {
@@ -221,6 +217,24 @@ impl App {
         } else {
             self.expanded_bottom.get(gap_id)?.get(idx - top_len)
         }
+    }
+
+    /// True when the gap's controls are not on screen: its file is collapsed
+    /// as reviewed, or a reviewed hunk beside it is. Jumping must not reveal
+    /// context there.
+    pub(in crate::app) fn gap_is_hidden(&self, gap_id: &GapId) -> bool {
+        if self.should_collapse_file(gap_id.file_idx) {
+            return true;
+        }
+        let Some(file) = self.diff_files.get(gap_id.file_idx) else {
+            return true;
+        };
+        if gap_id.hunk_idx >= file.hunks.len() {
+            // EOF gap: hidden along with the last hunk.
+            return gap_id.hunk_idx > 0
+                && self.should_collapse_hunk(gap_id.file_idx, gap_id.hunk_idx - 1);
+        }
+        !self.should_render_gap_before_hunk(gap_id.file_idx, gap_id.hunk_idx)
     }
 
     /// Expand a gap in the given direction.
@@ -231,6 +245,9 @@ impl App {
         direction: ExpandDirection,
         limit: Option<usize>,
     ) -> Result<()> {
+        if limit == Some(0) {
+            return Ok(());
+        }
         // Ensure file line count is cached for EOF gaps
         self.ensure_file_line_count_cached(gap_id.file_idx);
 
@@ -287,8 +304,10 @@ impl App {
 
         match direction {
             ExpandDirection::Down => {
-                let n = limit.unwrap_or(usize::MAX) as u32;
-                let fetch_end = inner_start.saturating_add(n - 1).min(inner_end);
+                let n = limit.map_or(u32::MAX, |l| u32::try_from(l).unwrap_or(u32::MAX));
+                let fetch_end = inner_start
+                    .saturating_add(n.saturating_sub(1))
+                    .min(inner_end);
                 let new_lines = fetch(inner_start, fetch_end)?;
                 self.expanded_top
                     .entry(gap_id.clone())
@@ -296,8 +315,10 @@ impl App {
                     .extend(new_lines);
             }
             ExpandDirection::Up => {
-                let n = limit.unwrap_or(usize::MAX) as u32;
-                let fetch_start = inner_end.saturating_sub(n - 1).max(inner_start);
+                let n = limit.map_or(u32::MAX, |l| u32::try_from(l).unwrap_or(u32::MAX));
+                let fetch_start = inner_end
+                    .saturating_sub(n.saturating_sub(1))
+                    .max(inner_start);
                 let new_lines = fetch(fetch_start, inner_end)?;
                 // Prepend: new lines go before existing bottom lines
                 let existing = self.expanded_bottom.remove(&gap_id).unwrap_or_default();
@@ -373,7 +394,7 @@ impl App {
         self.file_line_count_cache.clear();
     }
 
-    pub(in crate::app) fn eof_gap_enabled(&self) -> bool {
+    pub(crate) fn eof_gap_enabled(&self) -> bool {
         matches!(
             self.diff_source,
             DiffSource::WorkingTree

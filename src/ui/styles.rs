@@ -40,6 +40,22 @@ pub fn diff_syntax_bg(theme: &Theme, origin: LineOrigin) -> Option<Color> {
     }
 }
 
+/// Style of the change bar (`▌`) and the gap after it. A syntax-colored line
+/// sits on `syntax_add_bg`/`syntax_del_bg`, so its bar does too and the row
+/// keeps one background; an uncolored line keeps `diff_add_bg`/`diff_del_bg`.
+pub fn diff_marker_style(theme: &Theme, origin: LineOrigin, highlighted: bool) -> Style {
+    let style = match origin {
+        LineOrigin::Addition => diff_add_style(theme),
+        LineOrigin::Deletion => diff_del_style(theme),
+        LineOrigin::Context => return diff_context_style(theme),
+    };
+    if highlighted {
+        patch_highlighted_span_bg(style, theme, origin)
+    } else {
+        style
+    }
+}
+
 /// Apply `diff_syntax_bg` to `style`, leaving it untouched when there is no
 /// live override for `origin` (context lines).
 pub fn patch_highlighted_span_bg(style: Style, theme: &Theme, origin: LineOrigin) -> Style {
@@ -113,8 +129,16 @@ pub fn file_status_style(theme: &Theme, status: char) -> Style {
     Style::default().fg(color)
 }
 
+/// Override only the marker foreground, preserving the caller's legacy style.
+pub fn selection_marker_style(theme: &Theme, fallback: Style) -> Style {
+    match theme.selection_marker {
+        Some(color) => fallback.fg(color),
+        None => fallback,
+    }
+}
+
 pub fn current_line_indicator_style(theme: &Theme) -> Style {
-    Style::default().fg(theme.border_focused)
+    selection_marker_style(theme, Style::default().fg(theme.border_focused))
 }
 
 pub fn hash_style(theme: &Theme) -> Style {
@@ -177,15 +201,6 @@ pub fn author_accent(viewer: &str, author: &str) -> Option<Color> {
     }
 }
 
-/// Border style for a comment box, tinted by author when the comment is not
-/// from the current viewer. Falls back to the neutral header style otherwise.
-pub fn comment_border_style_for_author(theme: &Theme, viewer: &str, author: &str) -> Style {
-    match author_accent(viewer, author) {
-        Some(color) => Style::default().fg(color).add_modifier(Modifier::BOLD),
-        None => file_header_style(theme),
-    }
-}
-
 pub fn visual_selection_style(theme: &Theme) -> Style {
     Style::default().bg(theme.bg_highlight)
 }
@@ -199,7 +214,7 @@ pub fn help_indicator_style(theme: &Theme) -> Style {
 }
 
 pub fn range_bar_style(theme: &Theme) -> Style {
-    Style::default().fg(theme.border_focused)
+    current_line_indicator_style(theme)
 }
 
 pub fn error_inline_style(theme: &Theme) -> Style {
@@ -210,4 +225,73 @@ pub fn error_inline_style(theme: &Theme) -> Style {
 
 pub fn pseudo_commit_tag_style(theme: &Theme) -> Style {
     Style::default().fg(theme.file_modified)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A syntax-colored line's change bar takes the syntax background; an
+    /// uncolored line's keeps the plain diff background.
+    #[test]
+    fn diff_marker_style_follows_the_line_background() {
+        let theme = Theme::catppuccin_macchiato();
+
+        let colored = diff_marker_style(&theme, LineOrigin::Addition, true);
+        assert_eq!(colored.bg, Some(theme.syntax_add_bg));
+        assert_eq!(colored.fg, Some(theme.diff_add));
+        assert_eq!(
+            diff_marker_style(&theme, LineOrigin::Deletion, true).bg,
+            Some(theme.syntax_del_bg)
+        );
+        assert_eq!(
+            diff_marker_style(&theme, LineOrigin::Addition, false),
+            diff_add_style(&theme)
+        );
+        assert_eq!(
+            diff_marker_style(&theme, LineOrigin::Context, true),
+            diff_context_style(&theme)
+        );
+    }
+
+    #[test]
+    fn selection_marker_changes_only_marker_foregrounds() {
+        let mut theme = Theme::github_dark();
+        let legacy_pointer = selected_style(&theme);
+        assert_eq!(
+            selection_marker_style(&theme, legacy_pointer),
+            legacy_pointer
+        );
+        assert_eq!(
+            current_line_indicator_style(&theme).fg,
+            Some(theme.border_focused)
+        );
+        assert_eq!(range_bar_style(&theme).fg, Some(theme.border_focused));
+        let unchanged = (
+            border_style(&theme, true),
+            hash_style(&theme),
+            selected_style(&theme),
+            visual_selection_style(&theme),
+        );
+
+        theme.selection_marker = Some(Color::Rgb(36, 45, 56));
+        assert_eq!(
+            current_line_indicator_style(&theme).fg,
+            theme.selection_marker
+        );
+        assert_eq!(range_bar_style(&theme).fg, theme.selection_marker);
+        assert_eq!(
+            selection_marker_style(&theme, legacy_pointer).bg,
+            legacy_pointer.bg
+        );
+        assert_eq!(
+            unchanged,
+            (
+                border_style(&theme, true),
+                hash_style(&theme),
+                selected_style(&theme),
+                visual_selection_style(&theme)
+            )
+        );
+    }
 }

@@ -102,6 +102,8 @@ surfaces Gitea's message rather than reporting success.
 
 ## Limitations
 
+- Gitea collections (PRs, files, reviews) are read up to 200 pages and beyond that the call fails with an explicit error rather than returning a partial list.
+
 **Multi-line comments collapse to a single line.** Gitea's review API takes one
 line number per comment and has no range form. A comment on a visual selection
 posts on the selection's last line, which is where GitHub renders its marker
@@ -117,11 +119,14 @@ a cross-repository search endpoint that returns issues rather than pulls, so
 those rows carry no branch names and the selector's branch-name filter does not
 match against them.
 
-**Commit-range diffs on exotic filenames need a local clone.** Gitea's compare
-endpoint returns a raw diff with no structured file list, so tuicr reads file
-paths out of the diff headers. Git quotes paths containing control characters or
-non-ASCII bytes, which tuicr does not unquote; run tuicr from a clone and the
-range diff is computed locally instead.
+**Commit-range diffs need a local clone.** Gitea's compare endpoint returns a raw
+diff with no structured file list, and tuicr never trusts patch headers for file
+paths. Reviewing a commit range therefore runs `git diff` in a clone whose remote
+matches the PR's repository. If either commit is missing, tuicr runs
+`git fetch --no-tags <remote> refs/pull/<n>/head` first; the result lands in
+`FETCH_HEAD` only, so no branch, tag or tracking ref moves. Outside a clone, or if
+the commits are still absent afterwards (for example after a force-push), the range
+fails with an error asking you to fetch them.
 
 ## Troubleshooting
 

@@ -18,7 +18,7 @@ use ratatui::text::{Line, Span};
 
 use crate::app::{AnnotatedLine, App, DiffViewMode, WrapStyle, sbs_overhead};
 use crate::model::LineSide;
-use crate::ui::text_utils::wrap_spans;
+use crate::ui::text_utils::{wrap_spans, wrap_spans_lead};
 use crate::ui::{comment_panel, diff_view};
 
 pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
@@ -100,7 +100,10 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
             gap_id,
             line_idx: li,
         } if app.diff_view_mode == DiffViewMode::SideBySide => {
-            let content = expanded_line_content(app, gap_id, *li).unwrap_or_default();
+            let content = app
+                .get_expanded_line(gap_id, *li)
+                .map(|dl| dl.content.clone())
+                .unwrap_or_default();
             let content_width = sbs_content_width(app, viewport_width);
             wrap_side_max(&content, &content, content_width)
         }
@@ -116,6 +119,15 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
                 app.content_for_side(idx, LineSide::New).unwrap_or_default(),
                 content_width,
             )
+        }
+
+        AnnotatedLine::DiffLine { .. } | AnnotatedLine::ExpandedContext { .. }
+            if app.diff_view_mode == DiffViewMode::Unified =>
+        {
+            // Flow: the row wraps from the left edge, but the gutter is not content.
+            let text = full_row_text(app, idx, annotation);
+            let lead = crate::app::unified_gutter(app.lineno_width()) as usize;
+            wrap_spans_lead(&[Span::raw(text)], lead, viewport_width).len()
         }
 
         _ => {
@@ -190,19 +202,6 @@ fn sbs_row_contents(
     (get(del_line_idx), get(add_line_idx))
 }
 
-fn expanded_line_content(app: &App, gap_id: &crate::app::GapId, idx: usize) -> Option<String> {
-    let top = app.expanded_top.get(gap_id);
-    let top_len = top.map_or(0, |v| v.len());
-    if idx < top_len {
-        top?.get(idx).map(|dl| dl.content.clone())
-    } else {
-        app.expanded_bottom
-            .get(gap_id)?
-            .get(idx - top_len)
-            .map(|dl| dl.content.clone())
-    }
-}
-
 /// Reconstruct the concatenated text of a rendered logical line by calling
 /// the same text builders the renderer uses. Used for the "wrap at full
 /// inner width" branch: non-content rows, flow-wrapped unified content rows,
@@ -232,20 +231,8 @@ fn full_row_text(app: &App, idx: usize, annotation: &AnnotatedLine) -> String {
         // Reconstruct the concatenated text of the pre-built PR-info line so
         // the outer wrap pass counts the same rows the renderer emits.
         AnnotatedLine::PrInfoLine { line_idx: pr_line } => {
-            let body: String = app
-                .pr_info
-                .as_ref()
-                .and_then(|info| {
-                    crate::ui::pr_info_panel::build_pr_info_lines(
-                        info,
-                        crate::ui::pr_info_panel::pr_info_content_width(
-                            app.diff_state.viewport_width,
-                        ),
-                        &app.theme,
-                    )
-                    .into_iter()
-                    .nth(*pr_line)
-                })
+            let body: String = crate::ui::pr_info_panel::pr_info_display_lines(app)
+                .get(*pr_line)
                 .map(|line| {
                     line.spans
                         .iter()
@@ -308,7 +295,7 @@ fn full_row_text(app: &App, idx: usize, annotation: &AnnotatedLine) -> String {
 
         AnnotatedLine::ExpandedContext { gap_id, line_idx } => {
             // Unified branch; SBS is handled by the outer match.
-            let dl = expanded_diff_line(app, gap_id, *line_idx);
+            let dl = app.get_expanded_line(gap_id, *line_idx).cloned();
             let (lineno, content) = match dl {
                 Some(dl) => (
                     diff_view::expanded_context_lineno_field(
@@ -390,7 +377,10 @@ fn full_row_text(app: &App, idx: usize, annotation: &AnnotatedLine) -> String {
                 let path = f.display_path().display().to_string();
                 format!(
                     "{indicator}{}",
-                    diff_view::spacing_next_file_hint_text(&path)
+                    diff_view::spacing_next_file_hint_text(
+                        &path,
+                        app.supports_keyboard_enhancement
+                    )
                 )
             } else {
                 indicator.to_string()
@@ -404,20 +394,6 @@ fn full_row_text(app: &App, idx: usize, annotation: &AnnotatedLine) -> String {
         | AnnotatedLine::LineComment { .. }
         | AnnotatedLine::IssueComment { .. }
         | AnnotatedLine::RemoteThreadLine { .. } => indicator.to_string(),
-    }
-}
-
-fn expanded_diff_line(
-    app: &App,
-    gap_id: &crate::app::GapId,
-    idx: usize,
-) -> Option<crate::model::DiffLine> {
-    let top = app.expanded_top.get(gap_id);
-    let top_len = top.map_or(0, |v| v.len());
-    if idx < top_len {
-        top?.get(idx).cloned()
-    } else {
-        app.expanded_bottom.get(gap_id)?.get(idx - top_len).cloned()
     }
 }
 
@@ -480,6 +456,7 @@ mod tests {
                     content: format!("ctx line {n} {}", "c".repeat(70)),
                     old_lineno: Some(n),
                     new_lineno: Some(n),
+                    raw_content: None,
                     highlighted_spans: None,
                 })
                 .collect())
@@ -516,6 +493,7 @@ mod tests {
                     content: "context short".to_string(),
                     old_lineno: Some(30),
                     new_lineno: Some(30),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
                 DiffLine {
@@ -523,6 +501,7 @@ mod tests {
                     content: long_left,
                     old_lineno: Some(31),
                     new_lineno: None,
+                    raw_content: None,
                     highlighted_spans: None,
                 },
                 DiffLine {
@@ -530,6 +509,7 @@ mod tests {
                     content: long_right,
                     old_lineno: None,
                     new_lineno: Some(31),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
                 DiffLine {
@@ -537,6 +517,7 @@ mod tests {
                     content: "y".to_string(),
                     old_lineno: None,
                     new_lineno: Some(32),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
             ],
@@ -552,6 +533,7 @@ mod tests {
                 content: "tail".to_string(),
                 old_lineno: Some(100),
                 new_lineno: Some(100),
+                raw_content: None,
                 highlighted_spans: None,
             }],
             old_start: 100,
@@ -663,9 +645,8 @@ mod tests {
                 id: "comment-1".to_string(),
                 author: Some("reviewer".to_string()),
                 body: "a long inline review comment ".repeat(12),
-                created_at: None,
-                in_reply_to: None,
                 url: "https://example.com/comment".to_string(),
+                ..Default::default()
             }],
         }];
         // `sort_files_by_directory` reorders diff_files by parent directory,
@@ -824,6 +805,507 @@ mod tests {
                 })
                 .any(|(idx, _)| annotation_row_height(app, idx) > 1);
             assert!(wrapped, "expected at least one remote {label} row to wrap");
+        }
+    }
+
+    fn eof_gap_app(mode: DiffViewMode, bottom: bool) -> (App, GapId) {
+        let mut app = make_app();
+        let idx = app.diff_files.iter().position(|f| !f.is_binary).unwrap();
+        let eof = GapId {
+            file_idx: idx,
+            hunk_idx: app.diff_files[idx].hunks.len(),
+        };
+        let expanded: Vec<DiffLine> = (101..10101)
+            .map(|n| DiffLine {
+                origin: LineOrigin::Context,
+                content: format!("EOF ctx {n} {}", "x".repeat(100)),
+                old_lineno: Some(n),
+                new_lineno: Some(n),
+                raw_content: None,
+                highlighted_spans: None,
+            })
+            .collect();
+        app.file_line_count_cache.insert(idx, 10101);
+        if bottom {
+            app.expanded_bottom.insert(eof.clone(), expanded);
+        } else {
+            app.expanded_top.insert(eof.clone(), expanded);
+        }
+        app.diff_view_mode = mode;
+        (app, eof)
+    }
+
+    fn expanded_rows_built(app: &mut App, mode: DiffViewMode, height: u16) -> usize {
+        crate::ui::diff_view::EXPANDED_ROWS_BUILT.with(|v| v.set(0));
+        render_diff(app, mode, 60, height);
+        crate::ui::diff_view::EXPANDED_ROWS_BUILT.with(|v| v.get())
+    }
+
+    /// Both renderers must build only viewport rows of a huge EOF expansion,
+    /// from either the top (`↓`) or bottom (`↑`) run, and keep row parity.
+    #[test]
+    fn should_cull_offscreen_eof_expansion_in_both_renderers() {
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            for bottom in [false, true] {
+                let (mut app, eof) = eof_gap_app(mode, bottom);
+                app.rebuild_annotations();
+                let first = app
+                    .line_annotations
+                    .iter()
+                    .position(|a| {
+                        matches!(a, AnnotatedLine::ExpandedContext { gap_id, .. } if *gap_id == eof)
+                    })
+                    .expect("EOF expansion annotations");
+                for wrap in [false, true] {
+                    app.set_diff_wrap(wrap);
+                    for delta in [0, 5000, 9990] {
+                        app.diff_state.scroll_offset = first + delta;
+                        let built = expanded_rows_built(&mut app, mode, 24);
+                        let ctx = format!("{mode:?} bottom={bottom} wrap={wrap} delta={delta}");
+                        assert!(built > 0, "viewport shows expanded rows: {ctx}");
+                        assert!(
+                            built <= app.diff_state.viewport_height,
+                            "built {built} offscreen EOF rows: {ctx}"
+                        );
+                        assert_parity(&app);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The renderers must honour `App::eof_gap_enabled`: sources without an
+    /// EOF gap draw no expanded rows even if stale expansions are cached.
+    #[test]
+    fn should_not_render_eof_expansion_when_eof_gap_is_disabled() {
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            let (mut app, eof) = eof_gap_app(mode, false);
+            app.diff_source = DiffSource::Staged;
+            assert!(!app.eof_gap_enabled());
+            // Tall enough that any rendered EOF row would be visible.
+            let with_stale = expanded_rows_built(&mut app, mode, 400);
+            app.expanded_top.remove(&eof);
+            let without = expanded_rows_built(&mut app, mode, 400);
+            assert_eq!(with_stale, without, "{mode:?}");
+        }
+    }
+
+    // ---- shared review-level section (`append_review_comments_section`) ----
+
+    fn row_text(line: &ratatui::text::Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn review_comment(text: &str, author: &str) -> Comment {
+        let mut c = Comment::new(text.to_string(), CommentType::from_id("note"), None);
+        c.author = author.to_string();
+        c
+    }
+
+    fn general_thread(body: &str) -> RemoteReviewThread {
+        RemoteReviewThread {
+            id: format!("general-{body}"),
+            path: String::new(),
+            line: None,
+            side: RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![RemoteReviewComment {
+                id: format!("c-{body}"),
+                author: Some("reviewer".to_string()),
+                body: body.to_string(),
+                url: "https://example.com/c".to_string(),
+                ..Default::default()
+            }],
+        }
+    }
+
+    fn build_section(
+        app: &App,
+        cursor: usize,
+        visible: (usize, usize),
+    ) -> (Vec<String>, crate::ui::diff_view::ReviewSectionState) {
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        let state = crate::ui::diff_view::append_review_comments_section(
+            app,
+            &mut lines,
+            &mut line_idx,
+            cursor,
+            60,
+            visible,
+        );
+        assert_eq!(lines.len(), line_idx, "line_idx tracks rows");
+        (lines.iter().map(row_text).collect(), state)
+    }
+
+    fn section_app() -> App {
+        let mut app = make_app();
+        app.forge_review_summaries.clear();
+        app.forge_review_threads.clear();
+        app
+    }
+
+    #[test]
+    fn should_render_review_section_header_summaries_and_gutter() {
+        let mut app = make_app();
+        app.session
+            .review_comments
+            .push(review_comment("mine", &app.username.clone()));
+        // cursor on row 0: the header gets the spaced `▶ ` marker
+        let (rows, _) = build_section(&app, 0, (0, 1000));
+        assert!(
+            rows[0].starts_with("▶ ═══ Review Comments"),
+            "{:?}",
+            rows[0]
+        );
+        assert!(rows.iter().any(|r| r.contains("a long review summary")));
+        // cursor elsewhere: spaced blank gutter on the header, one-column on rows
+        let (rows, _) = build_section(&app, 5, (0, 1000));
+        assert!(
+            rows[0].starts_with("  ═══ Review Comments"),
+            "{:?}",
+            rows[0]
+        );
+        assert!(rows[1].starts_with(' '), "{:?}", rows[1]);
+        let (rows, _) = build_section(&app, 1, (0, 1000));
+        assert!(rows[1].starts_with('▶'), "{:?}", rows[1]);
+        // single-file view drops the header banner
+        app.is_single_file_view = true;
+        let (rows, _) = build_section(&app, 99, (0, 1000));
+        assert!(!rows.iter().any(|r| r.contains("Review Comments")));
+        // no summaries -> nothing rendered
+        let (rows, _) = build_section(&section_app(), 0, (0, 1000));
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn should_tint_only_foreign_review_comments_and_use_panel_width() {
+        let mut app = section_app();
+        app.session
+            .review_comments
+            .push(review_comment("mine", &app.username.clone()));
+        app.session
+            .review_comments
+            .push(review_comment("theirs", "bob-the-author"));
+        let (rows, _) = build_section(&app, 99, (0, 1000));
+        let mine = rows.iter().position(|r| r.contains("mine")).unwrap();
+        let theirs = rows.iter().position(|r| r.contains("theirs")).unwrap();
+        let tinted: Vec<usize> = (0..rows.len())
+            .filter(|&i| rows[i].contains("bob-the-author"))
+            .collect();
+        assert_eq!(tinted.len(), 1, "only the foreign box names its author");
+        assert!(mine < tinted[0] && tinted[0] < theirs);
+        // box width is panel_width - 1 (+1 gutter column) on every row
+        let expected = crate::ui::comment_panel::format_comment_lines(
+            &app.theme,
+            crate::ui::diff_view::comment_type_presentation(&app, &CommentType::from_id("note")),
+            "mine",
+            None,
+            59,
+            None,
+        );
+        assert_eq!(
+            rows[mine - 1].chars().count(),
+            row_text(&expected[0]).chars().count() + 1
+        );
+    }
+
+    #[test]
+    fn should_blank_offscreen_review_comment_boxes_but_keep_row_count() {
+        let mut app = section_app();
+        app.session
+            .review_comments
+            .push(review_comment("hello-box", "me"));
+        let (shown, _) = build_section(&app, 99, (0, 1000));
+        let (culled, _) = build_section(&app, 99, (500, 600));
+        assert!(shown.iter().any(|r| r.contains("hello-box")));
+        assert_eq!(shown.len(), culled.len());
+        // row 0 is the header banner; the comment box rows after it are blank
+        assert!(culled[1..].iter().all(|r| r.is_empty()));
+    }
+
+    #[test]
+    fn should_render_general_threads_only_when_visible_and_without_anchor() {
+        let mut app = section_app();
+        app.forge_review_threads = vec![general_thread("general-note-body")];
+        let mut anchored = general_thread("anchored-body");
+        anchored.line = Some(3);
+        app.forge_review_threads.push(anchored);
+        let (rows, _) = build_section(&app, 99, (0, 1000));
+        assert!(rows.iter().any(|r| r.contains("general-note-body")));
+        assert!(!rows.iter().any(|r| r.contains("anchored-body")));
+        app.session.remote_comments_visibility =
+            crate::forge::remote_comments::PrCommentsVisibility::Hide;
+        let (rows, _) = build_section(&app, 99, (0, 1000));
+        assert!(rows.is_empty());
+    }
+
+    fn section_lines(app: &App) -> Vec<ratatui::text::Line<'static>> {
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        crate::ui::diff_view::append_review_comments_section(
+            app,
+            &mut lines,
+            &mut line_idx,
+            99,
+            60,
+            (0, 1000),
+        );
+        lines
+    }
+
+    #[test]
+    fn should_mute_only_inactive_general_threads_by_visibility() {
+        use crate::forge::remote_comments::PrCommentsVisibility::{All, Unresolved};
+        let mut app = section_app();
+        let mut resolved = general_thread("resolved-body");
+        resolved.is_resolved = true;
+        app.forge_review_threads = vec![general_thread("active-body"), resolved];
+        let badge_fg = |app: &App, needle: &str| {
+            let lines = section_lines(app);
+            let i = lines
+                .iter()
+                .position(|l| row_text(l).contains(needle))
+                .unwrap_or_else(|| panic!("{needle} missing"));
+            // the badge header row sits above the first body row of the thread
+            let header = (0..i)
+                .rev()
+                .find(|&j| row_text(&lines[j]).contains("[github @"))
+                .unwrap();
+            lines[header].spans[1].style.fg
+        };
+        app.session.remote_comments_visibility = All;
+        let active = badge_fg(&app, "active-body");
+        let muted = badge_fg(&app, "resolved-body");
+        assert_eq!(active, Some(app.theme.diff_hunk_header));
+        assert_eq!(muted, Some(app.theme.fg_dim));
+        // Unresolved hides the resolved thread entirely, keeps the active one
+        app.session.remote_comments_visibility = Unresolved;
+        let rows: Vec<String> = section_lines(&app).iter().map(row_text).collect();
+        assert!(rows.iter().any(|r| r.contains("active-body")));
+        assert!(!rows.iter().any(|r| r.contains("resolved-body")));
+        assert_eq!(badge_fg(&app, "active-body"), active);
+    }
+
+    #[test]
+    fn should_label_remote_rows_with_the_forge_kind() {
+        let mut app = section_app();
+        app.forge_review_threads = vec![general_thread("thread-body")];
+        app.forge_review_summaries = make_app().forge_review_summaries;
+        assert!(!app.forge_review_summaries.is_empty());
+        let rows: Vec<String> = section_lines(&app).iter().map(row_text).collect();
+        let badges: Vec<&String> = rows.iter().filter(|r| r.contains(" @")).collect();
+        assert!(badges.len() >= 2);
+        assert!(badges.iter().all(|r| r.contains("[github @")), "{badges:?}");
+        // outside PR mode there is no forge kind: generic label
+        app.diff_source = DiffSource::Staged;
+        let rows: Vec<String> = section_lines(&app).iter().map(row_text).collect();
+        assert!(rows.iter().any(|r| r.contains("[forge @")));
+        assert!(!rows.iter().any(|r| r.contains("[github @")));
+    }
+
+    #[test]
+    fn should_show_comment_vim_mode_label_in_review_input_box() {
+        let mut app = section_app();
+        app.input_mode = InputMode::Comment;
+        app.comment_is_review_level = true;
+        app.comment_vim_enabled = true;
+        app.comment_buffer = "draft".to_string();
+        app.comment_cursor = 5;
+        assert!(app.comment_vim_mode_label().is_some());
+        let with = build_section(&app, 99, (0, 1000)).0;
+        assert!(with.iter().any(|r| r.contains("INSERT")), "{with:?}");
+        app.comment_vim_enabled = false;
+        let without = build_section(&app, 99, (0, 1000)).0;
+        assert!(!without.iter().any(|r| r.contains("INSERT")));
+    }
+
+    #[test]
+    fn should_place_new_review_comment_input_box_and_report_geometry() {
+        let mut app = section_app();
+        app.session
+            .review_comments
+            .push(review_comment("existing", "me"));
+        app.input_mode = InputMode::Comment;
+        app.comment_is_review_level = true;
+        app.comment_buffer = "draft".to_string();
+        app.comment_cursor = 5;
+        let (before, _) = {
+            let mut quiet = section_app();
+            quiet
+                .session
+                .review_comments
+                .push(review_comment("existing", "me"));
+            build_section(&quiet, 99, (0, 1000))
+        };
+        let (rows, st) = build_section(&app, 99, (0, 1000));
+        let start = before.len();
+        let input_rows = rows.len() - start;
+        assert!(input_rows >= 3);
+        let (expected, info) = crate::ui::comment_panel::format_comment_input_lines(
+            &app.theme,
+            crate::ui::diff_view::comment_type_presentation(&app, &app.comment_type),
+            "draft",
+            5,
+            None,
+            false,
+            59,
+            None,
+            app.supports_keyboard_enhancement,
+        );
+        for (got, want) in rows[start..].iter().zip(&expected) {
+            assert_eq!(got.trim_start(), row_text(want).trim_start());
+        }
+        assert_eq!(st.cursor_logical_line, Some(start + info.line_offset));
+        assert_eq!(st.cursor_column, 1 + info.column);
+        assert_eq!(st.input_box_range, Some((start, start + input_rows - 1)));
+        assert_eq!(st.annotation_offset, Some((start, input_rows, 0)));
+    }
+
+    #[test]
+    fn should_replace_the_edited_review_comment_with_an_editing_box() {
+        let mut app = section_app();
+        let first = review_comment("first-body", "me");
+        let second = review_comment("second-body", "me");
+        app.editing_comment_id = Some(first.id.clone());
+        app.session.review_comments.push(first.clone());
+        app.session.review_comments.push(second);
+        app.input_mode = InputMode::Comment;
+        app.comment_is_review_level = true;
+        app.comment_buffer = "edited".to_string();
+        app.comment_cursor = 6;
+        let (rows, st) = build_section(&app, 99, (0, 1000));
+        // second comment still shown normally; first replaced by editor
+        assert!(rows.iter().any(|r| r.contains("second-body")));
+        assert!(!rows.iter().any(|r| r.contains("first-body")));
+        assert!(rows.iter().any(|r| r.contains("edited")));
+        let (expected, info) = crate::ui::comment_panel::format_comment_input_lines(
+            &app.theme,
+            crate::ui::diff_view::comment_type_presentation(&app, &app.comment_type),
+            "edited",
+            6,
+            None,
+            true,
+            59,
+            None,
+            app.supports_keyboard_enhancement,
+        );
+        assert_eq!(
+            rows[1..=expected.len()]
+                .iter()
+                .map(|r| r.trim_start())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|r| row_text(r))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(|r| r.trim_start())
+                .collect::<Vec<_>>()
+        );
+        let replaced = App::comment_display_lines(&first, 60);
+        assert_eq!(st.annotation_offset, Some((1, expected.len(), replaced)));
+        assert_eq!(st.cursor_logical_line, Some(1 + info.line_offset));
+        assert_eq!(st.cursor_column, 1 + info.column);
+        assert_eq!(st.input_box_range, Some((1, expected.len())));
+        // an editing id with no matching comment must not add a new-comment box
+        // (the edited comment is rendered, so no extra input rows follow)
+        assert_eq!(
+            rows.len(),
+            1 + expected.len() + App::comment_display_lines(&app.session.review_comments[1], 60)
+        );
+    }
+
+    #[test]
+    fn should_not_open_review_input_outside_review_level_comment_mode() {
+        for (mode, review_level) in [(InputMode::Comment, false), (InputMode::Normal, true)] {
+            let mut app = section_app();
+            app.session
+                .review_comments
+                .push(review_comment("existing", "me"));
+            app.editing_comment_id = Some("stale".to_string());
+            app.input_mode = mode;
+            app.comment_is_review_level = review_level;
+            app.comment_buffer = "draft".to_string();
+            let (rows, st) = build_section(&app, 99, (0, 1000));
+            assert!(!rows.iter().any(|r| r.contains("draft")), "{mode:?}");
+            assert!(rows.iter().any(|r| r.contains("existing")), "{mode:?}");
+            assert_eq!(st.annotation_offset, None);
+            // and with no editing id the same state shows no input either
+            app.editing_comment_id = None;
+            let (rows, st) = build_section(&app, 99, (0, 1000));
+            assert!(!rows.iter().any(|r| r.contains("draft")), "{mode:?}");
+            assert_eq!(st.input_box_range, None);
+        }
+    }
+
+    #[test]
+    fn should_not_open_new_review_input_while_a_comment_is_being_edited() {
+        let mut app = section_app();
+        let c = review_comment("body", "me");
+        app.editing_comment_id = Some(c.id.clone());
+        app.session.review_comments.push(c);
+        app.input_mode = InputMode::Comment;
+        app.comment_is_review_level = true;
+        app.comment_buffer = "ed".to_string();
+        let (_, st) = build_section(&app, 99, (0, 1000));
+        // exactly one input box (the editor), reported with replaced rows
+        assert!(matches!(st.annotation_offset, Some((1, _, replaced)) if replaced > 0));
+    }
+
+    /// Both renderers must hand the review section's cursor, scroll box and
+    /// annotation geometry on to the frame.
+    #[test]
+    fn should_wire_review_section_geometry_into_both_renderers() {
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            let mut app = section_app();
+            for i in 0..12 {
+                app.session
+                    .review_comments
+                    .push(review_comment(&format!("filler {i}"), "me"));
+            }
+            app.comment_is_file_level = false;
+            app.input_mode = InputMode::Comment;
+            app.comment_is_review_level = true;
+            app.comment_buffer = "draft".to_string();
+            app.comment_cursor = 5;
+            app.set_diff_wrap(false);
+            app.diff_state.scroll_offset = 0;
+            render_diff(&mut app, mode, 60, 10);
+            let (start, len, replaced) = app
+                .comment_input_annotation_offset
+                .unwrap_or_else(|| panic!("{mode:?}: annotation offset set"));
+            assert_eq!(replaced, 0, "{mode:?}");
+            assert!(len >= 3 && start > 10, "{mode:?}: {start} {len}");
+            // box range scrolled the input into view
+            let off = app.diff_state.scroll_offset;
+            assert!(
+                off + 10 > start + len - 1 && off <= start,
+                "{mode:?}: scroll {off}"
+            );
+            // cursor column = gutter + info.column, row inside viewport
+            let (col, row) = app.comment_cursor_screen_pos.expect("cursor pos");
+            assert!(col >= 1 && row < 10, "{mode:?}: {col},{row}");
+            let (_, info) = crate::ui::comment_panel::format_comment_input_lines(
+                &app.theme,
+                crate::ui::diff_view::comment_type_presentation(&app, &app.comment_type),
+                "draft",
+                5,
+                None,
+                false,
+                59,
+                None,
+                app.supports_keyboard_enhancement,
+            );
+            let inner_x = app.diff_inner_area.unwrap().x;
+            let inner_y = app.diff_inner_area.unwrap().y;
+            assert_eq!(col, inner_x + 1 + info.column, "{mode:?}");
+            assert_eq!(
+                (row - inner_y) as usize,
+                start + info.line_offset - off,
+                "{mode:?}"
+            );
         }
     }
 
@@ -1119,5 +1601,568 @@ mod tests {
                 "full renderer/annotation row parity after summary jump in {mode:?}"
             );
         }
+    }
+
+    // ---- shared file preamble, gap/hunk-header and EOF-gap builders ----
+
+    /// Text of every screen row the shared builders produce (file header,
+    /// reviewed banner, hunk header, expander and hidden-lines stubs, file
+    /// comment, binary label, spacing), keyed by annotation kind, drawn by the
+    /// real renderer of `mode`.
+    fn shared_builder_rows(app: &mut App, mode: DiffViewMode) -> Vec<(&'static str, String)> {
+        app.diff_view_mode = mode;
+        app.rebuild_annotations();
+        let (w, h) = (120u16, 300u16);
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal
+            .draw(|frame| match mode {
+                DiffViewMode::Unified => {
+                    crate::ui::diff_unified::render_unified_diff(frame, app, Rect::new(0, 0, w, h));
+                }
+                DiffViewMode::SideBySide => {
+                    crate::ui::diff_side_by_side::render_side_by_side_diff(
+                        frame,
+                        app,
+                        Rect::new(0, 0, w, h),
+                    );
+                }
+            })
+            .expect("draw");
+        let buf = terminal.backend().buffer().clone();
+        let mut out = Vec::new();
+        for row in 0..h {
+            let text: String = (0..w).map(|x| buf[(x, row)].symbol().to_string()).collect();
+            let inner = text.trim_matches('│').trim();
+            let kind = if inner.starts_with("═══") {
+                "FileHeader"
+            } else if inner.starts_with("Marked reviewed") {
+                "ReviewedBanner"
+            } else if inner.starts_with("@@") || inner.starts_with("✓ @@") {
+                "HunkHeader"
+            } else if inner.starts_with("... ") && inner.contains("expand (") {
+                "Expander"
+            } else if inner.starts_with("... ") && inner.contains("lines hidden") {
+                "HiddenLines"
+            } else if inner.starts_with("(binary file)") {
+                "BinaryOrEmpty"
+            } else if inner.contains("overall the file looks good") {
+                "FileComment"
+            } else {
+                continue;
+            };
+            out.push((kind, text.trim_end().to_string()));
+        }
+        out
+    }
+
+    fn assert_shared_rows_match(app: &mut App, required: &[&str]) {
+        let unified = shared_builder_rows(app, DiffViewMode::Unified);
+        let sbs = shared_builder_rows(app, DiffViewMode::SideBySide);
+        for r in required {
+            assert!(
+                unified.iter().any(|(b, _)| b == r),
+                "fixture lacks {r}: {unified:?}"
+            );
+        }
+        assert_eq!(unified, sbs);
+    }
+
+    #[test]
+    fn should_draw_identical_shared_rows_in_both_renderers() {
+        let mut app = make_app();
+        // A trailing gap with hidden lines and expanders for the first code file.
+        let idx = app.diff_files.iter().position(|f| !f.is_binary).unwrap();
+        app.file_line_count_cache.insert(idx, 10101);
+        assert_shared_rows_match(
+            &mut app,
+            &[
+                "FileHeader",
+                "HunkHeader",
+                "Expander",
+                "HiddenLines",
+                "FileComment",
+                "BinaryOrEmpty",
+            ],
+        );
+    }
+
+    #[test]
+    fn should_draw_identical_shared_rows_for_expanded_eof_in_both_renderers() {
+        for bottom in [false, true] {
+            let (mut app, _) = eof_gap_app(DiffViewMode::Unified, bottom);
+            // Keep the fixture's top-of-file/EOF stubs but shrink the run so
+            // the 300-row viewport shows the whole file.
+            let eof = app
+                .expanded_top
+                .keys()
+                .chain(app.expanded_bottom.keys())
+                .next()
+                .cloned()
+                .unwrap();
+            for map in [&mut app.expanded_top, &mut app.expanded_bottom] {
+                if let Some(v) = map.get_mut(&eof) {
+                    v.truncate(20);
+                }
+            }
+            app.file_line_count_cache.insert(eof.file_idx, 10101);
+            assert_shared_rows_match(&mut app, &["Expander", "HiddenLines"]);
+        }
+    }
+
+    #[test]
+    fn should_draw_identical_shared_rows_for_reviewed_file_in_both_renderers() {
+        // Collapsed continuous view, then single-file view with the banner.
+        let mut app = make_app();
+        let path = app.diff_files[0].display_path().clone();
+        app.session.get_file_mut(&path).unwrap().reviewed = true;
+        assert_shared_rows_match(&mut app, &["FileHeader"]);
+        app.is_single_file_view = true;
+        app.diff_state.current_file_idx = 0;
+        app.session.get_file_mut(&path).unwrap().reviewed = true;
+        let unified = shared_builder_rows(&mut app, DiffViewMode::Unified);
+        assert!(
+            unified.iter().any(|(b, _)| *b == "ReviewedBanner"),
+            "{unified:?}"
+        );
+        assert_eq!(
+            unified,
+            shared_builder_rows(&mut app, DiffViewMode::SideBySide)
+        );
+    }
+
+    #[test]
+    fn should_replace_existing_file_comment_with_inline_editor() {
+        let mut app = section_app();
+        let idx = app.diff_files.iter().position(|f| !f.is_binary).unwrap();
+        app.input_mode = InputMode::Comment;
+        app.comment_is_file_level = true;
+        app.diff_state.current_file_idx = idx;
+        let file = &app.diff_files[idx];
+        let comment = &app
+            .session
+            .files
+            .get(file.display_path())
+            .unwrap()
+            .file_comments[0];
+        app.editing_comment_id = Some(comment.id.clone());
+        app.comment_buffer = "edited file comment".to_string();
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        let mut input = crate::ui::diff_view::ReviewSectionState::default();
+        crate::ui::diff_view::append_file_preamble(
+            &app,
+            &mut lines,
+            &mut line_idx,
+            0,
+            idx,
+            file,
+            60,
+            (0, 1000),
+            &mut input,
+        );
+        assert!(
+            input.annotation_offset.is_some(),
+            "editing a file comment must replace its annotations"
+        );
+        assert!(
+            input.cursor_logical_line.is_some(),
+            "editing a file comment must place its cursor"
+        );
+        assert!(
+            lines
+                .iter()
+                .map(row_text)
+                .any(|s| s.contains("edited file comment"))
+        );
+        assert!(
+            !lines
+                .iter()
+                .map(row_text)
+                .any(|s| s.contains("overall the file looks good"))
+        );
+    }
+
+    #[test]
+    fn should_collapse_reviewed_file_hunks_in_both_renderers() {
+        let mut app = section_app();
+        let idx = app.diff_files.iter().position(|f| !f.is_binary).unwrap();
+        let path = app.diff_files[idx].display_path().clone();
+        app.session.get_file_mut(&path).unwrap().reviewed = true;
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            let rows = shared_builder_rows(&mut app, mode);
+            assert!(
+                !rows.iter().any(|(kind, _)| *kind == "HunkHeader"),
+                "reviewed file must collapse: {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_stub_between_gap_of_exactly_one_batch_with_three_rows() {
+        let mut app = section_app();
+        app.expanded_top.clear();
+        app.expanded_bottom.clear();
+        let idx = app.diff_files.iter().position(|f| !f.is_binary).unwrap();
+        let mut file = app.diff_files[idx].clone();
+        file.hunks[1].new_start =
+            file.hunks[0].new_start + file.hunks[0].new_count + crate::app::GAP_EXPAND_BATCH as u32;
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        crate::ui::diff_view::append_gap_and_hunk_header(
+            &app,
+            &mut lines,
+            &mut line_idx,
+            0,
+            (0, 1000),
+            &file,
+            idx,
+            1,
+            |_, _, _| panic!("no expansions"),
+        );
+        assert_eq!(
+            line_idx, 4,
+            "Down, hidden-lines, Up, hunk-header at exactly one batch"
+        );
+        assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
+    fn should_expand_single_trailing_line_at_eof() {
+        let mut app = section_app();
+        app.expanded_top.clear();
+        app.expanded_bottom.clear();
+        let idx = app.diff_files.iter().position(|f| !f.is_binary).unwrap();
+        let file = &app.diff_files[idx];
+        let last = file.hunks.last().unwrap();
+        app.file_line_count_cache
+            .insert(idx, last.new_start + last.new_count);
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        crate::ui::diff_view::append_eof_gap(
+            &app,
+            &mut lines,
+            &mut line_idx,
+            0,
+            (0, 1000),
+            file,
+            idx,
+            |_, _, _| panic!("no expansions"),
+        );
+        assert_eq!(line_idx, 1, "one trailing source line must be expandable");
+        assert_eq!(lines.len(), 1);
+        assert!(row_text(&lines[0]).contains("expand"));
+    }
+
+    // ---- HABIT 4: remaining preamble / gap / hunk-header / EOF guards ----
+
+    fn preamble_state(
+        app: &App,
+        file: &DiffFile,
+        idx: usize,
+        visible: (usize, usize),
+    ) -> (
+        Vec<String>,
+        usize,
+        crate::ui::diff_view::ReviewSectionState,
+        crate::ui::diff_view::FileBody,
+    ) {
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        let mut input = crate::ui::diff_view::ReviewSectionState::default();
+        let body = crate::ui::diff_view::append_file_preamble(
+            app,
+            &mut lines,
+            &mut line_idx,
+            0,
+            idx,
+            file,
+            60,
+            visible,
+            &mut input,
+        );
+        (lines.iter().map(row_text).collect(), line_idx, input, body)
+    }
+
+    fn code_idx(app: &App) -> usize {
+        app.diff_files.iter().position(|f| !f.is_binary).unwrap()
+    }
+
+    fn start_file_comment_edit(app: &mut App, idx: usize, editing: bool) {
+        app.input_mode = InputMode::Comment;
+        app.comment_is_file_level = true;
+        app.diff_state.current_file_idx = idx;
+        app.comment_buffer = "edited file comment".to_string();
+        app.comment_cursor = 6;
+        if editing {
+            let path = app.diff_files[idx].display_path().clone();
+            let id = app.session.files[&path].file_comments[0].id.clone();
+            app.editing_comment_id = Some(id);
+        }
+    }
+
+    #[test]
+    fn should_report_editor_geometry_for_edited_file_comment() {
+        let mut app = section_app();
+        let idx = code_idx(&app);
+        start_file_comment_edit(&mut app, idx, true);
+        let file = app.diff_files[idx].clone();
+        let (rows, _, input, _) = preamble_state(&app, &file, idx, (0, 1000));
+        let boxes = rows
+            .iter()
+            .filter(|r| r.contains("edited file comment"))
+            .count();
+        assert_eq!(
+            boxes, 1,
+            "only the replacing editor, no extra new-input box"
+        );
+        let (exp, info) = crate::ui::comment_panel::format_comment_input_lines(
+            &app.theme,
+            crate::ui::diff_view::comment_type_presentation(&app, &app.comment_type),
+            &app.comment_buffer,
+            app.comment_cursor,
+            None,
+            true,
+            59,
+            None,
+            app.supports_keyboard_enhancement,
+        );
+        assert_eq!(input.cursor_column, 1 + info.column);
+        assert!(input.cursor_column > 0);
+        let (start, n, replaced) = input.annotation_offset.unwrap();
+        assert_eq!(n, exp.len());
+        assert!(
+            replaced > 0,
+            "replaced rows of the old comment are reported"
+        );
+        assert_eq!(input.input_box_range, Some((start, start + exp.len() - 1)));
+    }
+
+    #[test]
+    fn should_report_geometry_for_new_file_comment_input() {
+        let mut app = section_app();
+        let idx = code_idx(&app);
+        start_file_comment_edit(&mut app, idx, false);
+        let file = app.diff_files[idx].clone();
+        let (rows, _, input, _) = preamble_state(&app, &file, idx, (0, 1000));
+        assert!(rows.iter().any(|r| r.contains("edited file comment")));
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("overall the file looks good"))
+        );
+        let (start, n, replaced) = input.annotation_offset.expect("new input annotation");
+        assert_eq!(replaced, 0);
+        assert!(n >= 3 && input.cursor_column >= 1);
+        assert_eq!(input.input_box_range, Some((start, start + n - 1)));
+    }
+
+    #[test]
+    fn should_show_vim_label_in_file_comment_input() {
+        let mut app = section_app();
+        let idx = code_idx(&app);
+        start_file_comment_edit(&mut app, idx, false);
+        app.comment_vim_enabled = true;
+        let file = app.diff_files[idx].clone();
+        let (rows, ..) = preamble_state(&app, &file, idx, (0, 1000));
+        assert!(rows.iter().any(|r| r.contains("INSERT")), "{rows:?}");
+        app.comment_vim_enabled = false;
+        let (rows, ..) = preamble_state(&app, &file, idx, (0, 1000));
+        assert!(!rows.iter().any(|r| r.contains("INSERT")));
+    }
+
+    #[test]
+    fn should_hide_file_comments_of_unselected_commits() {
+        let mut app = section_app();
+        let idx = code_idx(&app);
+        let path = app.diff_files[idx].display_path().clone();
+        app.session.get_file_mut(&path).unwrap().file_comments[0].commit_id =
+            Some("other".to_string());
+        let file = app.diff_files[idx].clone();
+        let (rows, ..) = preamble_state(&app, &file, idx, (0, 1000));
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("overall the file looks good"))
+        );
+        app.commit_selection_range = Some((0, 0));
+        let (rows, ..) = preamble_state(&app, &file, idx, (0, 1000));
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.contains("overall the file looks good"))
+        );
+    }
+
+    #[test]
+    fn should_cull_offscreen_file_comment_but_keep_its_rows() {
+        let app = section_app();
+        let idx = code_idx(&app);
+        let file = app.diff_files[idx].clone();
+        let (full, full_idx, ..) = preamble_state(&app, &file, idx, (0, 1000));
+        let (culled, culled_idx, ..) = preamble_state(&app, &file, idx, (500, 600));
+        assert!(
+            full.iter()
+                .any(|r| r.contains("overall the file looks good"))
+        );
+        assert!(
+            !culled
+                .iter()
+                .any(|r| r.contains("overall the file looks good"))
+        );
+        assert_eq!((culled.len(), culled_idx), (full.len(), full_idx));
+    }
+
+    #[test]
+    fn should_name_foreign_author_of_file_comment() {
+        let mut app = section_app();
+        let idx = code_idx(&app);
+        let path = app.diff_files[idx].display_path().clone();
+        let file = app.diff_files[idx].clone();
+        let (rows, ..) = preamble_state(&app, &file, idx, (0, 1000));
+        assert!(!rows.iter().any(|r| r.contains("bob-the-author")));
+        app.session.get_file_mut(&path).unwrap().file_comments[0].author =
+            "bob-the-author".to_string();
+        let (rows, ..) = preamble_state(&app, &file, idx, (0, 1000));
+        assert!(rows.iter().any(|r| r.contains("bob-the-author")));
+    }
+
+    #[test]
+    fn should_report_no_hunks_for_large_binary_or_empty_files() {
+        use crate::ui::diff_view::FileBody;
+        let app = section_app();
+        let idx = code_idx(&app);
+        let base = app.diff_files[idx].clone();
+        let (_, _, _, body) = preamble_state(&app, &base, idx, (0, 1000));
+        assert!(matches!(body, FileBody::Hunks));
+        for tweak in [
+            (|f: &mut DiffFile| f.is_too_large = true) as fn(&mut DiffFile),
+            |f| f.is_binary = true,
+            |f| f.hunks.clear(),
+        ] {
+            let mut f = base.clone();
+            tweak(&mut f);
+            let (rows, _, _, body) = preamble_state(&app, &f, idx, (0, 1000));
+            assert!(matches!(body, FileBody::NoHunks));
+            assert!(!rows.is_empty());
+        }
+    }
+
+    fn gap_rows(app: &App, file: &DiffFile, idx: usize, hunk_idx: usize) -> (usize, bool) {
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        let collapsed = crate::ui::diff_view::append_gap_and_hunk_header(
+            app,
+            &mut lines,
+            &mut line_idx,
+            0,
+            (0, 1000),
+            file,
+            idx,
+            hunk_idx,
+            |_, _, _| panic!("no expansions"),
+        );
+        (line_idx, collapsed)
+    }
+
+    #[test]
+    fn should_stub_top_of_file_gap_of_exactly_one_batch_with_expander_only() {
+        let mut app = section_app();
+        app.expanded_top.clear();
+        app.expanded_bottom.clear();
+        let idx = code_idx(&app);
+        let mut file = app.diff_files[idx].clone();
+        file.hunks[0].new_start = crate::app::GAP_EXPAND_BATCH as u32 + 1;
+        assert_eq!(gap_rows(&app, &file, idx, 0), (2, false));
+        file.hunks[0].new_start += 1;
+        assert_eq!(gap_rows(&app, &file, idx, 0), (3, false));
+    }
+
+    #[test]
+    fn should_stub_eof_gap_of_exactly_one_batch_with_expander_only() {
+        let mut app = section_app();
+        app.expanded_top.clear();
+        app.expanded_bottom.clear();
+        let idx = code_idx(&app);
+        let file = app.diff_files[idx].clone();
+        let last = file.hunks.last().unwrap();
+        let eof_start = last.new_start + last.new_count;
+        let rows = |app: &App| {
+            let mut lines = Vec::new();
+            let mut line_idx = 0;
+            crate::ui::diff_view::append_eof_gap(
+                app,
+                &mut lines,
+                &mut line_idx,
+                0,
+                (0, 1000),
+                &file,
+                idx,
+                |_, _, _| panic!("no expansions"),
+            );
+            line_idx
+        };
+        let mut app = app;
+        app.file_line_count_cache
+            .insert(idx, eof_start + crate::app::GAP_EXPAND_BATCH as u32 - 1);
+        assert_eq!(rows(&app), 1);
+        app.file_line_count_cache
+            .insert(idx, eof_start + crate::app::GAP_EXPAND_BATCH as u32);
+        assert_eq!(rows(&app), 2);
+    }
+
+    #[test]
+    fn should_not_render_eof_gap_for_deleted_files() {
+        let mut app = section_app();
+        let idx = code_idx(&app);
+        let mut file = app.diff_files[idx].clone();
+        let last = file.hunks.last().unwrap();
+        app.file_line_count_cache
+            .insert(idx, last.new_start + last.new_count + 50);
+        file.status = FileStatus::Deleted;
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        crate::ui::diff_view::append_eof_gap(
+            &app,
+            &mut lines,
+            &mut line_idx,
+            0,
+            (0, 1000),
+            &file,
+            idx,
+            |_, _, _| panic!("no expansions"),
+        );
+        assert_eq!((lines.len(), line_idx), (0, 0));
+        file.status = FileStatus::Modified;
+        crate::ui::diff_view::append_eof_gap(
+            &app,
+            &mut lines,
+            &mut line_idx,
+            0,
+            (0, 1000),
+            &file,
+            idx,
+            |_, _, _| panic!("no expansions"),
+        );
+        assert!(line_idx > 0);
+    }
+
+    #[test]
+    fn should_collapse_reviewed_hunk_and_drop_gap_next_to_it() {
+        let mut app = section_app();
+        app.expanded_top.clear();
+        app.expanded_bottom.clear();
+        let idx = code_idx(&app);
+        let file = app.diff_files[idx].clone();
+        let path = file.display_path().clone();
+        // not reviewed: gap + header, body kept
+        let (rows, collapsed) = gap_rows(&app, &file, idx, 1);
+        assert!(rows > 1 && !collapsed);
+        // review hunk 0: hunk 1's gap is dropped, header only, hunk 0 collapsed
+        let key = file.hunk_review_key(0).unwrap();
+        app.session
+            .get_file_mut(&path)
+            .unwrap()
+            .reviewed_hunks
+            .insert(key);
+        assert_eq!(gap_rows(&app, &file, idx, 1), (1, false));
+        assert!(gap_rows(&app, &file, idx, 0).1, "reviewed hunk collapses");
     }
 }

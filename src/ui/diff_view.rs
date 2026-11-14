@@ -1,20 +1,21 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
 };
 
 use crate::app::{
-    AnnotatedLine, App, DiffViewMode, ExpandDirection, GAP_EXPAND_BATCH, VisualSelection,
+    AnnotatedLine, App, DiffViewMode, ExpandDirection, GAP_EXPAND_BATCH, GapId, VisualSelection,
 };
-use crate::model::{Comment, DiffFile, DiffHunk, DiffLine, LineOrigin, LineSide};
+use crate::model::{Comment, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_side_by_side::render_side_by_side_diff;
 use crate::ui::diff_unified::render_unified_diff;
 use crate::ui::styles;
 use crate::ui::text_utils::col_of_char;
+use crate::vcs::git::calculate_gap;
 use unicode_width::UnicodeWidthStr;
 
 /// Static header rule used for file/section headers; avoids `"═".repeat(40)` per frame.
@@ -139,6 +140,7 @@ mod relative_line_number_tests {
             content: String::new(),
             old_lineno: old,
             new_lineno: new,
+            raw_content: None,
             highlighted_spans: None,
         }
     }
@@ -185,12 +187,22 @@ pub(super) fn unified_line_origin_marker(dl: &DiffLine) -> &'static str {
 }
 
 /// Body text of the `Spacing` inter-file row in unified single-file view —
-/// a hint pointing at the file `j` would walk into next. Callers prepend the
-/// one-cell cursor indicator. Multi-file view and side-by-side always emit a
-/// bare indicator instead, so this builder is only used by the unified
-/// single-file branch (and by `row_height` mirroring it).
-pub(super) fn spacing_next_file_hint_text(next_path: &str) -> String {
-    format!("  \u{2193}  {next_path}")
+/// a hint naming the key that moves into the next file. Where the terminal
+/// reports key releases, `j`/Down walks on after a release, so the hint is
+/// `↓`. Elsewhere `j` stops at the file's last line and only `}` moves on.
+/// Callers prepend the one-cell cursor indicator. Multi-file view and
+/// side-by-side always emit a bare indicator instead, so this builder is only
+/// used by the unified single-file branch (and by `row_height` mirroring it).
+pub(super) fn spacing_next_file_hint_text(
+    next_path: &str,
+    supports_keyboard_enhancement: bool,
+) -> String {
+    let key = if supports_keyboard_enhancement {
+        '\u{2193}'
+    } else {
+        '}'
+    };
+    format!("  {key}  {next_path}")
 }
 
 /// Label text for a `BinaryOrEmpty` row (unified & SBS both render this
@@ -298,7 +310,7 @@ pub(super) fn diff_title(app: &App, area_width: u16) -> String {
 /// back to suffix-truncating the basename only when the basename alone is
 /// wider than `max_width`.
 pub(super) fn truncate_path_smart(path: &str, max_width: usize) -> String {
-    if path.chars().count() <= max_width {
+    if path.width() <= max_width {
         return path.to_string();
     }
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -309,19 +321,19 @@ pub(super) fn truncate_path_smart(path: &str, max_width: usize) -> String {
     for n in (1..segments.len()).rev() {
         let tail = segments[segments.len() - n..].join("/");
         let candidate = format!("\u{2026}/{tail}");
-        if candidate.chars().count() <= max_width {
+        if candidate.width() <= max_width {
             return candidate;
         }
     }
 
     let basename = *segments.last().unwrap();
-    let basename_w = basename.chars().count();
+    let basename_w = basename.width();
     if basename_w <= max_width {
         return basename.to_string();
     }
     // Basename alone is too wide: keep the leading chars + `…`.
     let kept = max_width.saturating_sub(1);
-    let mut s: String = basename.chars().take(kept).collect();
+    let mut s = crate::ui::text_utils::prefix_within_width(basename, kept).to_string();
     s.push('\u{2026}');
     s
 }
@@ -356,6 +368,38 @@ pub(super) fn cursor_indicator(line_idx: usize, current_line_idx: usize) -> &'st
         "▶"
     } else {
         " "
+    }
+}
+
+/// Render the remote threads of `file` that have no row in any hunk (see
+/// `App::remote_threads_outside_hunks`). Both renderers call this right
+/// after the file-level comments, matching where `rebuild_annotations`
+/// emits their rows. No comment bar is drawn: there is no diff row above
+/// the box to connect to; the box header carries the `L<n>` label instead.
+pub(super) fn render_remote_threads_outside_hunks(
+    lines: &mut Vec<Line<'_>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    app: &App,
+    file: &DiffFile,
+) {
+    let visibility = app.session.remote_comments_visibility;
+    for thread_idx in app.remote_threads_outside_hunks(file) {
+        let thread = &app.forge_review_threads[thread_idx];
+        let Some(muted) = visibility.render_decision(thread) else {
+            continue;
+        };
+        for mut comment_line in
+            comment_panel::format_remote_thread_lines(&app.theme, thread, muted, app.forge_kind())
+        {
+            let indicator = cursor_indicator(*line_idx, current_line_idx);
+            comment_line.spans.insert(
+                0,
+                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+            );
+            lines.push(comment_line);
+            *line_idx += 1;
+        }
     }
 }
 
@@ -506,6 +550,8 @@ pub(super) fn populate_row_to_annotation(
         let mut logical_lines_visible = 0;
         for (i, &rows_for_line) in row_heights.iter().enumerate() {
             if visual_rows_used + rows_for_line > viewport_height {
+                // The partly visible line is still drawn: map its rows too.
+                out.resize(viewport_height, scroll_offset + i);
                 break;
             }
             for _ in 0..rows_for_line {
@@ -870,12 +916,12 @@ pub(super) fn comment_box_row(line: &Line) -> Option<CommentBoxRow> {
 pub(super) struct DiffOverlayPaint<'a> {
     pub inner: Rect,
     pub visible_lines_unscrolled: &'a [Line<'a>],
-    pub line_widths: &'a [usize],
+    /// Display width of every visual row as drawn (after wrapping and
+    /// horizontal scroll), indexed by visual row from the top of the viewport.
+    pub row_widths: &'a [usize],
     /// Visual row count per logical line (word-wrap aware); see
-    /// [`compute_row_heights`]. Kept alongside `line_widths`, which is still
-    /// used for content-width math (right-border fill, horizontal scroll).
+    /// [`compute_row_heights`].
     pub row_heights: &'a [usize],
-    pub wrap_lines: bool,
     pub viewport_width: usize,
     pub scroll_x: usize,
     pub scroll_offset: usize,
@@ -953,7 +999,6 @@ pub(super) fn paint_comment_box_right_border(frame: &mut Frame, ctx: &DiffOverla
                 .get(1)
                 .and_then(|s| s.style.fg)
                 .unwrap_or(ctx.theme.fg_primary);
-            let line_width = ctx.line_widths.get(idx).copied().unwrap_or(0);
 
             for r in 0..rows {
                 if visual_row + r >= ctx.inner.height as usize {
@@ -981,14 +1026,12 @@ pub(super) fn paint_comment_box_right_border(frame: &mut Frame, ctx: &DiffOverla
                     CommentBoxRow::Top | CommentBoxRow::Divider | CommentBoxRow::Bottom
                 ) {
                     // Width of the visible content on this visual row.
-                    let content_w = if ctx.wrap_lines {
-                        let prior = r * ctx.viewport_width;
-                        line_width.saturating_sub(prior).min(ctx.viewport_width)
-                    } else {
-                        line_width
-                            .saturating_sub(ctx.scroll_x)
-                            .min(ctx.viewport_width)
-                    };
+                    let content_w = ctx
+                        .row_widths
+                        .get(visual_row + r)
+                        .copied()
+                        .unwrap_or(0)
+                        .min(ctx.viewport_width);
                     let fill_start = ctx.inner.x + content_w as u16;
                     let mut x = fill_start;
                     while x < right_x {
@@ -1158,11 +1201,6 @@ pub(super) fn paint_file_header_fill(frame: &mut Frame, ctx: &DiffOverlayPaint) 
                 .or_else(|| line.spans.get(1))
                 .and_then(|s| s.style.fg)
                 .unwrap_or(ctx.theme.fg_primary);
-            let line_width = line
-                .spans
-                .iter()
-                .map(|span| span.content.width())
-                .sum::<usize>();
             // Only fill the trailing edge of the last visual row of the header
             // — wrapped intermediate rows of an unusually long header path are
             // already entirely covered by content.
@@ -1172,14 +1210,12 @@ pub(super) fn paint_file_header_fill(frame: &mut Frame, ctx: &DiffOverlayPaint) 
                 continue;
             }
             let y = ctx.inner.y + (visual_row + last_row) as u16;
-            let content_w = if ctx.wrap_lines {
-                let prior = last_row * ctx.viewport_width;
-                line_width.saturating_sub(prior).min(ctx.viewport_width)
-            } else {
-                line_width
-                    .saturating_sub(ctx.scroll_x)
-                    .min(ctx.viewport_width)
-            };
+            let content_w = ctx
+                .row_widths
+                .get(visual_row + last_row)
+                .copied()
+                .unwrap_or(0)
+                .min(ctx.viewport_width);
             let mut x = ctx.inner.x + content_w as u16;
             while x <= right_x {
                 let cell = &mut frame.buffer_mut()[(x, y)];
@@ -1213,38 +1249,582 @@ pub(super) fn apply_horizontal_scroll(line: Line, scroll_x: usize) -> Line {
         return line;
     }
 
-    let mut spans: Vec<Span> = line.spans.into_iter().collect();
-
-    // Preserve the first span (indicator)
+    let mut spans = line.spans;
     let indicator = spans.remove(0);
-
-    // Skip scroll_x characters from the remaining spans
-    let mut chars_to_skip = scroll_x;
     let mut new_spans = vec![indicator];
+    new_spans.extend(scroll_spans_by_width(Line::from(spans), scroll_x).spans);
+    Line::from(new_spans)
+}
 
-    for span in spans {
-        let content = span.content.to_string();
-        let char_count = content.chars().count();
-        if chars_to_skip >= char_count {
-            chars_to_skip -= char_count;
-            // Skip this span entirely
-        } else if chars_to_skip > 0 {
-            // Partially skip this span
-            let new_content: String = content.chars().skip(chars_to_skip).collect();
-            chars_to_skip = 0;
-            new_spans.push(Span::styled(new_content, span.style));
+/// Drop the first `columns` terminal cells of a line, preserving grapheme
+/// clusters. A wide glyph cut by the boundary leaves blank cells for its
+/// visible remainder so the rest of the row stays aligned.
+pub(super) fn scroll_spans_by_width(line: Line<'_>, mut columns: usize) -> Line<'_> {
+    if columns == 0 {
+        return line;
+    }
+    let spans = line
+        .spans
+        .into_iter()
+        .map(|span| {
+            let mut text = String::new();
+            for grapheme in span.styled_graphemes(Style::default()) {
+                let width = grapheme.symbol.width();
+                if columns == 0 {
+                    text.push_str(grapheme.symbol);
+                } else if columns >= width {
+                    columns -= width;
+                } else {
+                    text.push_str(&" ".repeat(width - columns));
+                    columns = 0;
+                }
+            }
+            Span::styled(text, span.style)
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans)
+}
+
+/// Cursor/IME bookkeeping produced while building the review-level section.
+#[derive(Default)]
+pub(super) struct ReviewSectionState {
+    pub cursor_logical_line: Option<usize>,
+    pub cursor_column: u16,
+    pub input_box_range: Option<(usize, usize)>,
+    /// `(line_idx, input rows, annotation rows replaced)`.
+    pub annotation_offset: Option<(usize, usize, usize)>,
+}
+
+/// Prefix each row with the cursor gutter marker and append it.
+pub(super) fn push_with_indicator<'a>(
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    theme: &Theme,
+    rows: Vec<Line<'a>>,
+) {
+    for mut row in rows {
+        let indicator = cursor_indicator(*line_idx, current_line_idx);
+        row.spans.insert(
+            0,
+            Span::styled(indicator, styles::current_line_indicator_style(theme)),
+        );
+        lines.push(row);
+        *line_idx += 1;
+    }
+}
+
+/// Build the review-level comment section shared by both renderers: the
+/// `Review Comments` header, forge review summaries, review comments (or the
+/// inline editor replacing one), general remote threads and the new-comment
+/// input box. `comment_width` is the text width of comment boxes.
+pub(super) fn append_review_comments_section<'a>(
+    app: &App,
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    panel_width: usize,
+    visible: (usize, usize),
+) -> ReviewSectionState {
+    use crate::app::InputMode;
+    use crate::forge::remote_comments::PrCommentsVisibility;
+    let comment_width = panel_width.saturating_sub(1);
+    let mut state = ReviewSectionState::default();
+    let is_review_comment_mode =
+        app.input_mode == InputMode::Comment && app.comment_is_review_level;
+
+    // Redundant in single-file view (see `show_review_comments_header`).
+    if app.show_review_comments_header() {
+        let general_indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
+        lines.push(Line::from(vec![
+            Span::styled(
+                general_indicator,
+                styles::current_line_indicator_style(&app.theme),
+            ),
+            Span::styled(
+                REVIEW_COMMENTS_HEADER_PREFIX,
+                styles::file_header_style(&app.theme),
+            ),
+            Span::styled(HEADER_RULE, styles::file_header_style(&app.theme)),
+        ]));
+        *line_idx += 1;
+    }
+
+    for summary in &app.forge_review_summaries {
+        let rows = comment_panel::format_remote_review_summary_lines(
+            &app.theme,
+            summary,
+            app.forge_kind(),
+        );
+        push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
+    }
+
+    let input_lines = |is_editing: bool| {
+        comment_panel::format_comment_input_lines(
+            &app.theme,
+            comment_type_presentation(app, &app.comment_type),
+            &app.comment_buffer,
+            app.comment_cursor,
+            None,
+            is_editing,
+            comment_width,
+            app.comment_vim_mode_label()
+                .as_ref()
+                .map(|(t, w)| (t.as_str(), *w)),
+            app.supports_keyboard_enhancement,
+        )
+    };
+
+    for comment in &app.session.review_comments {
+        let is_being_edited =
+            app.editing_comment_id.as_ref() == Some(&comment.id) && is_review_comment_mode;
+        let replaced = App::comment_display_lines(comment, panel_width);
+
+        if is_being_edited {
+            let (rows, cursor_info) = input_lines(true);
+            state.cursor_logical_line = Some(*line_idx + cursor_info.line_offset);
+            state.cursor_column = 1 + cursor_info.column;
+            state.input_box_range = Some((*line_idx, *line_idx + rows.len().saturating_sub(1)));
+            state.annotation_offset = Some((*line_idx, rows.len(), replaced));
+            push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
         } else {
-            // Keep this span as-is
-            new_spans.push(Span::styled(content, span.style));
+            if !comment_box_visible(*line_idx, replaced, visible) {
+                skip_comment_box(lines, line_idx, replaced);
+                continue;
+            }
+            let rows = comment_panel::format_comment_lines(
+                &app.theme,
+                comment_type_presentation(app, &comment.comment_type),
+                &comment.content,
+                None,
+                comment_width,
+                (comment.author != app.username).then_some(comment.author.as_str()),
+            );
+            push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
         }
     }
 
-    Line::from(new_spans)
+    // General MR notes (line: None); inline threads are rendered in-diff.
+    let visibility = app.session.remote_comments_visibility;
+    if !matches!(visibility, PrCommentsVisibility::Hide) {
+        for thread in &app.forge_review_threads {
+            if thread.line.is_some() {
+                continue;
+            }
+            let Some(muted) = visibility.render_decision(thread) else {
+                continue;
+            };
+            let rows = comment_panel::format_remote_thread_lines(
+                &app.theme,
+                thread,
+                muted,
+                app.forge_kind(),
+            );
+            push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
+        }
+    }
+
+    if is_review_comment_mode && app.editing_comment_id.is_none() {
+        let (rows, cursor_info) = input_lines(false);
+        state.cursor_logical_line = Some(*line_idx + cursor_info.line_offset);
+        state.cursor_column = 1 + cursor_info.column;
+        state.input_box_range = Some((*line_idx, *line_idx + rows.len().saturating_sub(1)));
+        state.annotation_offset = Some((*line_idx, rows.len(), 0));
+        push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
+    }
+
+    state
+}
+
+/// What follows a file's preamble in the continuous/single-file diff.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum FileBody {
+    /// A reviewed file collapsed to its header: no body and no spacing row.
+    Collapsed,
+    /// Binary, too large or empty: the preamble already pushed a label row.
+    NoHunks,
+    /// The caller renders the hunks.
+    Hunks,
+}
+
+/// Build the per-file preamble shared by both renderers: the file header
+/// (continuous view), the reviewed banner (single-file view), file-level
+/// comments or their inline editor, remote threads outside hunks and the
+/// binary/empty label. `panel_width` is the inner diff width.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn append_file_preamble<'a>(
+    app: &App,
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    file_idx: usize,
+    file: &DiffFile,
+    panel_width: usize,
+    visible: (usize, usize),
+    input: &mut ReviewSectionState,
+) -> FileBody {
+    use crate::app::InputMode;
+    let path = file.display_path();
+    let comment_width = panel_width.saturating_sub(1);
+
+    // The `═══ filename ═══` separator is redundant in single-file view: the
+    // status bar and file list already name the file, and the wide bar of `═`
+    // characters confuses horizontal scrolling.
+    if !app.is_single_file_view {
+        let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
+        let header_text = file_header_prefix_text(app, file);
+        lines.push(Line::from(vec![
+            Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+            Span::styled(header_text, styles::file_header_style(&app.theme)),
+            Span::styled(HEADER_RULE, styles::file_header_style(&app.theme)),
+        ]));
+        *line_idx += 1;
+    }
+
+    // Reviewed files normally collapse in continuous view. A summary jump
+    // may reveal one target body without changing its reviewed marker.
+    if app.should_collapse_file(file_idx) {
+        return FileBody::Collapsed;
+    }
+    if app.session.is_file_reviewed(path) && app.is_single_file_view {
+        let indicator = cursor_indicator(*line_idx, current_line_idx);
+        lines.push(Line::from(vec![
+            Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+            Span::styled(
+                REVIEWED_BANNER_TEXT,
+                Style::default()
+                    .fg(app.theme.fg_secondary)
+                    .add_modifier(Modifier::DIM),
+            ),
+        ]));
+        *line_idx += 1;
+    }
+
+    // Are we editing/adding a file-level comment for this file?
+    let is_file_comment_mode = app.input_mode == InputMode::Comment
+        && app.comment_is_file_level
+        && file_idx == app.diff_state.current_file_idx;
+    let input_lines = |is_editing: bool| {
+        comment_panel::format_comment_input_lines(
+            &app.theme,
+            comment_type_presentation(app, &app.comment_type),
+            &app.comment_buffer,
+            app.comment_cursor,
+            None,
+            is_editing,
+            comment_width,
+            app.comment_vim_mode_label()
+                .as_ref()
+                .map(|(t, w)| (t.as_str(), *w)),
+            app.supports_keyboard_enhancement,
+        )
+    };
+
+    if let Some(review) = app.session.files.get(path) {
+        for comment in &review.file_comments {
+            if !app.comment_visible(comment) {
+                continue;
+            }
+            let is_being_edited =
+                app.editing_comment_id.as_ref() == Some(&comment.id) && is_file_comment_mode;
+            let replaced = App::comment_display_lines(comment, panel_width);
+
+            if is_being_edited {
+                // Render the inline input instead
+                let (rows, cursor_info) = input_lines(true);
+                input.cursor_logical_line = Some(*line_idx + cursor_info.line_offset);
+                input.cursor_column = 1 + cursor_info.column;
+                input.input_box_range = Some((*line_idx, *line_idx + rows.len().saturating_sub(1)));
+                input.annotation_offset = Some((*line_idx, rows.len(), replaced));
+                push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
+            } else {
+                if !comment_box_visible(*line_idx, replaced, visible) {
+                    skip_comment_box(lines, line_idx, replaced);
+                    continue;
+                }
+                let rows = comment_panel::format_comment_lines(
+                    &app.theme,
+                    comment_type_presentation(app, &comment.comment_type),
+                    &comment.content,
+                    None,
+                    comment_width,
+                    (comment.author != app.username).then_some(comment.author.as_str()),
+                );
+                push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
+            }
+        }
+    }
+
+    // Inline input for a new file-level comment
+    if is_file_comment_mode && app.editing_comment_id.is_none() {
+        let (rows, cursor_info) = input_lines(false);
+        input.cursor_logical_line = Some(*line_idx + cursor_info.line_offset);
+        input.cursor_column = 1 + cursor_info.column;
+        input.input_box_range = Some((*line_idx, *line_idx + rows.len().saturating_sub(1)));
+        input.annotation_offset = Some((*line_idx, rows.len(), 0));
+        push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
+    }
+
+    render_remote_threads_outside_hunks(lines, line_idx, current_line_idx, app, file);
+
+    if file.is_too_large || file.is_binary || file.hunks.is_empty() {
+        let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
+        lines.push(Line::from(vec![
+            Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+            Span::styled(binary_or_empty_label(file), styles::dim_style(&app.theme)),
+        ]));
+        *line_idx += 1;
+        return FileBody::NoHunks;
+    }
+    FileBody::Hunks
+}
+
+/// Emit one gap's expander/hidden-lines stubs between its expanded runs.
+/// `render` builds one expanded context line (renderer-specific).
+#[allow(clippy::too_many_arguments)]
+fn append_gap_runs<'a>(
+    app: &App,
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    visible: (usize, usize),
+    gap_id: GapId,
+    gap: usize,
+    stubs: GapStubs,
+    render: &mut impl FnMut(&mut Vec<Line<'a>>, &mut usize, &DiffLine),
+) {
+    let top_lines = app.expanded_top.get(&gap_id);
+    let bot_lines = app.expanded_bottom.get(&gap_id);
+    let top_len = top_lines.map_or(0, |v| v.len());
+    let bot_len = bot_lines.map_or(0, |v| v.len());
+    let remaining = gap.saturating_sub(top_len + bot_len);
+    let theme = &app.theme;
+
+    if let Some(top) = top_lines {
+        render_culled_run(lines, line_idx, top, visible, &mut *render);
+    }
+
+    if remaining > 0 {
+        let expander = |lines: &mut Vec<Line<'a>>, line_idx: &mut usize, dir| {
+            render_expander_line(lines, line_idx, current_line_idx, dir, remaining, theme);
+        };
+        match stubs {
+            GapStubs::TopOfFile => {
+                if remaining > GAP_EXPAND_BATCH {
+                    render_hidden_lines(lines, line_idx, current_line_idx, remaining, theme);
+                }
+                expander(lines, line_idx, ExpandDirection::Up);
+            }
+            GapStubs::Between => {
+                if remaining >= GAP_EXPAND_BATCH {
+                    expander(lines, line_idx, ExpandDirection::Down);
+                    render_hidden_lines(lines, line_idx, current_line_idx, remaining, theme);
+                    expander(lines, line_idx, ExpandDirection::Up);
+                } else {
+                    expander(lines, line_idx, ExpandDirection::Both);
+                }
+            }
+            GapStubs::EndOfFile => {
+                expander(lines, line_idx, ExpandDirection::Down);
+                if remaining > GAP_EXPAND_BATCH {
+                    render_hidden_lines(lines, line_idx, current_line_idx, remaining, theme);
+                }
+            }
+        }
+    }
+
+    if let Some(bot) = bot_lines {
+        render_culled_run(lines, line_idx, bot, visible, &mut *render);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum GapStubs {
+    TopOfFile,
+    Between,
+    EndOfFile,
+}
+
+/// Build the gap before `hunk` (if any is shown) and the hunk header row,
+/// shared by both renderers. Returns `true` when the hunk is collapsed and
+/// its body must be skipped.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn append_gap_and_hunk_header<'a>(
+    app: &App,
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    visible: (usize, usize),
+    file: &DiffFile,
+    file_idx: usize,
+    hunk_idx: usize,
+    mut render: impl FnMut(&mut Vec<Line<'a>>, &mut usize, &DiffLine),
+) -> bool {
+    let hunk = &file.hunks[hunk_idx];
+    let prev_hunk = hunk_idx.checked_sub(1).and_then(|i| file.hunks.get(i));
+    let gap = calculate_gap(
+        prev_hunk.map(|h| (&h.new_start, &h.new_count)),
+        hunk.new_start,
+    );
+
+    if gap > 0 && app.should_render_gap_before_hunk(file_idx, hunk_idx) {
+        let stubs = if hunk_idx == 0 {
+            GapStubs::TopOfFile
+        } else {
+            GapStubs::Between
+        };
+        append_gap_runs(
+            app,
+            lines,
+            line_idx,
+            current_line_idx,
+            visible,
+            GapId { file_idx, hunk_idx },
+            gap as usize,
+            stubs,
+            &mut render,
+        );
+    }
+
+    let is_hunk_reviewed = app.is_hunk_reviewed(file_idx, hunk_idx);
+    let (hunk_header_text, hunk_header_style) =
+        hunk_header_text_and_style(&app.theme, hunk, is_hunk_reviewed);
+    let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
+    lines.push(Line::from(vec![
+        Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+        Span::styled(hunk_header_text, hunk_header_style),
+    ]));
+    *line_idx += 1;
+    app.should_collapse_hunk(file_idx, hunk_idx)
+}
+
+/// Build the end-of-file gap (after all hunks, never for deleted files),
+/// shared by both renderers.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn append_eof_gap<'a>(
+    app: &App,
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    visible: (usize, usize),
+    file: &DiffFile,
+    file_idx: usize,
+    mut render: impl FnMut(&mut Vec<Line<'a>>, &mut usize, &DiffLine),
+) {
+    if file.status == FileStatus::Deleted || !app.eof_gap_enabled() {
+        return;
+    }
+    let Some(last_hunk) = file.hunks.last() else {
+        return;
+    };
+    let eof_start = last_hunk.new_start + last_hunk.new_count;
+    if let Some(&total) = app.file_line_count_cache.get(&file_idx)
+        && eof_start <= total
+    {
+        append_gap_runs(
+            app,
+            lines,
+            line_idx,
+            current_line_idx,
+            visible,
+            GapId {
+                file_idx,
+                hunk_idx: file.hunks.len(),
+            },
+            (total - eof_start + 1) as usize,
+            GapStubs::EndOfFile,
+            &mut render,
+        );
+    }
+}
+
+/// Render a run of one-row-per-item lines, building only the rows inside
+/// `visible` (`start..end` in logical line indices). Rows outside it become
+/// blank placeholders in bulk, so a huge expansion costs O(viewport).
+pub(super) fn render_culled_run<'a, T>(
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    items: &[T],
+    visible: (usize, usize),
+    mut render: impl FnMut(&mut Vec<Line<'a>>, &mut usize, &T),
+) {
+    let end = *line_idx + items.len();
+    let first = visible.0.clamp(*line_idx, end) - *line_idx;
+    let last = visible.1.clamp(*line_idx + first, end) - *line_idx;
+    lines.resize(lines.len() + first, Line::default());
+    *line_idx += first;
+    for item in &items[first..last] {
+        render(lines, line_idx, item);
+    }
+    lines.resize(lines.len() + items.len() - last, Line::default());
+    *line_idx = end;
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn should_fit_vs16_basename_within_path_budget() {
+        // given - each warning sign + VS16 is two cells
+        let path = format!("dir/{}", "\u{26a0}\u{fe0f}".repeat(40));
+        // when
+        let out = truncate_path_smart(&path, 20);
+        // then
+        assert!(out.width() <= 20, "{out:?} is {} cells", out.width());
+    }
+
     use super::*;
+
+    #[test]
+    fn should_build_only_visible_rows_of_a_culled_run() {
+        // given - 10 rows starting at logical line 2, viewport 5..8
+        let mut lines: Vec<Line> = vec![Line::default(); 2];
+        let mut line_idx = 2;
+        let mut built = Vec::new();
+        // when
+        render_culled_run(
+            &mut lines,
+            &mut line_idx,
+            &[0; 10],
+            (5, 8),
+            |lines, idx, _| {
+                built.push(*idx);
+                lines.push(Line::from("x"));
+                *idx += 1;
+            },
+        );
+        // then
+        assert_eq!(built, vec![5, 6, 7]);
+        assert_eq!(lines.len(), 12);
+        assert_eq!(line_idx, 12);
+        assert_eq!(lines[5].spans.len(), 1);
+        assert!(lines[4].spans.is_empty() && lines[8].spans.is_empty());
+    }
+
+    #[test]
+    fn should_build_nothing_for_a_run_outside_the_viewport() {
+        let mut lines: Vec<Line> = Vec::new();
+        let mut line_idx = 0;
+        let mut calls = 0;
+        render_culled_run(&mut lines, &mut line_idx, &[0; 4], (10, 20), |_, _, _| {
+            calls += 1
+        });
+        assert_eq!((calls, lines.len(), line_idx), (0, 4, 4));
+        render_culled_run(&mut lines, &mut line_idx, &[0; 4], (0, 2), |_, _, _| {
+            calls += 1
+        });
+        assert_eq!((calls, lines.len(), line_idx), (0, 8, 8));
+    }
+
+    #[test]
+    fn row_map_covers_partly_visible_wrapped_lines() {
+        let mut out = Vec::new();
+        populate_row_to_annotation(&mut out, &[1, 1, 6], 60, 6, true, 0);
+        assert_eq!(out, vec![0, 1, 2, 2, 2, 2]);
+
+        // A first line taller than the viewport still maps every row.
+        populate_row_to_annotation(&mut out, &[10, 1], 60, 6, true, 3);
+        assert_eq!(out, vec![3; 6]);
+    }
 
     fn unwrapped(_line: usize) -> usize {
         1
@@ -1252,6 +1832,13 @@ mod tests {
 
     fn two_rows_per_line(_line: usize) -> usize {
         2
+    }
+
+    #[test]
+    fn should_scroll_by_display_width_and_pad_split_wide_glyphs() {
+        let line = Line::from(vec![Span::raw(">"), Span::raw("界B")]);
+        assert_eq!(apply_horizontal_scroll(line.clone(), 1).to_string(), "> B");
+        assert_eq!(apply_horizontal_scroll(line, 2).to_string(), ">B");
     }
 
     #[test]
@@ -1383,4 +1970,9 @@ mod tests {
         // then: scroll so box_end (10) is visible => scroll = 10 - 10 + 1 = 1
         assert_eq!(scroll, 1);
     }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static EXPANDED_ROWS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

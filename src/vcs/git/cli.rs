@@ -12,8 +12,9 @@ use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSid
 use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser;
 use crate::vcs::git::raw::{
-    pair_metadata_with_patch, parse_raw_metadata_from_patch_output, parse_raw_patch_output,
-    patch_text_from_raw_patch_output, split_patch_blocks,
+    NO_USER_DIFF_CONFIG, pair_metadata_with_patch, parse_raw_metadata_from_patch_output,
+    parse_raw_patch_output, patch_text_from_raw_patch_output, split_patch_blocks,
+    unmerged_file_patch,
 };
 use crate::vcs::whitespace::{WhitespaceComparison, materialize_diff};
 use crate::vcs::{
@@ -24,6 +25,7 @@ use crate::vcs::{
     container_file_paths, enhance_with_full_file_highlight, slice_context_lines, tabify,
 };
 
+use super::repository::summary_and_body;
 use super::{
     GitRepoMode, RevisionExpression, git_bool_config_enabled, git_command_error,
     git_fsmonitor_config_enabled, run_git_command,
@@ -121,6 +123,7 @@ impl GitCliBackend {
         // Paths and status come from Git's NUL-delimited raw records. Patch
         // headers remain display-only and may follow any user quoting/prefix
         // configuration without affecting file identity.
+        args.insert(1, "--no-color".to_string());
         args.insert(1, "-z".to_string());
         args.insert(1, "--raw".to_string());
         args.insert(1, "--patch".to_string());
@@ -190,7 +193,10 @@ impl GitCliBackend {
                 TuicrError::VcsCommand("failed to read deleted file from HEAD".into())
             })
         } else {
-            Ok(fs::read_to_string(self.root_path.join(file_path))?)
+            // Never follow an untracked symlink out of the repository.
+            crate::vcs::read_workdir_file(&self.root_path, file_path).ok_or_else(|| {
+                TuicrError::VcsCommand(format!("failed to read {path_str} from the working tree"))
+            })
         }
     }
 }
@@ -226,10 +232,23 @@ impl VcsBackend for GitCliBackend {
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        // An unborn HEAD is not a revision: diff against the empty tree.
+        let (base, old_source) =
+            if run_git_command(&self.root_path, &["rev-parse", "--verify", "HEAD"]).is_ok() {
+                ("HEAD".to_string(), GitContentSource::Revision("HEAD"))
+            } else {
+                (empty_tree_oid(&self.root_path)?, GitContentSource::None)
+            };
         self.get_cli_diff(
-            strings(["diff", "--no-ext-diff", "--binary", "HEAD", "--"]),
+            vec![
+                "diff".into(),
+                "--no-ext-diff".into(),
+                "--binary".into(),
+                base,
+                "--".into(),
+            ],
             true,
-            GitContentSource::Revision("HEAD"),
+            old_source,
             GitContentSource::Workdir,
             highlighter,
         )
@@ -410,7 +429,7 @@ impl VcsBackend for GitCliBackend {
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         if commit_ids.is_empty() {
-            return Err(TuicrError::NoChanges);
+            return self.get_working_tree_diff(highlighter);
         }
 
         let base_rev = parent_rev_or_empty(&self.root_path, &commit_ids[0])?;
@@ -648,7 +667,7 @@ fn run_git_diff_command(
     workdir: &Path,
     args: Vec<String>,
     suppress_header_only_content_changes: bool,
-    highlighter: &SyntaxHighlighter,
+    _highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     let output = run_git_diff_bytes(workdir, &args, &[])?;
     let patches = match parse_raw_patch_output(&output) {
@@ -658,12 +677,12 @@ fn run_git_diff_command(
         }
         Err(error) => return Err(error),
     };
-    diff_parser::parse_file_patches(patches, highlighter)
+    diff_parser::parse_file_patches(patches)
 }
 
 fn run_git_diff_bytes(workdir: &Path, args: &[String], pathspecs: &[&Path]) -> Result<Vec<u8>> {
     let mut command = Command::new("git");
-    command.current_dir(workdir);
+    command.current_dir(workdir).args(NO_USER_DIFF_CONFIG);
     if !pathspecs.is_empty() {
         command.arg("--literal-pathspecs");
     }
@@ -718,10 +737,15 @@ fn parse_whitespace_filtered_patches(
     // each authoritative path independently. A zero-block result is a
     // whitespace-only content change; one block can be paired without ever
     // decoding a display header.
-    let metadata = parse_raw_metadata_from_patch_output(combined_output)?;
+    let records = parse_raw_metadata_from_patch_output(combined_output)?;
     let mut patches = Vec::new();
 
-    for file in metadata {
+    for record in records {
+        if !record.has_patch {
+            patches.push(unmerged_file_patch(record.metadata));
+            continue;
+        }
+        let file = record.metadata;
         let mut paths = Vec::new();
         if let Some(path) = file.old_path.as_deref() {
             paths.push(path);
@@ -814,12 +838,22 @@ fn build_untracked_diff_file(
     full_path: &Path,
     _highlighter: &SyntaxHighlighter,
 ) -> Option<DiffFile> {
-    let metadata = full_path.metadata().ok()?;
-    if metadata.len() > MAX_UNTRACKED_FILE_SIZE {
+    // Never follow the link: its target may be outside the repository or a
+    // device that never ends. Like Git, show the link text itself.
+    let metadata = full_path.symlink_metadata().ok()?;
+    let bytes = if metadata.file_type().is_symlink() {
+        fs::read_link(full_path)
+            .ok()?
+            .to_string_lossy()
+            .into_owned()
+            .into_bytes()
+    } else if !metadata.file_type().is_file() {
+        return None;
+    } else if metadata.len() > MAX_UNTRACKED_FILE_SIZE {
         return Some(diff_file_without_hunks(path, false, true));
-    }
-
-    let bytes = fs::read(full_path).ok()?;
+    } else {
+        fs::read(full_path).ok()?
+    };
     if bytes.contains(&0) {
         return Some(diff_file_without_hunks(path, true, false));
     }
@@ -827,7 +861,7 @@ fn build_untracked_diff_file(
     let content = String::from_utf8_lossy(&bytes);
     let lines: Vec<String> = content
         .lines()
-        .map(|line| tabify(line.trim_end_matches('\r')))
+        .map(|line| line.trim_end_matches('\r').to_string())
         .collect();
 
     if lines.is_empty() {
@@ -839,7 +873,8 @@ fn build_untracked_diff_file(
         .enumerate()
         .map(|(idx, content)| DiffLine {
             origin: LineOrigin::Addition,
-            content,
+            raw_content: content.contains('\t').then(|| content.clone()),
+            content: tabify(&content),
             old_lineno: None,
             new_lineno: Some((idx + 1) as u32),
             highlighted_spans: None,
@@ -1015,10 +1050,13 @@ fn git_source_content_cache(
     }
 }
 
-fn read_git_objects(
+/// Read many `<rev>:<path>` object specs with one `git cat-file --batch`
+/// process, keyed by the caller's key. Missing objects and non-blobs are left
+/// out of the map.
+pub(crate) fn read_git_objects<K: Eq + std::hash::Hash>(
     workdir: &Path,
-    requests: Vec<(PathBuf, String)>,
-) -> Result<HashMap<PathBuf, String>> {
+    requests: Vec<(K, String)>,
+) -> Result<HashMap<K, String>> {
     if requests.is_empty() {
         return Ok(HashMap::new());
     }
@@ -1032,15 +1070,18 @@ fn read_git_objects(
         .spawn()
         .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
 
-    {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| TuicrError::VcsCommand("git cat-file stdin unavailable".into()))?;
-        for (_, spec) in &requests {
-            writeln!(stdin, "{spec}")?;
-        }
-    }
+    // Feed stdin from its own thread: git answers each spec as it reads it, so
+    // once its output fills the pipe it stops reading, and writing every spec
+    // before reading any output would deadlock on a large batch.
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| TuicrError::VcsCommand("git cat-file stdin unavailable".into()))?;
+    let specs: String = requests
+        .iter()
+        .map(|(_, spec)| format!("{spec}\n"))
+        .collect();
+    let writer = std::thread::spawn(move || stdin.write_all(specs.as_bytes()));
 
     let stdout = child
         .stdout
@@ -1049,7 +1090,7 @@ fn read_git_objects(
     let mut reader = BufReader::new(stdout);
     let mut contents = HashMap::new();
 
-    for (path, _) in requests {
+    for (key, _) in requests {
         let mut header = String::new();
         if reader.read_line(&mut header)? == 0 {
             break;
@@ -1074,10 +1115,13 @@ fn read_git_objects(
         reader.read_exact(&mut trailing_newline)?;
 
         if kind == Some("blob") {
-            contents.insert(path, String::from_utf8_lossy(&bytes).into_owned());
+            contents.insert(key, String::from_utf8_lossy(&bytes).into_owned());
         }
     }
 
+    writer
+        .join()
+        .map_err(|_| TuicrError::VcsCommand("git cat-file stdin writer panicked".into()))??;
     let status = child.wait()?;
     if !status.success() {
         return Err(TuicrError::VcsCommand(format!(
@@ -1148,7 +1192,7 @@ fn parse_commit_record(
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or_default();
     let full_message = fields.next().unwrap_or("(no message)");
-    let (summary, body) = parse_commit_message(full_message);
+    let (summary, body) = summary_and_body(full_message);
     let branch_name = branch_tip_names
         .get(&id)
         .and_then(|names| names.first().cloned());
@@ -1166,21 +1210,6 @@ fn parse_commit_record(
         author,
         time,
     })
-}
-
-fn parse_commit_message(message: &str) -> (String, Option<String>) {
-    let mut lines = message.lines();
-    let summary = lines.next().unwrap_or("(no message)").to_string();
-    let body_text: String = lines
-        .skip_while(|l| l.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let body = if body_text.trim().is_empty() {
-        None
-    } else {
-        Some(body_text)
-    };
-    (summary, body)
 }
 
 fn empty_tree_oid(workdir: &Path) -> Result<String> {
@@ -1272,10 +1301,6 @@ fn rev_list_range(workdir: &Path, base: &str, head: &str) -> Result<Vec<String>>
         .map(str::to_string)
         .collect();
 
-    if commit_ids.is_empty() {
-        return Err(TuicrError::NoChanges);
-    }
-
     Ok(commit_ids)
 }
 
@@ -1317,6 +1342,37 @@ mod tests {
             args.join(" "),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn should_read_more_objects_than_a_pipe_buffer_holds() {
+        // given — enough specs that neither stdin nor stdout fits in a pipe
+        // buffer, so writing them all before reading would deadlock
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        git(root, &["init", "--quiet"]);
+        let name = format!("{}.rs", "a".repeat(100));
+        fs::write(root.join(&name), "line\n".repeat(500)).expect("write file");
+        git(root, &["add", name.as_str()]);
+        git(
+            root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "--quiet",
+                "-m",
+                "a",
+            ],
+        );
+        let requests: Vec<(usize, String)> =
+            (0..3000).map(|i| (i, format!("HEAD:{name}"))).collect();
+        // when
+        let objects = read_git_objects(root, requests).expect("read objects");
+        // then
+        assert_eq!(objects.len(), 3000);
     }
 
     #[test]
@@ -1948,5 +2004,171 @@ mod tests {
             files[0].new_path.as_deref(),
             Some(Path::new(substantive_path))
         );
+    }
+
+    fn init_repo(workdir: &Path) {
+        git(workdir, &["init"]);
+        git(workdir, &["config", "user.email", "test@example.com"]);
+        git(workdir, &["config", "user.name", "Test User"]);
+    }
+
+    fn cli(workdir: &Path) -> GitCliBackend {
+        GitCliBackend::discover_from(workdir, DiffWhitespaceMode::default()).unwrap()
+    }
+
+    #[test]
+    fn ignores_user_color_and_blank_line_diff_config() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workdir = temp_dir.path();
+        init_repo(workdir);
+        git(workdir, &["config", "color.ui", "always"]);
+        git(workdir, &["config", "diff.suppressBlankEmpty", "true"]);
+        write_file(workdir, "f.txt", "a\n\nb\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "initial"]);
+        write_file(workdir, "f.txt", "a\n\nc\n");
+
+        let files = cli(workdir)
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .unwrap();
+        assert_eq!(files.len(), 1);
+        let raw = crate::vcs::git::raw::run_git_diff(workdir, &[]).unwrap();
+        assert_eq!(raw.len(), 1);
+        let parsed = diff_parser::parse_file_patches(raw).unwrap();
+        // suppressBlankEmpty would drop the blank context line's leading space.
+        assert_eq!(parsed[0].hunks[0].lines.len(), 4);
+    }
+
+    fn make_conflict(workdir: &Path) {
+        init_repo(workdir);
+        write_file(workdir, "conflict.txt", "base\n");
+        write_file(workdir, "clean.txt", "one\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "base"]);
+        git(workdir, &["checkout", "-b", "other"]);
+        write_file(workdir, "conflict.txt", "other\n");
+        git(workdir, &["commit", "-am", "other"]);
+        git(workdir, &["checkout", "-"]);
+        write_file(workdir, "conflict.txt", "main\n");
+        git(workdir, &["commit", "-am", "main"]);
+        let status = Command::new("git")
+            .current_dir(workdir)
+            .args(["merge", "other"])
+            .output()
+            .unwrap();
+        assert!(!status.status.success());
+        write_file(workdir, "clean.txt", "two\n");
+    }
+
+    #[test]
+    fn shows_merge_conflicts_as_modified_without_hunks() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workdir = temp_dir.path();
+        make_conflict(workdir);
+        let backend = cli(workdir);
+        let hl = SyntaxHighlighter::default();
+
+        let unstaged = backend.get_unstaged_diff(&hl).unwrap();
+        let conflict = unstaged
+            .iter()
+            .find(|f| f.new_path.as_deref() == Some(Path::new("conflict.txt")))
+            .unwrap();
+        assert_eq!(conflict.status, FileStatus::Modified);
+        assert!(conflict.hunks.is_empty());
+        assert!(unstaged.iter().any(|f| f.hunks.len() == 1));
+
+        let staged = backend.get_staged_diff(&hl).unwrap();
+        assert!(
+            staged
+                .iter()
+                .any(|f| f.new_path.as_deref() == Some(Path::new("conflict.txt")))
+        );
+    }
+
+    #[test]
+    fn reads_working_tree_diff_on_unborn_head() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workdir = temp_dir.path();
+        init_repo(workdir);
+        write_file(workdir, "staged.txt", "s\n");
+        git(workdir, &["add", "staged.txt"]);
+        write_file(workdir, "untracked.txt", "u\n");
+
+        let files = cli(workdir)
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(|f| f.status == FileStatus::Added));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn renders_untracked_symlink_text_without_following_it() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let workdir = temp_dir.path();
+        init_repo(workdir);
+        write_file(workdir, "tracked.txt", "t\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "initial"]);
+        std::fs::write(outside.path().join("secret.txt"), "SECRET\n").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), workdir.join("link"))
+            .unwrap();
+        std::os::unix::fs::symlink("nonexistent-target", workdir.join("dangling")).unwrap();
+
+        let files = cli(workdir)
+            .get_unstaged_diff(&SyntaxHighlighter::default())
+            .unwrap();
+        let line = |name: &str| {
+            let file = files
+                .iter()
+                .find(|f| f.new_path.as_deref() == Some(Path::new(name)))
+                .unwrap_or_else(|| panic!("{name} missing"));
+            file.hunks[0].lines[0].content.clone()
+        };
+        assert_eq!(line("dangling"), "nonexistent-target");
+        assert!(!line("link").contains("SECRET"));
+
+        let backend = cli(workdir);
+        let link = Path::new("link");
+        assert!(
+            backend
+                .file_line_count(link, FileStatus::Added, None)
+                .is_err()
+        );
+        assert!(
+            backend
+                .fetch_context_lines(link, FileStatus::Added, None, 1, 1)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn untracked_diff_skips_special_files() {
+        let hl = SyntaxHighlighter::default();
+        let dev_null = Path::new("/dev/null");
+        assert!(build_untracked_diff_file(Path::new("null"), dev_null, &hl).is_none());
+    }
+
+    #[test]
+    fn whitespace_filtered_patches_keep_patchless_conflict_records() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workdir = temp_dir.path();
+        make_conflict(workdir);
+        let args: Vec<String> = ["diff", "--raw", "-z", "--patch", "--ignore-all-space"]
+            .map(String::from)
+            .into();
+        let out = Command::new("git")
+            .current_dir(workdir)
+            .args(&args)
+            .output()
+            .unwrap()
+            .stdout;
+        let files = parse_whitespace_filtered_patches(workdir, &args, &out).unwrap();
+        let conflict = files
+            .iter()
+            .find(|f| f.new_path.as_deref() == Some(Path::new("conflict.txt")))
+            .unwrap();
+        assert_eq!(conflict.status, FileStatus::Modified);
     }
 }

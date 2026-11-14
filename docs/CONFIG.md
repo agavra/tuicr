@@ -30,6 +30,7 @@ commit_order = "descending"
 initial_commit_selection = "all"
 show_file_list = true
 minimal_ui = false
+file_list_position = "left"
 compact_folders = false
 show_pr_checks = false
 show_pr_comments = true
@@ -37,6 +38,7 @@ pr_comments_visibility = "unresolved"
 show_commits = true
 show_reviewed = true
 mouse = true
+mouse_scroll_lines = 3
 leader = ","
 editor = "nvim"
 comment_vim = false
@@ -97,6 +99,7 @@ session_header = true
 | `ignore_whitespace_overrides` | (none)    | Table of extension-to-boolean overrides, used only with `ignore_whitespace = "auto"`. `true` ignores whitespace; `false` compares normally. |
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
 | `minimal_ui`               | `false`      | Diff-focused presentation: hides the brand header, the diff panel frame, and the status footer's contents while idle (the row stays reserved for commands and messages), and opens on the first file instead of the overview. Toggle with `:set minimal!`. |
+| `file_list_position`       | `left`       | `left` or `right`: which side of the diff the file list and comment navigator sit on. `<leader>h` / `<leader>l` move focus toward the pane on that side. |
 | `compact_folders` | `false` | Join single-child directory chains into one file-tree row. Restart tuicr after changing this setting. |
 | `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |
 | `show_pr_comments`         | `true`       | Whether PR conversation comments are fetched and shown. Set to `false` to skip PR comments.                                                         |
@@ -104,6 +107,7 @@ session_header = true
 | `show_commits`             | `true`       | Whether the inline commit selector pane is visible on startup for multi-commit reviews. Toggle with `<leader>s` or `:set commits!`.                        |
 | `show_reviewed`            | `true`       | Whether files already marked reviewed appear in the file tree and the diff. Set `false` to start a session showing only what is left. Toggle with `:set reviewed!`. |
 | `mouse`                    | `true`       | Wheel scrolling, clicks, and drag-to-select.                                                                                                               |
+| `mouse_scroll_lines`       | `3`          | Lines scrolled per mouse wheel tick in the diff, file list, comment list, help, and summary views; the commit list moves its cursor this many rows. Must be between 1 and 100; other values are ignored with a startup warning. |
 | `leader`                   | `;`          | Single-character prefix for panel focus, sidebar toggles, and review-comment shortcuts. Invalid multi-character values are ignored with a startup warning. |
 | `editor`                   | `$EDITOR`    | Editor command for the `e` / `:edit` handoff, split with shell-like quoting rules (e.g. `"code -w"`). Falls back to `$EDITOR`, then `vi`. |
 | `comment_vim`              | `false`      | Vim modal editing in the comment box; toggle at runtime with `:vim`. When off, default emacs/readline bindings.                                            |
@@ -168,6 +172,8 @@ panel_bg = "#011627"
 bg_highlight = "#1d3b53"
 fg_primary = "#c3ccdc"
 fg_secondary = "#a1aab8"
+# Optional: color selection markers independently of focused pane borders.
+selection_marker = "#242d38"
 # `syntax_theme` points to a local `.tmTheme` file, relative to this file.
 syntax_theme = "my-theme.tmTheme"
 
@@ -180,7 +186,7 @@ mode_bg = "#82aaff"
 
 Notes:
 
-- Every listed color key is required.
+- Palette color keys are required, except for the optional `selection_marker`.
 - Color values accept named terminal colors or `#RRGGBB`.
 - `syntax_theme` is optional. When present it must point to a local `.tmTheme` file.
 - Relative `syntax_theme` paths resolve relative to the local theme TOML file. If the local theme TOML file is a symlink and the syntax theme is not beside the symlink, tuicr also looks beside the symlink target.
@@ -197,6 +203,28 @@ cp examples/tuicr-teal.toml examples/tuicr-teal-syntax.tmTheme ~/.config/tuicr/t
 tuicr --theme tuicr-teal
 ```
 
+### Selection markers
+
+Local themes can set the optional `selection_marker` color independently of
+`border_focused`, which otherwise colors both diff cursor markers/range bars and
+focused pane borders. Selector arrows also use `selection_marker` when set;
+omitting it preserves each indicator's existing appearance.
+
+For matching marker and highlight colors, set these in your **local theme file**:
+
+```toml
+selection_marker = "#242d38" # optional marker foreground
+cursor_line_bg = "#242d38"   # existing diff cursor-row background
+bg_highlight = "#242d38"     # existing list/visual-selection background
+```
+
+The marker setting does not change row backgrounds, focused pane borders, or
+informational text. PR numbers and commit hashes continue to use `cursor_color`.
+It does not add backgrounds to selected commit-range rows that previously had none.
+Values accept the same named colors or `#RRGGBB` syntax as other theme colors;
+an invalid value rejects the theme. Switching themes uses the new theme's marker
+setting; cancelling a theme preview restores the original setting.
+
 ### Resolution precedence
 
 When multiple sources are set, tuicr resolves the theme in this order:
@@ -212,6 +240,17 @@ When multiple sources are set, tuicr resolves the theme in this order:
 Invalid `--theme` values cause an immediate non-zero exit. The same is true when a selected
 local theme file exists but is invalid. Invalid config-selected local themes emit startup warnings
 and fall back through normal precedence.
+
+## Syntaxes
+
+Diffs are highlighted with the grammars bundled from [bat](https://github.com/sharkdp/bat). For a
+language they lack, drop its Sublime Text grammar (`*.sublime-syntax`) into the sibling
+`syntaxes/` directory (`~/.config/tuicr/syntaxes/` on Linux / macOS, `%APPDATA%\tuicr\syntaxes\`
+on Windows). It applies to the file extensions the grammar's `file_extensions` lists.
+
+Grammars that `extends:` another (a Sublime Text 4 feature) are not supported. A file that fails to
+parse is skipped with a startup warning, as is one with an empty context list in a `push`/`set` list
+(`push: [[]]`) or a non-string `escape`, which crash the grammar loader. Loading any grammar here adds about 200ms to startup.
 
 ## Comment types
 

@@ -11,10 +11,22 @@ use toml::Value;
 ///
 /// Booleans keep the legacy global modes. `"auto"` selects per-extension
 /// comparison using the built-in table plus `[ignore_whitespace_overrides]`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IgnoreWhitespaceConfig {
     Bool(bool),
     Auto,
+}
+
+impl Serialize for IgnoreWhitespaceConfig {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Bool(value) => serializer.serialize_bool(*value),
+            Self::Auto => serializer.serialize_str("auto"),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for IgnoreWhitespaceConfig {
@@ -55,6 +67,13 @@ impl<'de> Deserialize<'de> for IgnoreWhitespaceConfig {
 }
 
 pub const DEFAULT_LEADER_KEY: char = ';';
+
+/// Lines scrolled per vertical mouse wheel tick when `mouse_scroll_lines` is unset.
+pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
+
+/// Largest accepted `mouse_scroll_lines`. Anything above a screenful per tick
+/// is almost certainly a typo, and the commit list steps once per line.
+pub const MAX_MOUSE_SCROLL_LINES: usize = 100;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
@@ -161,6 +180,9 @@ pub struct AppConfig {
     /// Hide the brand header, idle status footer, and diff frame, and open
     /// on the first file. Defaults to false, which keeps the current UI.
     pub minimal_ui: Option<bool>,
+    /// Which side of the diff the file list sits on: `"left"` (the default)
+    /// or `"right"`.
+    pub file_list_position: Option<String>,
     /// Join single-child directory chains in the file tree. Defaults to false.
     pub compact_folders: Option<bool>,
     /// Whether pull-request CI checks are fetched and shown.
@@ -202,6 +224,10 @@ pub struct AppConfig {
     pub cursor_line: Option<bool>,
     pub search_highlight: Option<bool>,
     pub mouse: Option<bool>,
+    /// Lines scrolled per vertical mouse wheel tick. Defaults to
+    /// [`DEFAULT_MOUSE_SCROLL_LINES`]; accepted range is
+    /// `1..=MAX_MOUSE_SCROLL_LINES`.
+    pub mouse_scroll_lines: Option<usize>,
     /// Enable vim-style modal editing in the review comment text box. When
     /// unset/false the comment box uses the default emacs/readline bindings.
     pub comment_vim: Option<bool>,
@@ -262,6 +288,7 @@ const KNOWN_KEYS: &[&str] = &[
     "comment_types",
     "show_file_list",
     "minimal_ui",
+    "file_list_position",
     "compact_folders",
     "show_pr_checks",
     "show_pr_comments",
@@ -280,6 +307,7 @@ const KNOWN_KEYS: &[&str] = &[
     "cursor_line",
     "search_highlight",
     "mouse",
+    "mouse_scroll_lines",
     "comment_vim",
     "q_quits",
     "comment_tab_width",
@@ -320,6 +348,10 @@ pub fn config_path() -> Result<PathBuf> {
 
 pub fn themes_dir() -> Result<PathBuf> {
     Ok(config_dir()?.join("themes"))
+}
+
+pub fn syntaxes_dir() -> Result<PathBuf> {
+    Ok(config_dir()?.join("syntaxes"))
 }
 
 fn config_path_env_parts() -> (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
@@ -442,6 +474,20 @@ fn read_usize(table: &toml::Table, key: &str, warnings: &mut Vec<String>) -> Opt
         warnings.push(format!(
             "Warning: Config key '{key}' must be an integer; got '{}', ignoring",
             val
+        ));
+        None
+    }
+}
+
+/// Read `mouse_scroll_lines`, pushing a warning if it is outside
+/// `1..=MAX_MOUSE_SCROLL_LINES`.
+fn read_mouse_scroll_lines(table: &toml::Table, warnings: &mut Vec<String>) -> Option<usize> {
+    let lines = read_usize(table, "mouse_scroll_lines", warnings)?;
+    if (1..=MAX_MOUSE_SCROLL_LINES).contains(&lines) {
+        Some(lines)
+    } else {
+        warnings.push(format!(
+            "Warning: Config key 'mouse_scroll_lines' must be between 1 and {MAX_MOUSE_SCROLL_LINES}; ignoring value"
         ));
         None
     }
@@ -593,6 +639,12 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
         minimal_ui: read_bool(table, "minimal_ui", &mut warnings),
+        file_list_position: read_enum(
+            table,
+            "file_list_position",
+            &["left", "right"],
+            &mut warnings,
+        ),
         compact_folders: read_bool(table, "compact_folders", &mut warnings),
         show_pr_checks: read_bool(table, "show_pr_checks", &mut warnings),
         show_pr_comments: read_bool(table, "show_pr_comments", &mut warnings),
@@ -631,6 +683,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
         search_highlight: read_bool(table, "search_highlight", &mut warnings),
         mouse: read_bool(table, "mouse", &mut warnings),
+        mouse_scroll_lines: read_mouse_scroll_lines(table, &mut warnings),
         comment_vim: read_bool(table, "comment_vim", &mut warnings),
         q_quits: read_bool(table, "q_quits", &mut warnings),
         comment_tab_width: read_usize(table, "comment_tab_width", &mut warnings),
@@ -834,7 +887,7 @@ fn parse_comment_types(
                             "Warning: Config key 'comment_types[{index}].color' cannot be empty; ignoring value"
                         ));
                         None
-                    } else if !is_supported_color_value(trimmed) {
+                    } else if crate::theme::parse_color_value(trimmed).is_none() {
                         warnings.push(format!(
                             "Warning: Config key 'comment_types[{index}].color' must be a named color or #RRGGBB; ignoring value"
                         ));
@@ -901,51 +954,30 @@ fn parse_optional_nonempty_string(
     }
 }
 
-fn is_supported_color_value(value: &str) -> bool {
-    let normalized = value.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return false;
-    }
-
-    if let Some(hex) = normalized.strip_prefix('#') {
-        return hex.len() == 6 && hex.chars().all(|ch| ch.is_ascii_hexdigit());
-    }
-
-    matches!(
-        normalized.as_str(),
-        "black"
-            | "red"
-            | "green"
-            | "yellow"
-            | "blue"
-            | "magenta"
-            | "cyan"
-            | "gray"
-            | "grey"
-            | "darkgray"
-            | "dark_gray"
-            | "darkgrey"
-            | "dark_grey"
-            | "lightred"
-            | "light_red"
-            | "lightgreen"
-            | "light_green"
-            | "lightyellow"
-            | "light_yellow"
-            | "lightblue"
-            | "light_blue"
-            | "lightmagenta"
-            | "light_magenta"
-            | "lightcyan"
-            | "light_cyan"
-            | "white"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn should_round_trip_ignore_whitespace_config() {
+        for value in [
+            IgnoreWhitespaceConfig::Bool(true),
+            IgnoreWhitespaceConfig::Bool(false),
+            IgnoreWhitespaceConfig::Auto,
+        ] {
+            let config = AppConfig {
+                ignore_whitespace: Some(value.clone()),
+                ..AppConfig::default()
+            };
+            let json = serde_json::to_string(&config).expect("serialize json");
+            let back: AppConfig = serde_json::from_str(&json).expect("deserialize json");
+            assert_eq!(back.ignore_whitespace, Some(value.clone()));
+            let toml = toml::to_string(&config).expect("serialize toml");
+            let back: AppConfig = toml::from_str(&toml).expect("deserialize toml");
+            assert_eq!(back.ignore_whitespace, Some(value));
+        }
+    }
 
     /// Helper: write a config file, parse it, and return the outcome.
     fn parse_config(toml_content: &str) -> ConfigLoadOutcome {
@@ -1142,6 +1174,47 @@ mod tests {
         assert_eq!(
             outcome.warnings,
             vec!["Warning: Config key 'minimal_ui' must be a boolean; ignoring value"]
+        );
+    }
+
+    // file_list_position
+
+    fn file_list_position(outcome: &ConfigLoadOutcome) -> Option<&str> {
+        outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.file_list_position.as_deref())
+    }
+
+    #[test]
+    fn should_parse_file_list_position_left() {
+        let outcome = parse_config("file_list_position = \"left\"\n");
+        assert_eq!(file_list_position(&outcome), Some("left"));
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_file_list_position_right() {
+        let outcome = parse_config("file_list_position = \"right\"\n");
+        assert_eq!(file_list_position(&outcome), Some("right"));
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_leave_file_list_position_unset_by_default() {
+        let outcome = parse_config("wrap = true\n");
+        assert_eq!(file_list_position(&outcome), None);
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_file_list_position_with_invalid_value() {
+        let outcome = parse_config("file_list_position = \"top\"\n");
+        assert_eq!(file_list_position(&outcome), None);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'file_list_position' must be \"left\" or \"right\"; got \"top\", ignoring"
         );
     }
 
@@ -1969,6 +2042,100 @@ mod tests {
         let outcome = parse_config("scroll_offset = \"four\"\n");
         assert_eq!(
             outcome.config.as_ref().and_then(|cfg| cfg.scroll_offset),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    // mouse_scroll_lines
+
+    #[test]
+    fn should_parse_mouse_scroll_lines() {
+        let outcome = parse_config("mouse_scroll_lines = 1\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.mouse_scroll_lines),
+            Some(1)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_accept_mouse_scroll_lines_at_the_upper_bound() {
+        let outcome = parse_config(&format!("mouse_scroll_lines = {MAX_MOUSE_SCROLL_LINES}\n"));
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.mouse_scroll_lines),
+            Some(MAX_MOUSE_SCROLL_LINES)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_default_mouse_scroll_lines_to_none_when_absent() {
+        let outcome = parse_config("mouse = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.mouse_scroll_lines),
+            None
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_out_of_range_mouse_scroll_lines() {
+        for value in ["0", &(MAX_MOUSE_SCROLL_LINES + 1).to_string()] {
+            let outcome = parse_config(&format!("mouse_scroll_lines = {value}\n"));
+            assert_eq!(
+                outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.mouse_scroll_lines),
+                None,
+                "mouse_scroll_lines = {value} should be ignored"
+            );
+            assert_eq!(
+                outcome.warnings,
+                vec![format!(
+                    "Warning: Config key 'mouse_scroll_lines' must be between 1 and {MAX_MOUSE_SCROLL_LINES}; ignoring value"
+                )]
+            );
+        }
+    }
+
+    #[test]
+    fn should_warn_and_ignore_negative_mouse_scroll_lines() {
+        let outcome = parse_config("mouse_scroll_lines = -1\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.mouse_scroll_lines),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec![
+                "Warning: Config key 'mouse_scroll_lines' must be a non-negative integer; ignoring value"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_mouse_scroll_lines_with_invalid_type() {
+        let outcome = parse_config("mouse_scroll_lines = \"one\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.mouse_scroll_lines),
             None
         );
         assert_eq!(outcome.warnings.len(), 1);

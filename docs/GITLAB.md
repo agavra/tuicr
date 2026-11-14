@@ -31,7 +31,9 @@ all open the same review. The target accepts several forms:
 | `host/owner/repo#iid` | `git.example.com/mygroup/myrepo#125` |
 
 Nested groups and subgroups work in the `owner/repo` slot, for example
-`mygroup/subgroup/myrepo#125`.
+`mygroup/subgroup/myrepo#125`. A three-segment `a/b/c#iid` is read as
+`host/owner/repo` only when `a` contains a `.`; use a full URL for single-label
+hosts.
 
 tuicr detects the forge from the repository's remotes. A remote routes to GitLab
 when its host contains `gitlab` or matches a self-hosted host configured in
@@ -73,6 +75,26 @@ host is configured in `glab`. Pass the full URL or a `host/owner/repo#iid`
 target, and tuicr builds the `https://git.example.com/owner/repo` repository
 argument for `glab` on its own.
 
+### Instances under a relative URL
+
+If GitLab is served from a subfolder rather than the domain root
+(`https://git.example.com/gitlab/`), tell `glab` about it:
+
+```bash
+glab config set subfolder gitlab --host git.example.com
+```
+
+Nested paths work too (`apps/gitlab`), and surrounding slashes are ignored.
+`GITLAB_SUBFOLDER` overrides the setting for every host.
+
+`glab` prepends that subfolder to every API URL it builds, and tuicr reads the
+setting so it does not repeat the subfolder inside the project id. Without it,
+tuicr has no way to tell the subfolder apart from a top-level group in your
+remote URL, and every API call 404s — including the one that fetches remote
+comments.
+
+SSH remotes are unaffected: they never carry the subfolder.
+
 ## SSH over port 443
 
 If your network only allows SSH on port 443, GitLab's `altssh.gitlab.com`
@@ -82,11 +104,14 @@ in `~/.ssh/config` are resolved the same way.
 
 ## Limitations and troubleshooting
 
+- Merge requests with more than 10,000 commits fail to open with an explicit error rather than showing a partial commit list.
+
 Reviewing a commit range within an MR requires a local checkout of the branch.
 A remote-only commit-range diff returns a "not yet supported" error.
 
 For verbose tracing of the `glab` calls tuicr makes, set `TUICR_GLAB_DEBUG=1`.
-tuicr appends each interaction to `/tmp/tuicr-glab-debug.log`.
+tuicr appends each interaction to `glab-debug.log` in its per-user cache
+directory (`~/.cache/tuicr/` on Linux), readable only by you.
 
 Common errors:
 
@@ -95,3 +120,4 @@ Common errors:
 | `GitLab integration requires glab.` | Install the GitLab CLI, then run `glab auth login`. |
 | `GitLab authentication failed.` | Run `glab auth login` for the host named in the error. |
 | `GitLab token lacks merge request write permission.` | Authenticate with an account or token that has merge request write access. |
+| `404 Not Found` on an instance served from a subfolder | Set `glab config set subfolder <path> --host <host>`. See [Instances under a relative URL](#instances-under-a-relative-url). |

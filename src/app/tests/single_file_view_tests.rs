@@ -42,6 +42,7 @@ fn hunk(start: u32, count: u32) -> DiffHunk {
             content: format!("line {}", start + i),
             old_lineno: Some(start + i),
             new_lineno: Some(start + i),
+            raw_content: None,
             highlighted_spans: None,
         })
         .collect();
@@ -372,6 +373,30 @@ fn pr_editor_target_prefers_a_worktree_copy_of_the_pr_revision() {
     assert_eq!(target.label, "main.rs");
 }
 
+/// A file the PR deletes only exists at the base, so its snapshot must live in
+/// the directory named for the base SHA, not the head SHA.
+#[test]
+fn pr_editor_target_snapshots_a_deleted_file_under_the_base_sha() {
+    let base = tempfile::tempdir().expect("tempdir");
+    crate::app::editor_target::TEST_BASE.with(|b| *b.borrow_mut() = Some(base.path().join("s")));
+    let mut deleted = file("gone.rs", vec![hunk(1, 1)]);
+    deleted.status = FileStatus::Deleted;
+    deleted.old_path = deleted.new_path.take();
+    let (mut app, head_sha, base_sha) = pr_app(FakeForgeBackend::serving(None), vec![deleted]);
+
+    app.queue_editor_for_focused_item();
+    crate::app::editor_target::TEST_BASE.with(|b| *b.borrow_mut() = None);
+
+    let target = app.take_pending_editor_target().expect("editor target");
+    let path = target.path.display().to_string();
+    assert!(path.contains(&base_sha), "{path}");
+    assert!(!path.contains(&head_sha), "{path}");
+    assert_eq!(
+        fs::read_to_string(&target.path).unwrap(),
+        revision_content(&base_sha)
+    );
+}
+
 #[test]
 fn pr_editor_target_warns_when_a_binary_file_is_not_in_the_checkout() {
     let mut binary = file("logo.png", vec![hunk(1, 1)]);
@@ -460,36 +485,89 @@ fn toggle_preserves_file_position() {
 }
 
 #[test]
-fn cursor_down_requires_two_presses_to_walk_to_next_file() {
+fn cursor_down_stops_at_last_line_without_keyboard_enhancement() {
+    // Without kitty keyboard reporting, a held j arrives as a stream of
+    // Press events with no Release, so it can't be told from a second
+    // press. j must stop on the last line instead of walking.
     let files = vec![
         file("a.rs", vec![hunk(1, 3)]),
         file("b.rs", vec![hunk(1, 3)]),
     ];
     let mut app = app_with(files);
+    assert!(!app.supports_keyboard_enhancement);
     app.is_single_file_view = true;
     app.diff_state.current_file_idx = 0;
     app.diff_state.cursor_line = app.max_cursor_line();
     let max_a = app.max_cursor_line();
 
-    // First press at file end arms primed_walk_next and stays on max.
-    app.cursor_down(1);
+    for _ in 0..10 {
+        app.cursor_down(1);
+    }
+    app.cursor_down(10);
     assert_eq!(app.diff_state.current_file_idx, 0);
     assert_eq!(app.diff_state.cursor_line, max_a);
-    assert!(app.primed_walk_next);
-
-    // Second press consumes the prime and walks.
-    app.cursor_down(1);
-    assert_eq!(app.diff_state.current_file_idx, 1);
     assert!(!app.primed_walk_next);
 }
 
 #[test]
-fn cursor_up_requires_two_presses_to_walk_to_prev_file() {
+fn cursor_up_stops_at_first_line_without_keyboard_enhancement() {
     let files = vec![
         file("a.rs", vec![hunk(1, 3)]),
         file("b.rs", vec![hunk(1, 3)]),
     ];
     let mut app = app_with(files);
+    assert!(!app.supports_keyboard_enhancement);
+    app.is_single_file_view = true;
+    app.diff_state.current_file_idx = 1;
+    let file_top = app.calculate_file_scroll_offset(1);
+    app.diff_state.cursor_line = file_top;
+
+    for _ in 0..10 {
+        app.cursor_up(1);
+    }
+    app.cursor_up(10);
+    assert_eq!(app.diff_state.current_file_idx, 1);
+    assert_eq!(app.diff_state.cursor_line, file_top);
+    assert!(!app.primed_walk_prev);
+}
+
+#[test]
+fn next_and_prev_file_switch_files_without_keyboard_enhancement() {
+    let files = vec![
+        file("a.rs", vec![hunk(1, 3)]),
+        file("b.rs", vec![hunk(1, 3)]),
+    ];
+    let mut app = app_with(files);
+    assert!(!app.supports_keyboard_enhancement);
+    app.toggle_single_file_view();
+    app.jump_to_file(0);
+    app.diff_state.cursor_line = app.max_cursor_line();
+    app.cursor_down(1);
+    assert_eq!(app.diff_state.current_file_idx, 0);
+
+    // `}` moves on from the edge where j stopped, and `{` comes back.
+    app.next_file();
+    assert_eq!(app.diff_state.current_file_idx, 1);
+    assert_eq!(
+        app.diff_state.cursor_line,
+        app.calculate_file_scroll_offset(1)
+    );
+
+    app.cursor_up(1);
+    assert_eq!(app.diff_state.current_file_idx, 1);
+
+    app.prev_file();
+    assert_eq!(app.diff_state.current_file_idx, 0);
+}
+
+#[test]
+fn release_then_press_walks_up_when_keyboard_enhancement_supported() {
+    let files = vec![
+        file("a.rs", vec![hunk(1, 3)]),
+        file("b.rs", vec![hunk(1, 3)]),
+    ];
+    let mut app = app_with(files);
+    app.supports_keyboard_enhancement = true;
     app.is_single_file_view = true;
     app.diff_state.current_file_idx = 1;
     let file_top = app.calculate_file_scroll_offset(1);
@@ -501,10 +579,17 @@ fn cursor_up_requires_two_presses_to_walk_to_prev_file() {
     assert_eq!(app.diff_state.cursor_line, file_top);
     assert!(app.primed_walk_prev);
 
-    // Second press walks to the previous file.
+    // Held k (no release) keeps the cursor parked.
+    app.cursor_up(1);
+    assert_eq!(app.diff_state.current_file_idx, 1);
+    assert_eq!(app.diff_state.cursor_line, file_top);
+
+    // After an Up-Release, the next press walks to the previous file.
+    app.up_released_since_arm = true;
     app.cursor_up(1);
     assert_eq!(app.diff_state.current_file_idx, 0);
     assert!(!app.primed_walk_prev);
+    assert!(!app.up_released_since_arm);
 }
 
 #[test]
@@ -514,6 +599,7 @@ fn primed_walk_clears_on_non_overflow_cursor_move() {
         file("b.rs", vec![hunk(1, 5)]),
     ];
     let mut app = app_with(files);
+    app.supports_keyboard_enhancement = true;
     app.is_single_file_view = true;
     app.diff_state.current_file_idx = 0;
     app.diff_state.cursor_line = app.max_cursor_line();

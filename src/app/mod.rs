@@ -46,7 +46,7 @@ fn create_forge_backend(
     local_checkout: Option<PathBuf>,
     show_pr_checks: bool,
     show_pr_comments: bool,
-) -> Box<dyn ForgeBackend> {
+) -> Box<dyn ForgeBackend + Sync> {
     use crate::forge::traits::ForgeKind;
     match repo.kind {
         ForgeKind::GitHub => {
@@ -424,7 +424,7 @@ pub fn pr_commit_to_commit_info(commit: &crate::forge::traits::PullRequestCommit
         short_id: commit.short_oid.clone(),
         branch_name: None,
         summary: commit.summary.clone(),
-        body: None,
+        body: commit.body.clone(),
         author: commit.author.clone(),
         time: commit.timestamp.unwrap_or_else(chrono::Utc::now),
     }
@@ -617,6 +617,10 @@ pub enum InputMode {
     /// a live preview immediately; `/` opens a filter draft the same way the
     /// file tree's `i`/`e`/`/` prompts work.
     ThemePicker,
+    /// Modal file picker opened by `<leader>p`. Lists the files that pass
+    /// the file-tree filters; `Enter` jumps to the selected one, and `/`
+    /// opens a filter draft the same way the theme picker does.
+    FilePicker,
 }
 
 /// CommandCompletionState keeps one Tab-completion run anchored to the text
@@ -781,6 +785,8 @@ pub struct SubmitState {
     pub resolver_cursor: usize,
     /// Originally-reviewed head SHA — used as `commit_id` in the payload.
     pub commit_id: String,
+    /// Old-side revision of a strict commit subset; `None` for the full PR.
+    pub base_commit_id: Option<String>,
     /// When `true`, the resolver advances directly to the network call
     /// instead of routing through `SubmitConfirm`. Set by the action-picker
     /// path; left `false` for explicit `:submit <event>` invocations.
@@ -992,6 +998,9 @@ pub struct SubmitInFlightState {
     /// Head SHA at preflight — used as `commit_id` in the GitHub payload and
     /// to discard stale results if the user reloaded the PR mid-submit.
     pub head_sha_snapshot: String,
+    /// Head of the PR session the submit started from. Differs from
+    /// `head_sha_snapshot` when a commit subset is selected.
+    pub pr_head_sha: String,
     /// Repository + PR identity. Lets the stale-result guard verify the
     /// result still applies to the same PR session.
     pub repository: crate::forge::traits::ForgeRepository,
@@ -1007,6 +1016,8 @@ pub enum PrSubmitEvent {
         pr_number: u64,
         head_sha: String,
         result: std::result::Result<crate::forge::traits::GhCreateReviewResponse, String>,
+        /// What a failed submit had already posted (empty on success).
+        partial: crate::forge::traits::SubmitReceipts,
     },
 }
 
@@ -1032,6 +1043,16 @@ pub enum PrThreadsEvent {
 pub enum DiffViewMode {
     Unified,
     SideBySide,
+}
+
+/// Which side of the diff the sidebar (file tree + comment navigator) sits on.
+/// Set from the `file_list_position` config key; `<leader>h` / `<leader>l`
+/// follow it so `h` always moves focus toward the left-hand pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileListPosition {
+    #[default]
+    Left,
+    Right,
 }
 
 /// Where wrapped unified diff rows continue: `Flow` wraps the whole row from
@@ -1127,6 +1148,11 @@ pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
     pub vcs_info: VcsInfo,
+    /// The backend that is *not* active while a PR is open: the checkout's own
+    /// while in PR mode (the active one is `PrNoopVcs`), so local targets stay
+    /// reachable. `None` until needed when tuicr started on `tuicr pr`; see
+    /// `activate_local_vcs`.
+    parked_vcs: Option<(Box<dyn VcsBackend>, VcsInfo)>,
     /// The on-disk repo root tuicr was launched in, when there is one.
     ///
     /// Entering PR mode replaces `vcs_info.root_path` with the synthetic
@@ -1189,8 +1215,12 @@ pub struct App {
     pub summary_state: SummaryState,
     /// File-tree include/exclude filters and `/` search.
     pub file_filter: FileTreeFilter,
+    /// `transparent_background`: reapplied to every theme resolved at runtime.
+    pub transparent_background: bool,
     /// Runtime `:theme` picker state.
     pub theme_picker: ThemePickerState,
+    /// `<leader>p` file picker state.
+    pub file_picker: FilePickerState,
     pub command_buffer: String,
     pub(crate) command_completion: Option<CommandCompletionState>,
     pub(crate) command_return_mode: InputMode,
@@ -1341,6 +1371,10 @@ pub struct App {
     pub current_pr_head: Option<String>,
     /// Extended PR metadata rendered at the top of the diff view. Populated in PR mode.
     pub pr_info: Option<crate::forge::traits::PullRequestInfo>,
+    /// Built PR-info panel rows, reused until the width, PR metadata or theme
+    /// changes (see `ui::pr_info_panel::pr_info_display_lines`).
+    pub(crate) pr_info_rows_cache:
+        std::cell::RefCell<Option<crate::ui::pr_info_panel::PrInfoRowsCache>>,
     /// Whether pull-request CI checks are fetched and rendered. Defaults to
     /// false; configured before the first direct PR load.
     pub show_pr_checks: bool,
@@ -1349,6 +1383,10 @@ pub struct App {
     pub show_pr_comments: bool,
 
     pub should_quit: bool,
+    /// Set by `Ctrl-l` or a terminal resize. The main loop takes it before the
+    /// next draw and clears the screen, so ratatui repaints every cell instead
+    /// of only the ones that changed since the last frame.
+    full_redraw_pending: bool,
     pub dirty: bool,
     pub quit_warned: bool,
     pub message: Option<Message>,
@@ -1364,6 +1402,7 @@ pub struct App {
     /// comments) depend on its width, so the landing offset is only right
     /// once it is known.
     pub pending_minimal_ui_start: bool,
+    pub file_list_position: FileListPosition,
     pub compact_folders: bool,
     /// `true` when the session was opened via `--all-files`. Drives the
     /// `PRISTINE · N files` chip in the status bar and prevents that chip
@@ -1397,8 +1436,8 @@ pub struct App {
     /// flags are true so held-key auto-repeat (Press, Repeat, Repeat...)
     /// never satisfies the gate. Only meaningful on terminals that
     /// support kitty `REPORT_EVENT_TYPES`; on others Release events are
-    /// never emitted and the gate is bypassed via
-    /// `supports_keyboard_enhancement`.
+    /// never emitted, so the walk is off and j/k stop at the file's edges
+    /// (see `supports_keyboard_enhancement` in `cursor_down`).
     pub down_released_since_arm: bool,
     /// Symmetric inverse of [`down_released_since_arm`] for the prev-file
     /// walk gate.
@@ -1406,6 +1445,9 @@ pub struct App {
     pub cursor_line_highlight: bool,
     pub leader_key: char,
     pub scroll_offset: usize,
+    /// Lines scrolled per vertical mouse wheel tick (config
+    /// `mouse_scroll_lines`, default 3).
+    pub mouse_scroll_lines: usize,
     pub file_list_area: Option<ratatui::layout::Rect>,
     pub comment_navigator_area: Option<ratatui::layout::Rect>,
     pub diff_area: Option<ratatui::layout::Rect>,
@@ -1483,7 +1525,7 @@ pub struct App {
     pub initial_comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
     /// Cached individual/subrange diffs keyed by (start_idx, end_idx) into review_commits
     pub commit_diff_cache: HashMap<(usize, usize), Vec<DiffFile>>,
-    /// The combined "all selected" diff, cached for quick restoration
+    /// Full-range (every commit) diff cache, used to restore the widened view
     pub range_diff_files: Option<Vec<DiffFile>>,
     /// Saved inline selection range when entering full commit select mode via :commits
     pub saved_inline_selection: Option<(usize, usize)>,
@@ -1499,6 +1541,25 @@ pub struct CommentTypeDefinition {
     pub label: String,
     pub definition: Option<String>,
     pub color: Option<Color>,
+}
+
+/// Resolved `[TYPE]` text for a comment type: the configured label uppercased,
+/// else the uppercased id. Empty for [`CommentType::None`] so callers omit the
+/// tag. The single resolver behind the TUI, export and forge submit labels.
+pub fn resolve_comment_type_label(
+    comment_type: &crate::model::CommentType,
+    comment_types: &[CommentTypeDefinition],
+) -> String {
+    if comment_type.is_none() {
+        return String::new();
+    }
+    match comment_types
+        .iter()
+        .find(|definition| definition.id == comment_type.id())
+    {
+        Some(definition) => definition.label.to_ascii_uppercase(),
+        None => comment_type.as_str(),
+    }
 }
 
 #[derive(Default)]
@@ -1600,7 +1661,7 @@ pub struct CommentNavigatorItem {
     pub author: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DiffState {
     pub scroll_offset: usize,
     pub scroll_x: usize,
@@ -1632,22 +1693,6 @@ impl DiffState {
     /// viewport to guarantee a stable free zone after centering (zz).
     pub fn effective_scroll_margin(&self, scroll_offset: usize) -> usize {
         scroll_offset.min((self.effective_visible_lines() / 2).saturating_sub(1))
-    }
-}
-
-impl Default for DiffState {
-    fn default() -> Self {
-        Self {
-            scroll_offset: 0,
-            scroll_x: 0,
-            cursor_line: 0,
-            current_file_idx: 0,
-            viewport_height: 0,
-            viewport_width: 0,
-            max_content_width: 0,
-            wrap_lines: true,
-            visible_line_count: 0,
-        }
     }
 }
 
@@ -1792,6 +1837,70 @@ impl ThemePickerState {
     }
 }
 
+/// `<leader>p` file picker state (`InputMode::FilePicker`).
+///
+/// `candidates` pairs each listed file's absolute `diff_files` index with its
+/// display path, captured once when the picker opens from the files that pass
+/// `App::file_passes_filter`. `draft` is the open `/` prompt, the same shape
+/// as `ThemePickerState`'s, but it narrows the list as it is typed and its
+/// `Enter` jumps straight to the selected match, so there is no committed
+/// filter to keep.
+#[derive(Default)]
+pub struct FilePickerState {
+    pub candidates: Vec<(usize, String)>,
+    pub draft: Option<String>,
+    /// File highlighted when the draft opened, restored if it is discarded.
+    pub file_before_draft: Option<usize>,
+    /// Selection + scroll offset into the filtered view.
+    pub list_state: ratatui::widgets::ListState,
+}
+
+impl FilePickerState {
+    /// Indices into `candidates` that survive the open draft
+    /// (case-insensitive substring match on the display path; an empty or
+    /// absent draft shows every candidate).
+    pub fn filtered_indices(&self) -> Vec<usize> {
+        let needle = self
+            .draft
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+        self.candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, path))| needle.is_empty() || path.to_lowercase().contains(&needle))
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
+    /// Index into the filtered view currently highlighted.
+    pub fn selected(&self) -> usize {
+        self.list_state.selected().unwrap_or(0)
+    }
+
+    pub fn select(&mut self, index: usize) {
+        self.list_state.select(Some(index));
+    }
+
+    /// The absolute `diff_files` index of the highlighted row, if any rows
+    /// are visible.
+    pub fn selected_file_idx(&self) -> Option<usize> {
+        self.selected_candidate().map(|(file_idx, _)| *file_idx)
+    }
+
+    /// The display path of the highlighted row, if any rows are visible.
+    pub fn selected_path(&self) -> Option<&str> {
+        self.selected_candidate().map(|(_, path)| path.as_str())
+    }
+
+    fn selected_candidate(&self) -> Option<&(usize, String)> {
+        self.filtered_indices()
+            .get(self.selected())
+            .and_then(|idx| self.candidates.get(*idx))
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct HelpState {
     pub scroll_offset: usize,
@@ -1847,6 +1956,8 @@ pub struct SummaryState {
     pub total_lines: usize, // Set during render
     /// Exclusive rendered-line ranges for each pending comment.
     pub comment_ranges: Vec<(usize, usize)>,
+    /// Stable deletion identities, including comments without a jump target.
+    pub comment_ids: Vec<String>,
     /// Stable jump targets in the same order as `comment_ranges`.
     /// A target is absent when the comment is hidden by the current diff,
     /// commit selection, or file-tree filters.
@@ -1920,6 +2031,7 @@ mod commits;
 mod diff_load;
 mod editor_target;
 mod file_filter;
+mod file_picker;
 mod gaps;
 mod init;
 mod modes;

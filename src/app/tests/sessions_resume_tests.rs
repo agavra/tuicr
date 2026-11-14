@@ -39,6 +39,7 @@ struct VcsCalls {
     working_tree: usize,
     unstaged: usize,
     staged: usize,
+    unstaged_changes: bool,
 }
 
 struct RecordingVcs {
@@ -68,6 +69,22 @@ impl VcsBackend for RecordingVcs {
     fn get_staged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         self.calls.lock().unwrap().staged += 1;
         Ok(vec![diff_file("staged.py")])
+    }
+
+    fn get_working_tree_with_commits_diff(
+        &self,
+        _commit_ids: &[String],
+        _highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        Ok(vec![diff_file("staged.py")])
+    }
+
+    /// Staged changes only, so the `-r -w` pane has one working-tree row.
+    fn get_change_status(&self) -> Result<crate::vcs::traits::VcsChangeStatus> {
+        Ok(crate::vcs::traits::VcsChangeStatus {
+            staged: true,
+            unstaged: self.calls.lock().unwrap().unstaged_changes,
+        })
     }
 
     fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {
@@ -460,6 +477,44 @@ fn should_point_pristine_sessions_at_the_flag_that_opens_them() {
 }
 
 #[test]
+fn should_point_file_sessions_at_the_flag_without_replacing_the_current_review() {
+    let _reviews = TestReviewsDir::new();
+    let (mut app, calls) = build_app(vec![commit("ccc")]);
+    let current_session = serde_json::to_value(&app.session).unwrap();
+    stage_session(
+        &mut app,
+        ReviewSession::new(
+            PathBuf::from("/tmp"),
+            "abcdef0123456789".to_string(),
+            None,
+            SessionDiffSource::File,
+        ),
+    );
+    assert!(app.message.is_none());
+    assert_eq!(app.session.diff_source, SessionDiffSource::WorkingTree);
+    assert!(app.diff_files.is_empty());
+
+    app.sessions_tab_select().expect("select should not error");
+
+    assert!(
+        app.message
+            .as_ref()
+            .is_some_and(|m| m.content.contains("--file <path>")),
+        "expected file reopening guidance, got {:?}",
+        app.message
+    );
+    assert_eq!(serde_json::to_value(&app.session).unwrap(), current_session);
+    assert!(app.diff_files.is_empty());
+    assert!(matches!(app.diff_source, DiffSource::WorkingTree));
+    let calls = calls.lock().unwrap();
+    assert_eq!(
+        (calls.working_tree, calls.staged, calls.unstaged),
+        (0, 0, 0)
+    );
+    assert!(calls.range_ids.is_none());
+}
+
+#[test]
 fn should_hide_sessions_with_no_review_progress() {
     // an empty session, as a crashed TUI leaves behind, beside one
     // holding comments and one holding reviewed state
@@ -645,4 +700,426 @@ fn should_reveal_empty_sessions_only_when_toggled_on() {
     // and — toggling back re-hides it
     app.sessions_tab_toggle_show_empty();
     assert!(app.sessions_tab.is_empty());
+}
+
+fn working_tree_session(source: SessionDiffSource) -> ReviewSession {
+    ReviewSession::new(
+        PathBuf::from("/tmp"),
+        "ccc".to_string(),
+        Some("main".to_string()),
+        source,
+    )
+}
+
+#[test]
+fn should_drop_the_commit_pane_when_resuming_a_staged_review_after_a_range() {
+    // given — a commit-range review with its inline pane
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("ccc"), commit("bbb"), commit("aaa")]);
+    stage_session(
+        &mut app,
+        range_session(&["aaa", "bbb", "ccc"], Some("main")),
+    );
+    app.sessions_tab_select().expect("resume range");
+    assert_eq!(app.review_commits.len(), 3);
+
+    // when — the staged review is opened next
+    stage_session(&mut app, working_tree_session(SessionDiffSource::Staged));
+    app.sessions_tab_select().expect("resume staged");
+
+    // then — nothing of the old pane is left to stamp comments or drive `)`
+    assert!(matches!(app.diff_source, DiffSource::Staged));
+    assert!(app.review_commits.is_empty());
+    assert_eq!(app.commit_selection_range, None);
+    assert!(!app.show_commit_selector);
+    assert!(app.range_diff_files.is_none());
+    assert!(!app.has_review_commits());
+    assert_eq!(app.commit_id_for_new_comment(), None);
+}
+
+#[test]
+fn should_keep_the_open_review_when_the_resumed_session_has_nothing_to_load() {
+    // given — a staged review is open and a saved Unstaged session is
+    // selected while the unstaged diff is empty
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("ccc")]);
+    stage_session(&mut app, working_tree_session(SessionDiffSource::Staged));
+    app.sessions_tab_select().expect("resume staged");
+    let open_path = app.session_path.clone();
+
+    // when
+    stage_session(&mut app, working_tree_session(SessionDiffSource::Unstaged));
+    app.sessions_tab_select().expect("resume unstaged");
+
+    // then — the failed resume must not replace the active session
+    assert!(matches!(app.session.diff_source, SessionDiffSource::Staged));
+    assert_eq!(app.session_path, open_path);
+    assert_eq!(
+        app.message.as_ref().map(|m| m.content.as_str()),
+        Some("No unstaged changes")
+    );
+}
+
+#[test]
+fn should_save_the_outgoing_session_when_switching_local_targets() {
+    // given — a staged review with an unsaved reviewed mark
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("ccc")]);
+    stage_session(&mut app, working_tree_session(SessionDiffSource::Staged));
+    app.sessions_tab_select().expect("resume staged");
+    let outgoing_path = app.session_path.clone().expect("session path");
+    app.toggle_reviewed_for_file_idx(0, false);
+    assert!(app.dirty);
+
+    // when — another local target is opened
+    stage_session(
+        &mut app,
+        working_tree_session(SessionDiffSource::WorkingTree),
+    );
+    app.sessions_tab_select().expect("resume working tree");
+
+    // then — the mark reached disk and the new review starts clean
+    let saved = crate::persistence::storage::load_session(&outgoing_path).expect("load");
+    assert!(saved.files.values().any(|f| f.reviewed));
+    assert!(!app.dirty);
+}
+
+#[test]
+fn should_not_carry_dirty_into_the_session_that_replaces_it() {
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("ccc")]);
+    // an existing saved session, so tracking it saves nothing that would
+    // clear the flag on its own
+    crate::review_store::ReviewStore::new()
+        .save_review(&app.session)
+        .expect("persist session");
+    app.dirty = true;
+
+    app.reset_persisted_session_tracking().expect("reset");
+
+    assert!(!app.dirty);
+}
+
+#[test]
+fn should_restore_the_working_tree_rows_when_resuming_a_range_with_working_tree() {
+    // given — a saved `-r -w` review; the range holds only real commits
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("bbb"), commit("aaa")]);
+    let mut saved = range_session(&["aaa", "bbb"], Some("main"));
+    saved.diff_source = SessionDiffSource::StagedUnstagedAndCommits;
+    stage_session(&mut app, saved);
+
+    // when
+    app.sessions_tab_select().expect("resume");
+
+    // then — the staged row sits above the commits, newest first
+    let ids: Vec<&str> = app.review_commits.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(app.review_commits.len(), 3);
+    assert!(App::is_staged_commit(&app.review_commits[0]), "{ids:?}");
+    assert_eq!(&ids[1..], ["bbb", "aaa"]);
+    assert!(app.show_commit_selector);
+    // and the stored range keeps real ids only
+    assert_eq!(
+        app.session.commit_range,
+        Some(vec!["aaa".to_string(), "bbb".to_string()])
+    );
+}
+
+#[test]
+fn should_restore_the_unstaged_row_when_resuming_a_range_with_working_tree() {
+    // given — a saved `-r -w` review while the tree has unstaged changes
+    let _reviews = TestReviewsDir::new();
+    let (mut app, calls) = build_app(vec![commit("bbb"), commit("aaa")]);
+    calls.lock().unwrap().unstaged_changes = true;
+    let mut saved = range_session(&["aaa", "bbb"], Some("main"));
+    saved.diff_source = SessionDiffSource::StagedUnstagedAndCommits;
+    stage_session(&mut app, saved);
+
+    // when
+    app.sessions_tab_select().expect("resume");
+
+    // then — both working-tree rows sit above the commits
+    assert_eq!(app.review_commits.len(), 4);
+    assert!(App::is_unstaged_commit(&app.review_commits[0]));
+    assert!(App::is_staged_commit(&app.review_commits[1]));
+}
+
+#[test]
+fn should_keep_the_dirty_review_open_when_the_outgoing_save_fails() {
+    // given — a dirty staged review whose session file became unreadable
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("ccc")]);
+    stage_session(&mut app, working_tree_session(SessionDiffSource::Staged));
+    app.sessions_tab_select().expect("resume staged");
+    let path = app.session_path.clone().expect("session path");
+    app.toggle_reviewed_for_file_idx(0, false);
+    std::fs::write(&path, "not JSON").expect("corrupt");
+
+    // when — another local target is confirmed
+    app.commit_list = vec![commit("ccc")];
+    app.commit_list_cursor = 0;
+    app.commit_selection_range = None;
+    let result = app.confirm_commit_selection();
+
+    // then — the switch aborts and the unsaved mark stays in memory
+    assert!(result.is_err());
+    assert!(app.dirty);
+    assert!(matches!(app.diff_source, DiffSource::Staged));
+    assert!(app.session.files[Path::new("staged.py")].reviewed);
+}
+
+#[test]
+fn should_keep_the_outgoing_mark_when_resuming_the_open_session() {
+    // given — the open staged review has an unsaved reviewed mark
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("ccc")]);
+    stage_session(&mut app, working_tree_session(SessionDiffSource::Staged));
+    app.sessions_tab_select().expect("resume staged");
+    let path = app.session_path.clone().expect("session path");
+    app.toggle_reviewed_for_file_idx(0, false);
+
+    // when — the Sessions row for that same review is selected
+    app.sessions_tab_select().expect("resume same");
+    app.save_current_session_merging_external().expect("save");
+
+    // then — the mark survives in memory and on disk
+    assert!(app.session.files[Path::new("staged.py")].reviewed);
+    let disk = crate::persistence::storage::load_session(&path).expect("load");
+    assert!(disk.files[Path::new("staged.py")].reviewed);
+}
+
+#[test]
+fn should_return_focus_to_the_diff_when_a_local_switch_hides_the_focused_pane() {
+    // given — a range review with keyboard focus on its inline pane
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("ccc"), commit("bbb"), commit("aaa")]);
+    stage_session(
+        &mut app,
+        range_session(&["aaa", "bbb", "ccc"], Some("main")),
+    );
+    app.sessions_tab_select().expect("resume range");
+    app.focused_panel = FocusedPanel::CommitSelector;
+
+    // when — the staged target replaces it
+    app.enter_target_selector(TargetTab::Local)
+        .expect("selector");
+    assert!(App::is_staged_commit(&app.commit_list[0]));
+    app.confirm_commit_selection().expect("confirm");
+
+    // then — keys reach the diff, not the hidden empty selector
+    assert!(!app.has_inline_commit_selector());
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+}
+
+/// A dirty staged review (unsaved reviewed mark) with commits `bbb`, `aaa`
+/// available for the next resume; returns its session file path.
+fn dirty_staged_app() -> (App, PathBuf) {
+    let (mut app, _) = build_app(vec![commit("bbb"), commit("aaa")]);
+    stage_session(&mut app, working_tree_session(SessionDiffSource::Staged));
+    app.sessions_tab_select().expect("resume staged");
+    let path = app.session_path.clone().expect("session path");
+    app.toggle_reviewed_for_file_idx(0, false);
+    assert!(app.dirty);
+    (app, path)
+}
+
+fn target_sessions() -> Vec<(&'static str, ReviewSession)> {
+    let mut with_working_tree = range_session(&["aaa", "bbb"], Some("main"));
+    with_working_tree.diff_source = SessionDiffSource::StagedUnstagedAndCommits;
+    vec![
+        (
+            "local",
+            working_tree_session(SessionDiffSource::WorkingTree),
+        ),
+        ("range", range_session(&["aaa", "bbb"], Some("main"))),
+        ("range+working tree", with_working_tree),
+    ]
+}
+
+#[test]
+fn should_save_the_outgoing_session_through_every_loader_once_the_switch_succeeds() {
+    for (name, target) in target_sessions() {
+        // given
+        let _reviews = TestReviewsDir::new();
+        let (mut app, outgoing_path) = dirty_staged_app();
+
+        // when
+        stage_session(&mut app, target);
+        app.sessions_tab_select().expect("resume");
+
+        // then
+        let saved = crate::persistence::storage::load_session(&outgoing_path).expect("load");
+        assert!(saved.files.values().any(|f| f.reviewed), "{name}");
+        assert!(!app.dirty, "{name}");
+    }
+}
+
+#[test]
+fn should_not_save_the_outgoing_session_when_the_resume_finds_nothing_to_load() {
+    // given — Unstaged resume hits NoChanges
+    let _reviews = TestReviewsDir::new();
+    let (mut app, outgoing_path) = dirty_staged_app();
+
+    // when
+    stage_session(&mut app, working_tree_session(SessionDiffSource::Unstaged));
+    app.sessions_tab_select().expect("resume unstaged");
+
+    // then — nothing was written and the unsaved mark is still pending
+    let disk = crate::persistence::storage::load_session(&outgoing_path).expect("load");
+    assert!(!disk.files.values().any(|f| f.reviewed));
+    assert!(app.dirty);
+    assert!(app.session.files[Path::new("staged.py")].reviewed);
+}
+
+#[test]
+fn should_not_save_the_outgoing_session_when_a_resume_cannot_open_the_target() {
+    // given — a range whose commits are gone, and a pristine session
+    let _reviews = TestReviewsDir::new();
+    let (mut app, outgoing_path) = dirty_staged_app();
+
+    for target in [
+        range_session(&["gone1", "gone2"], Some("main")),
+        working_tree_session(SessionDiffSource::Pristine),
+    ] {
+        // when
+        stage_session(&mut app, target);
+        app.sessions_tab_select().expect("resume");
+
+        // then
+        let disk = crate::persistence::storage::load_session(&outgoing_path).expect("load");
+        assert!(!disk.files.values().any(|f| f.reviewed));
+        assert!(app.dirty);
+    }
+}
+
+#[test]
+fn should_keep_the_dirty_review_open_when_the_outgoing_save_fails_for_each_loader() {
+    for (name, target) in target_sessions() {
+        // given — the open session file became unreadable
+        let _reviews = TestReviewsDir::new();
+        let (mut app, path) = dirty_staged_app();
+        stage_session(&mut app, target);
+        std::fs::write(&path, "not JSON").expect("corrupt");
+
+        // when
+        let result = app.sessions_tab_select();
+
+        // then — the switch aborts and the unsaved mark stays in memory
+        assert!(result.is_err(), "{name}");
+        assert!(app.dirty, "{name}");
+        assert!(matches!(app.diff_source, DiffSource::Staged), "{name}");
+    }
+}
+
+#[test]
+fn should_move_focus_off_the_commit_pane_whenever_installing_a_single_commit_hides_it() {
+    // given — the pane of a multi-commit review has focus
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("bbb"), commit("aaa")]);
+    app.focused_panel = FocusedPanel::CommitSelector;
+
+    // when — a one-commit review is installed
+    app.install_review_commits(vec![commit("aaa")], CommitSelectionStart::All)
+        .expect("install");
+
+    // then
+    assert!(!app.show_commit_selector);
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+}
+
+#[test]
+fn should_report_a_range_whose_changes_are_all_ignored_without_replacing_the_review() {
+    // given — a loaded staged review and a range whose diff is empty
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("ccc")]);
+    stage_session(&mut app, working_tree_session(SessionDiffSource::Staged));
+    app.sessions_tab_select().expect("resume staged");
+
+    app.commit_list = vec![commit("ccc")];
+    app.commit_selection_range = Some((0, 0));
+    app.vcs = Box::new(NoChangesRangeVcs(app.vcs_info.clone()));
+
+    // when
+    let result = app.confirm_commit_selection();
+
+    // then — a message, not a "Failed to load commits" error
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        app.message.as_ref().map(|m| m.content.as_str()),
+        Some("No changes in selected commits")
+    );
+    assert!(matches!(app.diff_source, DiffSource::Staged));
+}
+
+struct NoChangesRangeVcs(VcsInfo);
+
+impl VcsBackend for NoChangesRangeVcs {
+    fn info(&self) -> &VcsInfo {
+        &self.0
+    }
+    fn get_working_tree_diff(&self, _: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        Err(TuicrError::NoChanges)
+    }
+    fn get_commit_range_diff(
+        &self,
+        _: &ResolvedRevisionRange<'_>,
+        _: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        Err(TuicrError::NoChanges)
+    }
+    fn fetch_context_lines(
+        &self,
+        _: &Path,
+        _: FileStatus,
+        _: Option<&str>,
+        _: u32,
+        _: u32,
+    ) -> Result<Vec<DiffLine>> {
+        Ok(Vec::new())
+    }
+    fn file_line_count(&self, _: &Path, _: FileStatus, _: Option<&str>) -> Result<u32> {
+        Ok(0)
+    }
+}
+
+#[test]
+fn should_keep_wrap_preference_when_confirming_a_commit_range() {
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _calls) = build_app(vec![commit("bbb"), commit("aaa")]);
+    app.diff_state.wrap_lines = true;
+    app.commit_selection_range = Some((0, 1));
+
+    app.confirm_commit_selection().expect("confirm range");
+
+    assert!(matches!(app.diff_source, DiffSource::CommitRange(_)));
+    assert!(app.diff_state.wrap_lines, "commit-range load reset wrap");
+}
+
+#[test]
+fn should_keep_wrap_preference_when_loading_a_local_selection() {
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _calls) = build_app(vec![commit("aaa")]);
+    app.diff_state.wrap_lines = true;
+
+    assert!(app.load_working_tree_selection().expect("load worktree"));
+
+    assert!(app.diff_state.wrap_lines, "local selection reset wrap");
+}
+
+#[test]
+fn should_keep_wrap_preference_when_loading_staged_unstaged_and_commits() {
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _calls) = build_app(vec![commit("aaa")]);
+    app.diff_state.wrap_lines = true;
+
+    let loaded = app
+        .load_staged_unstaged_and_commits_selection(vec!["aaa".to_string()], vec![commit("aaa")])
+        .expect("load -r -w");
+
+    assert!(loaded);
+    assert!(
+        matches!(app.diff_source, DiffSource::StagedUnstagedAndCommits(_)),
+        "wrong source"
+    );
+    assert!(app.diff_state.wrap_lines, "-r -w load reset wrap");
 }

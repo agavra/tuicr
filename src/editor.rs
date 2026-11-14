@@ -77,6 +77,9 @@ impl EditorCommand {
                 args.push(OsString::from("--goto"));
                 args.push(OsString::from(format!("{}:{line}", target.path.display())));
             }
+            (EditorFamily::PathLine, Some(line)) => {
+                args.push(OsString::from(format!("{}:{line}", target.path.display())));
+            }
             _ => args.push(target.path.as_os_str().to_os_string()),
         }
 
@@ -241,6 +244,8 @@ enum EditorFamily {
     PlusLine,
     /// Opens a source line with `$editor --goto $file:NN`.
     GotoLine,
+    /// Opens a source line with `$editor $file:NN`.
+    PathLine,
     /// Has no known line syntax; opens with `$editor $file`.
     Plain,
 }
@@ -258,8 +263,11 @@ fn editor_family(program: &str) -> EditorFamily {
         .and_then(|name| name.to_str())
         .unwrap_or(program);
     match name {
-        "vi" | "vim" | "nvim" | "nano" | "emacs" | "emacsclient" | "hx" => EditorFamily::PlusLine,
+        "vi" | "vim" | "nvim" | "nano" | "emacs" | "emacsclient" | "hx" | "flow" => {
+            EditorFamily::PlusLine
+        }
         "code" | "code-insiders" | "codium" | "cursor" => EditorFamily::GotoLine,
+        "fresh" => EditorFamily::PathLine,
         _ => EditorFamily::Plain,
     }
 }
@@ -382,6 +390,26 @@ mod tests {
             assert_eq!(command.program, editor);
             assert_eq!(args(&command), vec!["--goto", "/repo/src/main.rs:42"]);
         }
+    }
+
+    #[test]
+    fn flow_receives_plus_line_before_path() {
+        let command = EditorCommand::from_editor("flow", &target(Some(42)));
+        assert_eq!(command.program, "flow");
+        assert_eq!(args(&command), vec!["+42", "/repo/src/main.rs"]);
+    }
+
+    #[test]
+    fn fresh_receives_line_suffixed_path() {
+        let command = EditorCommand::from_editor("fresh", &target(Some(42)));
+        assert_eq!(command.program, "fresh");
+        assert_eq!(args(&command), vec!["/repo/src/main.rs:42"]);
+    }
+
+    #[test]
+    fn fresh_without_line_receives_bare_path() {
+        let command = EditorCommand::from_editor("fresh", &target(None));
+        assert_eq!(args(&command), vec!["/repo/src/main.rs"]);
     }
 
     #[test]

@@ -100,3 +100,77 @@ fn should_apply_external_edit_when_comment_is_unchanged_locally() {
         "new"
     );
 }
+
+#[test]
+fn should_merge_external_pr_description_reviewed_mark() {
+    let base = test_session();
+    let mut current = base.clone();
+    let mut latest = base.clone();
+    latest.pr_description_reviewed = true;
+
+    let changed = App::merge_external_session_changes(&mut current, &base, &latest);
+
+    assert_eq!(changed, 1);
+    assert!(current.pr_description_reviewed);
+}
+
+#[test]
+fn should_keep_local_pr_description_reviewed_mark_over_stale_disk_state() {
+    let base = test_session();
+    let mut current = base.clone();
+    let latest = base.clone();
+    current.pr_description_reviewed = true;
+
+    let changed = App::merge_external_session_changes(&mut current, &base, &latest);
+
+    assert_eq!(changed, 0);
+    assert!(current.pr_description_reviewed);
+}
+
+fn main_hunks(session: &ReviewSession) -> Vec<String> {
+    session.files[&PathBuf::from("src/main.rs")]
+        .reviewed_hunks
+        .iter()
+        .cloned()
+        .collect()
+}
+
+fn mark_hunk(session: &mut ReviewSession, key: &str) {
+    session
+        .get_file_mut(&PathBuf::from("src/main.rs"))
+        .unwrap()
+        .reviewed_hunks
+        .insert(key.to_string());
+}
+
+#[test]
+fn should_apply_an_external_hunk_clear_while_keeping_a_local_hunk_mark() {
+    let mut base = test_session();
+    mark_hunk(&mut base, "a");
+    let mut current = base.clone();
+    mark_hunk(&mut current, "local");
+    let mut latest = base.clone();
+    latest
+        .get_file_mut(&PathBuf::from("src/main.rs"))
+        .unwrap()
+        .reviewed_hunks
+        .clear();
+
+    let changed = App::merge_external_session_changes(&mut current, &base, &latest);
+
+    assert_eq!(changed, 1);
+    assert_eq!(main_hunks(&current), vec!["local"]);
+}
+
+#[test]
+fn should_merge_an_external_hunk_mark_and_keep_a_local_one() {
+    let base = test_session();
+    let mut current = base.clone();
+    mark_hunk(&mut current, "local");
+    let mut latest = base.clone();
+    mark_hunk(&mut latest, "external");
+
+    App::merge_external_session_changes(&mut current, &base, &latest);
+
+    assert_eq!(main_hunks(&current), vec!["external", "local"]);
+}

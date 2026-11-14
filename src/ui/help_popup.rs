@@ -1,6 +1,7 @@
+use crate::ui::app_layout::centered_rect;
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Rect},
+    layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
@@ -76,6 +77,17 @@ fn leader_display(leader: char) -> char {
     }
 }
 
+/// Single-file view help for `j`/`k` at a file's edge. The release-gated walk
+/// to the next file only runs where the terminal reports key releases, so the
+/// help mentions it only there.
+fn single_file_edge_help(supports_keyboard_enhancement: bool) -> &'static str {
+    if supports_keyboard_enhancement {
+        "  j/k stop at the file's edges. Release and press again to walk on."
+    } else {
+        "  j/k stop at the file's edges."
+    }
+}
+
 const COMMENT_MODE_KEY_WIDTH: usize = "Shift-Enter/Alt-Enter/Ctrl-J".len();
 
 fn comment_mode_row(key: &str, description: &str) -> Line<'static> {
@@ -143,6 +155,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Full page down/up"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Ctrl-l    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Redraw the whole screen (works in every mode)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -258,6 +277,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                format!("  {leader}p        "),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Pick a file from a popup and jump to it (`/` filters)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 format!("  {leader}n        "),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -288,8 +314,11 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         )),
         Line::from(""),
         Line::from(Span::raw(
-            "  One file at a time. j/k walks across files, ]/[ walks across hunks. Default in `--all-files`.",
+            "  One file at a time. }/{ switch files, ]/[ walk across hunks. Default in `--all-files`.",
         )),
+        Line::from(Span::raw(single_file_edge_help(
+            app.supports_keyboard_enhancement,
+        ))),
         Line::from(""),
         Line::from(Span::styled(
             "Commit Selector (multi-commit reviews)",
@@ -308,10 +337,17 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  Space/Enter",
+                "  Space     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  Toggle commit selection (updates diff)"),
+            Span::raw("Toggle commit selection (updates diff)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Enter     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Select only this commit (updates diff)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -373,7 +409,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  r         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle PRs requesting your review"),
+            Span::raw("Cycle PR scope: all / requested / requested (me) on GitHub"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -529,7 +565,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  r         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle file reviewed"),
+            Span::raw("Toggle file reviewed (PR description: collapse)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -620,6 +656,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Create comment for selected range"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  s         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Suggest changes to selected code"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -741,7 +784,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :summary  ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Pending comments; j/k select, Enter jumps"),
+            Span::raw("Pending comments; j/k select, dd delete, Enter jumps"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -984,6 +1027,11 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         })
         .collect();
 
+    // A resize can grow the viewport past the old offset; clamp so the
+    // popup doesn't end in a blank tail.
+    let max_offset = total_lines.saturating_sub(viewport_height);
+    app.help_state.scroll_offset = app.help_state.scroll_offset.min(max_offset);
+
     // Calculate if we can scroll
     let can_scroll_up = app.help_state.scroll_offset > 0;
     let can_scroll_down = app.help_state.scroll_offset + viewport_height < total_lines;
@@ -1037,14 +1085,6 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
     }
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
-    let [area] = vertical.areas(area);
-    let [area] = horizontal.areas(area);
-    area
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1081,6 +1121,29 @@ mod tests {
     }
 
     #[test]
+    fn should_mention_the_walk_to_the_next_file_when_key_releases_are_reported() {
+        // given
+        let supports_keyboard_enhancement = true;
+        // when
+        let help = single_file_edge_help(supports_keyboard_enhancement);
+        // then
+        assert_eq!(
+            help,
+            "  j/k stop at the file's edges. Release and press again to walk on."
+        );
+    }
+
+    #[test]
+    fn should_not_mention_the_walk_when_key_releases_are_not_reported() {
+        // given
+        let supports_keyboard_enhancement = false;
+        // when
+        let help = single_file_edge_help(supports_keyboard_enhancement);
+        // then
+        assert_eq!(help, "  j/k stop at the file's edges.");
+    }
+
+    #[test]
     fn should_align_comment_mode_descriptions_after_the_key_column() {
         let keys = [
             "Tab/S-Tab",
@@ -1104,5 +1167,86 @@ mod tests {
             .collect();
 
         assert!(description_columns.iter().all(|&column| column == 31));
+    }
+
+    #[test]
+    fn should_clamp_scroll_offset_when_a_resize_grows_the_viewport() {
+        use crate::app::{DiffSource, InputMode};
+        use crate::error::{Result, TuicrError};
+        use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
+        use crate::syntax::SyntaxHighlighter;
+        use crate::vcs::traits::{VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
+        use ratatui::{Terminal, backend::TestBackend};
+        use std::path::{Path, PathBuf};
+
+        struct Stub(VcsInfo);
+        impl VcsBackend for Stub {
+            fn info(&self) -> &VcsInfo {
+                &self.0
+            }
+            fn get_working_tree_diff(&self, _h: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+                Err(TuicrError::NoChanges)
+            }
+            fn fetch_context_lines(
+                &self,
+                _p: &Path,
+                _s: FileStatus,
+                _r: Option<&str>,
+                _a: u32,
+                _b: u32,
+            ) -> Result<Vec<DiffLine>> {
+                Ok(Vec::new())
+            }
+            fn get_change_status(&self) -> Result<VcsChangeStatus> {
+                Ok(VcsChangeStatus {
+                    staged: false,
+                    unstaged: false,
+                })
+            }
+            fn file_line_count(&self, _p: &Path, _s: FileStatus, _r: Option<&str>) -> Result<u32> {
+                Ok(0)
+            }
+        }
+
+        // given a help popup scrolled to the bottom of a short terminal
+        let info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "abcdef0123".to_string(),
+            branch_name: Some("main".to_string()),
+            vcs_type: VcsType::File,
+        };
+        let session = ReviewSession::new(
+            info.root_path.clone(),
+            info.head_commit.clone(),
+            info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+        let mut app = App::build(
+            Box::new(Stub(info.clone())),
+            info,
+            crate::theme::Theme::dark(),
+            None,
+            false,
+            Vec::new(),
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Help,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("build app");
+        let mut small = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        small.draw(|f| render_help(f, &mut app)).unwrap();
+        app.help_state.scroll_offset = usize::MAX / 2;
+        small.draw(|f| render_help(f, &mut app)).unwrap();
+
+        // when the terminal grows
+        let mut tall = Terminal::new(TestBackend::new(120, 60)).unwrap();
+        tall.draw(|f| render_help(f, &mut app)).unwrap();
+
+        // then the offset is at most the new maximum
+        let max = app.help_state.total_lines - app.help_state.viewport_height;
+        assert_eq!(app.help_state.scroll_offset, max);
     }
 }

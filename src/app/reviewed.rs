@@ -43,9 +43,17 @@ impl App {
         }
         let mut staged = 0;
         for path in &reviewed_paths {
-            if let Err(e) = self.vcs.stage_file(path) {
-                self.set_error(format!("Failed to stage {}: {e}", path.display()));
-                return;
+            let old_path = self
+                .diff_files
+                .iter()
+                .find(|file| file.display_path() == path && file.status == FileStatus::Renamed)
+                .and_then(|file| file.old_path.clone())
+                .filter(|old_path| old_path != path);
+            for stage_path in std::iter::once(path).chain(old_path.as_ref()) {
+                if let Err(e) = self.vcs.stage_file(stage_path) {
+                    self.set_error(format!("Failed to stage {}: {e}", stage_path.display()));
+                    return;
+                }
             }
             staged += 1;
         }
@@ -53,7 +61,7 @@ impl App {
         match self.reload_diff_files() {
             Err(TuicrError::NoChanges) => {
                 self.diff_files.clear();
-                self.diff_state = DiffState::default();
+                self.reset_diff_state();
                 self.file_list_state = FileListState::default();
                 self.clear_expanded_gaps();
                 self.rebuild_annotations();
@@ -234,24 +242,18 @@ impl App {
         line: Option<u32>,
     ) -> std::result::Result<EditorTarget, String> {
         let display_path = file.display_path.display().to_string();
-        let side = ForgeFileLinesRequest::side_for_status(file.status);
-        let Some(revision_path) = ForgeFileLinesRequest::path_for_side(
-            side,
+        let Some(request) = ForgeFileLinesRequest::for_file(
+            pr.key.repository.clone(),
+            pr.base_sha.clone(),
+            pr.key.head_sha.clone(),
+            file.status,
             file.old_path.as_ref(),
             file.new_path.as_ref(),
+            (0, 0),
         ) else {
             return Err(format!("Cannot open {display_path}: the diff has no path"));
         };
-        let request = ForgeFileLinesRequest {
-            repository: pr.key.repository.clone(),
-            base_sha: pr.base_sha.clone(),
-            head_sha: pr.key.head_sha.clone(),
-            path: revision_path.clone(),
-            status: file.status,
-            side,
-            start_line: 0,
-            end_line: 0,
-        };
+        let revision_path = request.path.clone();
         let sha = request.sha().to_string();
         let short = short_sha(&sha).to_string();
         let worktree = checkout.map(|root| root.join(&revision_path));
@@ -296,13 +298,14 @@ impl App {
             });
         }
 
-        let root = snapshot_root(&pr.key);
+        let root = snapshot_root(&pr.key, &sha)
+            .map_err(|err| format!("Cannot write a {short} copy of {display_path}: {err}"))?;
         let Some(path) = snapshot_path(&root, &revision_path) else {
             return Err(format!(
                 "Cannot open {display_path}: the path escapes the snapshot directory"
             ));
         };
-        materialize(&path, &content)
+        materialize(&root, &path, &content)
             .map_err(|err| format!("Cannot write a {short} copy of {display_path}: {err}"))?;
         Ok(EditorTarget {
             path,
@@ -312,8 +315,33 @@ impl App {
     }
 
     pub fn toggle_reviewed(&mut self) {
+        if self.is_cursor_on_pr_description() {
+            self.toggle_pr_description_reviewed();
+            return;
+        }
         let file_idx = self.diff_state.current_file_idx;
         self.toggle_reviewed_for_file_idx(file_idx, true);
+    }
+
+    fn is_cursor_on_pr_description(&self) -> bool {
+        matches!(
+            self.line_annotations.get(self.diff_state.cursor_line),
+            Some(AnnotatedLine::PrInfoLine { .. })
+        )
+    }
+
+    /// Mark the PR description reviewed (collapsing it to its title row) or
+    /// unreviewed (expanding it again). The cursor parks on the title row,
+    /// which is the only row left when collapsing.
+    pub fn toggle_pr_description_reviewed(&mut self) {
+        if self.pr_info.is_none() {
+            return;
+        }
+        self.session.pr_description_reviewed = !self.session.pr_description_reviewed;
+        self.dirty = true;
+        self.rebuild_annotations();
+        self.diff_state.cursor_line = 0;
+        self.ensure_cursor_visible();
     }
 
     pub fn toggle_reviewed_for_file_idx(&mut self, file_idx: usize, adjust_cursor: bool) {
@@ -539,12 +567,10 @@ impl App {
     /// Reviewed files within the population `file_count()` reports, so the two
     /// always form a coherent fraction.
     pub fn reviewed_count(&self) -> usize {
-        if !self.file_filter_active() {
-            return self.session.reviewed_count();
-        }
-        // Counting the whole session here would read as `12/5` next to a
-        // filtered total, so count only reviewed files that survive the
-        // patterns. Hiding them does not remove them from the count.
+        // Counting the whole session would include files outside `diff_files`
+        // (e.g. a narrowed commit selection), so count only reviewed files
+        // that survive the patterns. Hiding them does not remove them from
+        // the count.
         self.diff_files
             .iter()
             .filter(|file| {

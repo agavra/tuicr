@@ -214,12 +214,197 @@ fn make_hunk(new_start: u32, content: &str) -> DiffHunk {
             content: content.to_string(),
             old_lineno: Some(new_start),
             new_lineno: Some(new_start),
+            raw_content: None,
             highlighted_spans: None,
         }],
         old_start: new_start,
         old_count: 1,
         new_start,
         new_count: 1,
+    }
+}
+
+fn renamed_file_app(status: FileStatus) -> (tempfile::TempDir, git2::Repository, App) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(dir.path()).unwrap();
+    let content: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(dir.path().join("old.txt"), &content).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("old.txt")).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+    {
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+    }
+    if status == FileStatus::Renamed {
+        std::fs::rename(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
+    } else {
+        std::fs::copy(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
+        // A copy must not stage unrelated edits to its source, either.
+        std::fs::write(dir.path().join("old.txt"), "unreviewed source edit\n").unwrap();
+    }
+    let vcs = crate::vcs::GitBackend::discover_from(
+        dir.path(),
+        crate::vcs::GitBackendPreference::Libgit2,
+        crate::vcs::traits::DiffWhitespaceMode::Normal,
+    )
+    .unwrap();
+    let info = vcs.info().clone();
+    let session = ReviewSession::new(
+        info.root_path.clone(),
+        info.head_commit.clone(),
+        info.branch_name.clone(),
+        SessionDiffSource::Unstaged,
+    );
+    // Supply the rename/copy record consumed by the app independently of
+    // the backend's similarity threshold and copy-detection configuration.
+    let mut file = make_diff_file("new.txt", status, 1);
+    file.old_path = Some("old.txt".into());
+    file.hunks = vec![make_hunk(10, "line 10")];
+    let app = App::build(
+        Box::new(vcs),
+        info,
+        Theme::dark(),
+        None,
+        false,
+        vec![file],
+        session,
+        DiffSource::Unstaged,
+        InputMode::Normal,
+        Vec::new(),
+        None,
+        None,
+    )
+    .unwrap();
+    (dir, repo, app)
+}
+
+#[test]
+fn should_stage_both_paths_of_reviewed_rename() {
+    let _reviews = TestReviewsDir::new();
+    let (_dir, repo, mut app) = renamed_file_app(FileStatus::Renamed);
+    assert!(
+        repo.index()
+            .unwrap()
+            .get_path(Path::new("old.txt"), 0)
+            .is_some()
+    );
+    assert!(
+        repo.index()
+            .unwrap()
+            .get_path(Path::new("new.txt"), 0)
+            .is_none()
+    );
+    app.session
+        .get_file_mut(&PathBuf::from("new.txt"))
+        .unwrap()
+        .reviewed = true;
+
+    app.stage_reviewed_files();
+
+    let mut index = repo.index().unwrap();
+    index.read(true).unwrap();
+    assert!(index.get_path(Path::new("new.txt"), 0).is_some());
+    assert!(index.get_path(Path::new("old.txt"), 0).is_none());
+}
+
+#[test]
+fn should_keep_wrap_preference_when_staging_empties_the_diff() {
+    let _reviews = TestReviewsDir::new();
+    let (_dir, _repo, mut app) = renamed_file_app(FileStatus::Renamed);
+    app.diff_state.wrap_lines = true;
+    app.session
+        .get_file_mut(&PathBuf::from("new.txt"))
+        .unwrap()
+        .reviewed = true;
+
+    app.stage_reviewed_files();
+
+    assert!(app.diff_files.is_empty(), "staging should empty the diff");
+    assert!(app.diff_state.wrap_lines, "staging reload reset wrap");
+}
+
+#[test]
+fn should_stage_only_destination_of_reviewed_copy() {
+    let _reviews = TestReviewsDir::new();
+    let (_dir, repo, mut app) = renamed_file_app(FileStatus::Copied);
+    let source_id = repo
+        .index()
+        .unwrap()
+        .get_path(Path::new("old.txt"), 0)
+        .unwrap()
+        .id;
+    assert!(
+        repo.index()
+            .unwrap()
+            .get_path(Path::new("new.txt"), 0)
+            .is_none()
+    );
+    app.session
+        .get_file_mut(&PathBuf::from("new.txt"))
+        .unwrap()
+        .reviewed = true;
+
+    app.stage_reviewed_files();
+
+    let mut index = repo.index().unwrap();
+    index.read(true).unwrap();
+    assert!(index.get_path(Path::new("new.txt"), 0).is_some());
+    assert_eq!(
+        index.get_path(Path::new("old.txt"), 0).unwrap().id,
+        source_id
+    );
+}
+
+#[test]
+fn should_expand_destination_context_for_rename_and_copy() {
+    for status in [FileStatus::Renamed, FileStatus::Copied] {
+        let _reviews = TestReviewsDir::new();
+        let (dir, repo, mut app) = renamed_file_app(status);
+        for committed in [false, true] {
+            if committed {
+                let mut index = repo.index().unwrap();
+                index.add_path(Path::new("new.txt")).unwrap();
+                if status == FileStatus::Renamed {
+                    index.remove_path(Path::new("old.txt")).unwrap();
+                }
+                index.write().unwrap();
+                let tree_id = index.write_tree().unwrap();
+                let tree = repo.find_tree(tree_id).unwrap();
+                let parent = repo.head().unwrap().peel_to_commit().unwrap();
+                let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+                let oid = repo
+                    .commit(Some("HEAD"), &sig, &sig, "move or copy", &tree, &[&parent])
+                    .unwrap();
+                app.diff_source = DiffSource::CommitRange(vec![oid.to_string()]);
+                std::fs::write(dir.path().join("new.txt"), "wrong worktree context\n").unwrap();
+                app.clear_expanded_gaps();
+            }
+            let gap = GapId {
+                file_idx: 0,
+                hunk_idx: 0,
+            };
+            assert!(app.get_expanded_line(&gap, 0).is_none());
+
+            app.expand_gap(gap.clone(), ExpandDirection::Down, Some(2))
+                .unwrap();
+
+            assert_eq!(app.get_expanded_line(&gap, 0).unwrap().content, "line 1");
+            assert_eq!(app.get_expanded_line(&gap, 1).unwrap().content, "line 2");
+            assert_eq!(
+                app.context_provider()
+                    .file_line_count(
+                        Some(&PathBuf::from("old.txt")),
+                        Some(&PathBuf::from("new.txt")),
+                        status,
+                    )
+                    .unwrap(),
+                20
+            );
+        }
     }
 }
 
@@ -941,5 +1126,49 @@ fn should_redraw_and_drop_the_annotation_when_one_of_two_line_comments_is_delete
     assert!(
         line_comment_rows(&app) < before,
         "the deleted comment must leave the annotation cache"
+    );
+}
+
+/// An external `tuicr review clear` removes a hunk mark on disk. A TUI save
+/// that also carries a local hunk mark must not write the cleared one back.
+#[test]
+fn should_not_resurrect_an_externally_cleared_hunk_mark_when_saving() {
+    let _reviews = TestReviewsDir::new();
+    let mut file = make_diff_file("a.rs", FileStatus::Modified, 1);
+    file.hunks = vec![make_hunk(10, "base"), make_hunk(20, "local")];
+    let keys = file.hunk_review_keys();
+    let path = file.display_path().clone();
+    let mut app = build_app_with_scripted_vcs(vec![file], ScriptedVcs::new());
+    app.session
+        .files
+        .get_mut(&path)
+        .unwrap()
+        .reviewed_hunks
+        .insert(keys[0].clone());
+    let saved = app.save_current_session_merging_external().unwrap();
+
+    let mut external = crate::persistence::storage::load_session(&saved).unwrap();
+    external
+        .files
+        .get_mut(&path)
+        .unwrap()
+        .reviewed_hunks
+        .clear();
+    crate::persistence::storage::save_session(&external).unwrap();
+    app.session
+        .files
+        .get_mut(&path)
+        .unwrap()
+        .reviewed_hunks
+        .insert(keys[1].clone());
+    app.save_current_session_merging_external().unwrap();
+
+    let expected: std::collections::BTreeSet<String> = [keys[1].clone()].into_iter().collect();
+    let on_disk = crate::persistence::storage::load_session(&saved).unwrap();
+    assert_eq!(on_disk.files[&path].reviewed_hunks, expected);
+    assert_eq!(app.session.files[&path].reviewed_hunks, expected);
+    assert_eq!(
+        app.persisted_session_snapshot.files[&path].reviewed_hunks,
+        expected
     );
 }

@@ -34,6 +34,11 @@ impl App {
     ) -> Option<String> {
         self.pr_last_reviewed_commit_index = None;
         if commits.len() <= 1 {
+            // A lone commit gets no selector, but it stays on the review so
+            // the diff can open with its message, as a local single-commit
+            // review does.
+            self.review_commits = commits.iter().map(pr_commit_to_commit_info).collect();
+            self.pr_commits = commits;
             return None;
         }
 
@@ -166,6 +171,10 @@ impl App {
     /// selector). `PullRequests` switches the tab; the actual fetch is
     /// triggered lazily through `on_target_tab_entered`.
     pub fn enter_target_selector(&mut self, initial_tab: TargetTab) -> Result<()> {
+        self.with_local_vcs(|app| app.enter_target_selector_inner(initial_tab))
+    }
+
+    fn enter_target_selector_inner(&mut self, initial_tab: TargetTab) -> Result<()> {
         // Save inline selection state if we have review commits
         if !self.review_commits.is_empty() {
             self.saved_inline_selection = self.commit_selection_range;
@@ -352,7 +361,12 @@ impl App {
     /// (`delete_session_if_empty`); a crash can leave one behind. `a` on the
     /// tab unhides them so they can be cleaned up with `dd`.
     pub fn load_sessions_tab(&mut self) {
-        let root = self.vcs_info.root_path.clone();
+        // PR mode swaps `vcs_info` for a synthetic `forge:` root; the checkout
+        // is what scopes local sessions.
+        let root = self
+            .local_repo_root
+            .clone()
+            .unwrap_or_else(|| self.vcs_info.root_path.clone());
         let store = crate::review_store::ReviewStore::new();
         let show_empty = self.sessions_tab.show_empty();
         let mut result = store
@@ -470,10 +484,16 @@ impl App {
     /// `commit_range`, which is what the user would otherwise have to retype as
     /// `-r` / `-w` flags.
     pub fn sessions_tab_select(&mut self) -> Result<()> {
-        let Some(summary) = self.sessions_tab.cursor_session() else {
+        self.with_local_vcs(Self::sessions_tab_select_inner)
+    }
+
+    fn sessions_tab_select_inner(&mut self) -> Result<()> {
+        let Some(summary) = self.sessions_tab.cursor_session().cloned() else {
             return Ok(());
         };
 
+        // The loaders save the outgoing session only once the switch is going
+        // ahead, so a failed or empty resume leaves the review on screen alone.
         let session = match crate::persistence::storage::load_session(summary.session_ref.path()) {
             Ok(session) => session,
             Err(e) => {
@@ -500,10 +520,30 @@ impl App {
                     return Ok(());
                 };
                 let ordered_ids = commits.iter().map(|c| c.id.clone()).collect();
+                // The selector rows are not part of the stored range. Restore
+                // them, oldest-first like the commits, so they end up on top.
+                let mut commits = commits;
+                let highlighter = self.theme.syntax_highlighter();
+                let change_status = Self::get_change_status_with_ignore(
+                    self.vcs.as_ref(),
+                    &self.vcs_info.root_path,
+                    highlighter,
+                    self.path_filter.as_deref(),
+                )?;
+                if change_status.staged {
+                    commits.push(Self::staged_commit_entry());
+                }
+                if change_status.unstaged {
+                    commits.push(Self::unstaged_commit_entry());
+                }
                 self.load_staged_unstaged_and_commits_selection(ordered_ids, commits)
             }
             SessionDiffSource::Pristine => {
                 self.set_message("Restart tuicr with --all-files to open this review.");
+                return Ok(());
+            }
+            SessionDiffSource::File => {
+                self.set_message("Restart tuicr with --file <path> to open this review.");
                 return Ok(());
             }
             // A PR review is fetched, not read from the checkout. The session
@@ -520,12 +560,23 @@ impl App {
                 return Ok(());
             }
         };
-        loaded?;
+        if !loaded? {
+            return Ok(());
+        }
 
         // The loaders resolve a session from the *current* branch and HEAD, so
         // they can hand back a different session than the row that was picked
         // — a range saved on another branch, or an older working-tree session.
         // Install the selected one and keep its comments and reviewed state.
+        // Read it again: the loaders just saved the outgoing session, and the
+        // row may be that very session, so the earlier read can be stale.
+        let session = match crate::persistence::storage::load_session(summary.session_ref.path()) {
+            Ok(session) => session,
+            Err(e) => {
+                self.set_error(format!("Failed to load session: {e}"));
+                return Ok(());
+            }
+        };
         self.install_resumed_session(session)?;
         Ok(())
     }
@@ -657,6 +708,17 @@ impl App {
         }
     }
 
+    /// Select only the cursor commit, dropping the rest of the range.
+    /// Unlike `toggle_commit_selection`, pressing it on the sole selected
+    /// commit keeps that commit selected. No-op on the "show more" row.
+    pub fn select_only_cursor_commit(&mut self) {
+        let cursor = self.commit_list_cursor;
+        if cursor >= self.commit_list.len() {
+            return;
+        }
+        self.commit_selection_range = Some((cursor, cursor));
+    }
+
     // Check if cursor is on the commit expand row
     pub fn is_on_expand_row(&self) -> bool {
         self.can_show_more_commits() && self.commit_list_cursor == self.visible_commit_count
@@ -682,7 +744,8 @@ impl App {
         let offset = self.loaded_history_commit_count();
         let limit = self.commit_page_size;
 
-        let new_commits = self.vcs.get_recent_commits(offset, limit)?;
+        // A PR on screen parks the checkout's backend; history lives there.
+        let new_commits = self.with_local_vcs(|app| app.vcs.get_recent_commits(offset, limit))?;
 
         if new_commits.is_empty() {
             self.has_more_commit = false;
@@ -932,7 +995,7 @@ impl App {
         };
         crate::profile::time_with(
             "commit_select.confirm_selection",
-            || self.confirm_commit_selection_inner(),
+            || self.with_local_vcs(Self::confirm_commit_selection_inner),
             |result| format!("{selection}, {}", profile_unit_result(result)),
         )
     }
@@ -967,22 +1030,25 @@ impl App {
             .collect();
 
         if (selected_staged || selected_unstaged) && !selected_ids.is_empty() {
-            return self.load_staged_unstaged_and_commits_selection(selected_ids, selected_commits);
+            return self
+                .load_staged_unstaged_and_commits_selection(selected_ids, selected_commits)
+                .map(|_| ());
         }
 
         if selected_staged && selected_unstaged {
-            return self.load_staged_and_unstaged_selection();
+            return self.load_staged_and_unstaged_selection().map(|_| ());
         }
 
         if selected_staged {
-            return self.load_staged_selection();
+            return self.load_staged_selection().map(|_| ());
         }
 
         if selected_unstaged {
-            return self.load_unstaged_selection();
+            return self.load_unstaged_selection().map(|_| ());
         }
 
         self.load_commit_range_selection(selected_ids, selected_commits)
+            .map(|_| ())
     }
 
     /// Load a commit-range review from ids ordered oldest-to-newest, together
@@ -992,51 +1058,26 @@ impl App {
         &mut self,
         selected_ids: Vec<String>,
         selected_commits: Vec<CommitInfo>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // Get the diff for the selected commits
         let highlighter = self.theme.syntax_highlighter();
-        let diff_files = Self::get_commit_range_diff_with_ignore(
+        let diff_files = match Self::get_commit_range_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             &ResolvedRevisionRange::from_commit_ids(&selected_ids, RevisionDiffTarget::CommitList),
             highlighter,
             self.path_filter.as_deref(),
-        )?;
+        ) {
+            Ok(diff_files) => diff_files,
+            Err(TuicrError::NoChanges) => {
+                self.set_message("No changes in selected commits");
+                return Ok(false);
+            }
+            Err(e) => return Err(e),
+        };
 
-        if diff_files.is_empty() {
-            self.set_message("No changes in selected commits");
-            return Ok(());
-        }
-
-        // Update session with the newest commit as base
-        let newest_commit_id = selected_ids.last().unwrap().clone();
-        let loaded_session = load_latest_session_for_context(
-            &self.vcs_info.root_path,
-            self.vcs_info.branch_name.as_deref(),
-            &newest_commit_id,
-            SessionDiffSource::CommitRange,
-            Some(selected_ids.as_slice()),
-        )
-        .ok()
-        .and_then(|found| found.map(|(_path, session)| session));
-
-        let mut session = loaded_session.unwrap_or_else(|| {
-            let mut session = ReviewSession::new(
-                self.vcs_info.root_path.clone(),
-                newest_commit_id,
-                self.vcs_info.branch_name.clone(),
-                SessionDiffSource::CommitRange,
-            );
-            session.commit_range = Some(selected_ids.clone());
-            session
-        });
-
-        if session.commit_range.is_none() {
-            session.commit_range = Some(selected_ids.clone());
-            session.updated_at = chrono::Utc::now();
-        }
-
-        self.session = session;
+        self.save_outgoing_session()?;
+        self.session = Self::load_or_create_commit_range_session(&self.vcs_info, &selected_ids);
 
         // Add files to session
         for file in &diff_files {
@@ -1050,39 +1091,13 @@ impl App {
         self.input_mode = InputMode::Normal;
 
         // Reset navigation state
-        self.diff_state = DiffState::default();
+        self.reset_diff_state();
         self.file_list_state = FileListState::default();
 
-        // Set up inline commit selector for multi-commit reviews (newest-first display order)
-        self.pr_commits.clear();
-        self.pr_last_reviewed_commit_index = None;
-        self.review_commits = selected_commits.iter().rev().cloned().collect();
-        self.range_diff_files = Some(self.diff_files.clone());
-        self.commit_list = self.review_commits.clone();
-        let range =
-            Self::initial_commit_range(self.commit_selection_start, self.review_commits.len());
-        self.commit_selection_range = range;
-        self.commit_list_cursor = range.map(|(start, _)| start).unwrap_or(0);
-        self.commit_list_scroll_offset = 0;
-        self.visible_commit_count = self.review_commits.len();
-        self.has_more_commit = false;
-        self.show_commit_selector = self.review_commits.len() > 1;
-        self.commit_diff_cache.clear();
-        self.saved_inline_selection = None;
-
-        // `initial_commit_selection = oldest` opens scoped to a single commit; narrow
-        // the loaded diff to it. Otherwise finalize the full-range diff.
-        if Self::is_strict_commit_selection(self.commit_selection_range, self.review_commits.len())
-        {
-            self.reload_inline_selection()?;
-        } else {
-            self.insert_commit_message_if_single();
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
-            self.rebuild_annotations();
-        }
-
-        Ok(())
+        // Newest-first display order
+        let review_commits = selected_commits.into_iter().rev().collect();
+        self.install_review_commits(review_commits, self.commit_selection_start)?;
+        Ok(true)
     }
 
     /// The diff for commit rows `start..=end`, when it is already in memory.
@@ -1151,9 +1166,7 @@ impl App {
         Self::register_diff_files(&mut self.session, &self.diff_files, true);
 
         // Reset navigation, rebuild file tree + annotations
-        let wrap = self.diff_state.wrap_lines;
-        self.diff_state = DiffState::default();
-        self.diff_state.wrap_lines = wrap;
+        self.reset_diff_state();
         self.file_list_state = FileListState::default();
         self.expanded_top.clear();
         self.expanded_bottom.clear();

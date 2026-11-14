@@ -14,10 +14,12 @@ use std::collections::{BTreeMap, HashMap};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Deserializer};
 
-use crate::forge::remote_comments::{RemoteCommentSide, RemoteReviewComment, RemoteReviewThread};
-use crate::forge::traits::{
-    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
+use crate::forge::remote_comments::{
+    RemoteCommentSide, RemoteReviewComment, RemoteReviewState, RemoteReviewSummary,
+    RemoteReviewThread,
 };
+use crate::forge::traits::{ForgeRepository, PullRequestDetails, PullRequestSummary};
+use crate::vcs::split_commit_message;
 
 /// Gerrit's timestamp format: UTC, space-separated, nanosecond precision.
 const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.f";
@@ -38,6 +40,9 @@ impl<'de> Deserialize<'de> for GerritTimestamp {
 fn at(value: &Option<GerritTimestamp>) -> Option<DateTime<Utc>> {
     value.map(|t| t.0)
 }
+
+/// Git's well-known empty tree: the base of a change with no parent.
+pub const EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /// A Gerrit account. `DETAILED_ACCOUNTS` fills in the name fields; without it
 /// only `_account_id` is present.
@@ -164,6 +169,7 @@ impl GerritChange {
             head_ref_name,
             base_ref_name: self.branch,
             updated_at: at(&self.updated),
+            last_commit_at: None,
             url,
             state: normalize_state(&self.status),
             is_draft: self.work_in_progress,
@@ -177,13 +183,21 @@ impl GerritChange {
         let (head_sha, base_sha, body) = match self.current() {
             Some((sha, revision)) => {
                 let commit = revision.commit.as_ref();
-                let base = commit
-                    .and_then(|c| c.parents.first())
-                    .map(|parent| parent.commit.clone())
-                    .unwrap_or_default();
+                // A revision whose commit is known to have no parents is a
+                // root change: its base is the empty tree. Without commit
+                // metadata the base stays unknown (empty), not a root.
+                let base = match commit {
+                    Some(c) => c
+                        .parents
+                        .first()
+                        .map_or_else(|| EMPTY_TREE_SHA.to_string(), |p| p.commit.clone()),
+                    None => String::new(),
+                };
                 // A Gerrit change is one commit, so its body is the commit
                 // message minus the subject line.
-                let body = commit.map(|c| commit_body(&c.message)).unwrap_or_default();
+                let body = commit
+                    .and_then(|c| split_commit_message(&c.message).1)
+                    .unwrap_or_default();
                 (sha.clone(), base, body)
             }
             None => (String::new(), String::new(), String::new()),
@@ -209,32 +223,6 @@ impl GerritChange {
             diff_start_sha: None,
         }
     }
-
-    /// The current revision as the change's single commit. Gerrit changes are
-    /// one commit per patch set, so this list never has more than one entry.
-    pub fn into_commits(self) -> Vec<PullRequestCommit> {
-        let author = self.author_handle().unwrap_or_default();
-        let timestamp = at(&self.updated);
-        let summary = self.subject.clone();
-        match self.current() {
-            Some((sha, _)) => vec![PullRequestCommit {
-                oid: sha.clone(),
-                short_oid: sha.chars().take(8).collect(),
-                summary,
-                author,
-                timestamp,
-            }],
-            None => Vec::new(),
-        }
-    }
-}
-
-/// Everything after the subject line of a commit message.
-fn commit_body(message: &str) -> String {
-    message
-        .split_once('\n')
-        .map(|(_, rest)| rest.trim_start_matches('\n').trim_end().to_string())
-        .unwrap_or_default()
 }
 
 /// Map Gerrit change status onto the state vocabulary the UI shares across
@@ -269,6 +257,10 @@ pub struct GerritComment {
     /// `PARENT` (base side) or `REVISION` (head side, the default).
     #[serde(default)]
     pub side: Option<String>,
+    /// Read from `/drafts` rather than `/comments`. Gerrit's JSON carries no
+    /// such flag — [`mark_drafts`] sets it.
+    #[serde(skip)]
+    pub draft: bool,
 }
 
 impl GerritComment {
@@ -290,6 +282,7 @@ impl GerritComment {
             created_at: at(&self.updated),
             in_reply_to: self.in_reply_to,
             url,
+            is_draft: self.draft,
         }
     }
 }
@@ -297,7 +290,52 @@ impl GerritComment {
 /// Gerrit's magic pseudo-paths. They carry patch-set and commit-message
 /// comments, which have no line in the file diff, so threads on them are
 /// dropped rather than anchored to a file that does not exist.
-const MAGIC_PATHS: &[&str] = &["/COMMIT_MSG", "/MERGE_LIST", "/PATCHSET_LEVEL"];
+const MAGIC_PATHS: &[&str] = &["/COMMIT_MSG", "/MERGE_LIST", PATCHSET_LEVEL];
+/// The magic path for patch-set-level (review-level) comments.
+pub const PATCHSET_LEVEL: &str = "/PATCHSET_LEVEL";
+
+/// Flag every comment in a `GET /changes/{id}/drafts` response as a draft.
+///
+/// Drafts only ever belong to the caller, so Gerrit sends them without an
+/// `author` (checked against 3.14); `author`, the signed-in username, fills it
+/// in. Without it a draft would render as `@unknown`.
+pub fn mark_drafts(drafts: &mut BTreeMap<String, Vec<GerritComment>>, author: &str) {
+    for comment in drafts.values_mut().flatten() {
+        comment.draft = true;
+        comment.author = Some(GerritAccount {
+            username: Some(author.to_string()),
+            ..GerritAccount::default()
+        });
+    }
+}
+
+/// The caller's `/PATCHSET_LEVEL` drafts as pending review summaries.
+///
+/// That is where a draft submit puts the review body, so it is the one draft
+/// that [`threads_from_comment_map`] — which drops the magic paths — cannot
+/// show.
+pub fn summaries_from_drafts(
+    mut drafts: BTreeMap<String, Vec<GerritComment>>,
+    change_url: &str,
+) -> Vec<RemoteReviewSummary> {
+    let mut patchset_level = drafts.remove(PATCHSET_LEVEL).unwrap_or_default();
+    patchset_level.sort_by_key(|comment| at(&comment.updated));
+    patchset_level
+        .into_iter()
+        .filter(|comment| !comment.message.trim().is_empty())
+        .map(|comment| {
+            let remote = comment.into_remote(change_url);
+            RemoteReviewSummary {
+                id: remote.id,
+                author: remote.author,
+                body: remote.body,
+                state: RemoteReviewState::Pending,
+                created_at: remote.created_at,
+                url: remote.url,
+            }
+        })
+        .collect()
+}
 
 /// Fold Gerrit's `path -> [comment]` map into tuicr's thread shape.
 ///
@@ -333,6 +371,9 @@ pub fn threads_from_comment_map(
             match parent_thread {
                 Some(index) => {
                     thread_of.insert(id, index);
+                    // Gerrit keeps a thread's resolution on its latest comment,
+                    // and comments are sorted oldest first.
+                    threads[index].is_resolved = !comment.unresolved;
                     threads[index]
                         .comments
                         .push(comment.into_remote(change_url));
@@ -446,15 +487,52 @@ mod tests {
     }
 
     #[test]
-    fn should_expose_the_current_revision_as_the_only_commit() {
-        // given
-        let change: GerritChange = serde_json::from_str(change_json()).expect("parse");
+    fn should_use_the_empty_tree_as_the_base_of_a_root_change() {
+        // given — a revision whose commit has no parents, and one with no
+        // commit metadata at all
+        let root: GerritChange = serde_json::from_str(&change_json().replace(
+            r#""parents": [{"commit": "1eee2c9d8f352483781e772f35dc586a69ff5646"}]"#,
+            r#""parents": []"#,
+        ))
+        .expect("parse");
+        let bare: GerritChange = serde_json::from_str(
+            r#"{"_number": 1, "project": "p", "current_revision": "abc",
+                "revisions": {"abc": {"_number": 1}}}"#,
+        )
+        .expect("parse");
         // when
-        let commits = change.into_commits();
+        let root = root.into_details(&gerrit_repo(), "https://gerrit.example.com");
+        let bare = bare.into_details(&gerrit_repo(), "https://gerrit.example.com");
+        // then — only a known-parentless commit is a root
+        assert_eq!(root.base_sha, EMPTY_TREE_SHA);
+        assert_eq!(bare.base_sha, "");
+    }
+
+    #[test]
+    fn should_take_thread_resolution_from_the_latest_reply() {
+        // given — one thread resolved by a reply, another reopened by one
+        let json = r#"{
+            "a.rs": [
+                {"id": "r1", "line": 1, "message": "fix", "unresolved": true,
+                 "patch_set": 2, "updated": "2013-02-21 11:00:00.000000000"},
+                {"id": "r1b", "in_reply_to": "r1", "message": "Done", "unresolved": false,
+                 "patch_set": 2, "updated": "2013-02-21 12:00:00.000000000"},
+                {"id": "r2", "line": 5, "message": "ok", "unresolved": false,
+                 "patch_set": 2, "updated": "2013-02-21 11:00:00.000000000"},
+                {"id": "r2b", "in_reply_to": "r2", "message": "wait", "unresolved": true,
+                 "patch_set": 2, "updated": "2013-02-21 12:00:00.000000000"}
+            ]
+        }"#;
+        let comments: BTreeMap<String, Vec<GerritComment>> =
+            serde_json::from_str(json).expect("parse");
+        // when
+        let threads = threads_from_comment_map(comments, "https://gerrit.example.com", 2);
         // then
-        assert_eq!(commits.len(), 1);
-        assert_eq!(commits[0].short_oid, "674ac754");
-        assert_eq!(commits[0].summary, "Implement feature X");
+        assert!(
+            threads[0].is_resolved,
+            "a resolving reply closes the thread"
+        );
+        assert!(!threads[1].is_resolved, "a reopening reply reopens it");
     }
 
     #[test]
@@ -486,7 +564,7 @@ mod tests {
                 {"id": "root", "line": 12, "message": "why?", "unresolved": true,
                  "patch_set": 2, "updated": "2013-02-21 11:00:00.000000000"},
                 {"id": "reply", "in_reply_to": "root", "line": 12, "message": "because",
-                 "patch_set": 2, "updated": "2013-02-21 12:00:00.000000000"},
+                 "unresolved": true, "patch_set": 2, "updated": "2013-02-21 12:00:00.000000000"},
                 {"id": "other", "line": 40, "message": "nit", "side": "PARENT",
                  "patch_set": 1, "updated": "2013-02-21 13:00:00.000000000"}
             ],

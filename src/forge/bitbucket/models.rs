@@ -25,6 +25,7 @@ use crate::forge::traits::{
 };
 use crate::model::FileStatus;
 use crate::vcs::git::raw::FileMetadata;
+use crate::vcs::split_commit_message;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct BbDiffStatFile {
@@ -219,6 +220,7 @@ impl BbPullRequest {
             head_ref_name: self.source.branch.name.clone(),
             base_ref_name: self.destination.branch.name.clone(),
             updated_at: self.updated_on,
+            last_commit_at: None,
             url: self.links.html_href(),
             state: normalize_state(&self.state),
             is_draft: self.draft,
@@ -319,17 +321,13 @@ impl BbCommitAuthor {
 impl BbCommit {
     pub fn into_pull_request_commit(self) -> PullRequestCommit {
         let short_oid: String = self.hash.chars().take(7).collect();
-        let summary = self
-            .message
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        let (subject, body) = split_commit_message(&self.message);
+        let summary = subject.trim().to_string();
         PullRequestCommit {
             oid: self.hash,
             short_oid,
             summary,
+            body,
             author: self.author.map(|author| author.label()).unwrap_or_default(),
             timestamp: self.date,
         }
@@ -405,6 +403,10 @@ impl BbComment {
             created_at: self.created_on,
             in_reply_to: self.parent.map(|parent| parent.id.to_string()),
             url: self.links.html_href(),
+            // Bitbucket returns the viewer's own unpublished comments with
+            // `pending: true`; keep them marked so a `:submit draft` refetch
+            // shows them as drafts rather than as published feedback.
+            is_draft: self.pending,
         }
     }
 
@@ -415,7 +417,7 @@ impl BbComment {
 
 /// Group a flat comment list into line-anchored threads.
 ///
-/// Roots are comments with no `parent` and an `inline` anchor; replies attach
+/// Roots are comments with no `parent` and an `inline` path; replies attach
 /// to their root by walking `parent` links, so a reply-to-a-reply still lands
 /// on the correct top-level thread. General comments are excluded — they are
 /// surfaced separately by [`review_summaries`].
@@ -436,37 +438,44 @@ pub fn group_into_review_threads(comments: Vec<BbComment>) -> Vec<RemoteReviewTh
     let mut threads: Vec<RemoteReviewThread> = Vec::new();
     let mut index_of_root: HashMap<u64, usize> = HashMap::new();
     let mut skipped_roots: HashSet<u64> = HashSet::new();
+    let mut placeholders: HashSet<u64> = HashSet::new();
 
     for comment in comments {
         let root_id = root_of.get(&comment.id).copied().unwrap_or(comment.id);
 
         if comment.parent.is_none() {
+            let renderable = comment.is_renderable();
             // A root without an inline anchor is a general comment, handled
             // by `review_summaries`; record it so replies drop out too.
-            let anchored = comment
+            let Some(inline) = comment
                 .inline
                 .as_ref()
                 .filter(|inline| !inline.path.is_empty())
-                .and_then(|inline| anchor(inline).map(|(line, side)| (inline, line, side)));
-            let Some((inline, line, side)) = anchored else {
+            else {
                 skipped_roots.insert(comment.id);
                 continue;
             };
-            if !comment.is_renderable() {
-                skipped_roots.insert(comment.id);
-                continue;
-            }
+            // File-level comments carry no from/to; keep them as line-less
+            // threads. A deleted or empty root stays as a placeholder so its
+            // live replies survive; `placeholders` prunes it if none do.
+            let (line, side) =
+                anchor(inline).map_or((None, RemoteCommentSide::Right), |(l, s)| (Some(l), s));
             let (path, is_outdated) = (inline.path.clone(), inline.outdated);
             let is_resolved = comment.resolution.is_some();
+            let mut remote = comment.into_remote_comment();
+            if !renderable {
+                remote.body = "[deleted]".to_string();
+                placeholders.insert(root_id);
+            }
             index_of_root.insert(root_id, threads.len());
             threads.push(RemoteReviewThread {
-                id: comment.id.to_string(),
+                id: remote.id.clone(),
                 path,
-                line: Some(line),
+                line,
                 side,
                 is_resolved,
                 is_outdated,
-                comments: vec![comment.into_remote_comment()],
+                comments: vec![remote],
             });
         } else {
             if skipped_roots.contains(&root_id) || !comment.is_renderable() {
@@ -482,6 +491,10 @@ pub fn group_into_review_threads(comments: Vec<BbComment>) -> Vec<RemoteReviewTh
         }
     }
 
+    // Drop placeholder-rooted threads that gathered no live reply.
+    threads.retain(|thread| {
+        thread.comments.len() > 1 || !thread.id.parse().is_ok_and(|id| placeholders.contains(&id))
+    });
     threads
 }
 
@@ -501,7 +514,11 @@ pub fn review_summaries(comments: &[BbComment]) -> Vec<RemoteReviewSummary> {
             id: comment.id.to_string(),
             author: comment.user.label(),
             body: comment.content.raw.clone(),
-            state: RemoteReviewState::Commented,
+            state: if comment.pending {
+                RemoteReviewState::Pending
+            } else {
+                RemoteReviewState::Commented
+            },
             created_at: comment.created_on,
             url: comment.links.html_href(),
         })
@@ -711,6 +728,7 @@ mod tests {
         let converted = commit.into_pull_request_commit();
         // then — summary is the subject line only, author loses the email
         assert_eq!(converted.summary, "fix(runtime): stop the crash");
+        assert_eq!(converted.body.as_deref(), Some("Longer body here."));
         assert_eq!(converted.short_oid, "7d9bf1f");
         assert_eq!(converted.author, "Example User");
         assert!(converted.timestamp.is_some());
@@ -852,21 +870,32 @@ mod tests {
     }
 
     #[test]
-    fn should_skip_deleted_comments_and_their_replies() {
+    fn should_keep_replies_to_a_deleted_root_under_a_placeholder() {
         // given
         let json = r#"{ "values": [
           { "id": 1, "content": { "raw": "gone" }, "user": { "display_name": "A" },
             "parent": null, "deleted": true, "inline": { "path": "a.rs", "to": 3 } },
-          { "id": 2, "content": { "raw": "orphan reply" }, "user": { "display_name": "B" },
+          { "id": 2, "content": { "raw": "live reply" }, "user": { "display_name": "B" },
             "parent": { "id": 1 }, "inline": { "path": "a.rs", "to": 3 } },
+          { "id": 4, "content": { "raw": "nested" }, "user": { "display_name": "B" },
+            "parent": { "id": 2 }, "inline": { "path": "a.rs", "to": 3 } },
           { "id": 3, "content": { "raw": "kept" }, "user": { "display_name": "C" },
-            "parent": null, "inline": { "path": "b.rs", "to": 9 } }
+            "parent": null, "inline": { "path": "b.rs", "to": 9 } },
+          { "id": 5, "content": { "raw": "gone" }, "user": { "display_name": "A" },
+            "parent": null, "deleted": true, "inline": { "path": "c.rs", "to": 1 } }
         ] }"#;
         // when
         let threads = group_into_review_threads(comments_of(json));
-        // then — the deleted root and its orphaned reply both drop out
-        assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].path, "b.rs");
+        // then — deleted-only thread (c.rs) is pruned, the other keeps replies
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0].path, "a.rs");
+        let bodies: Vec<_> = threads[0]
+            .comments
+            .iter()
+            .map(|c| c.body.as_str())
+            .collect();
+        assert_eq!(bodies, ["[deleted]", "live reply", "nested"]);
+        assert_eq!(threads[1].path, "b.rs");
     }
 
     #[test]
@@ -908,6 +937,38 @@ mod tests {
     }
 
     #[test]
+    fn should_mark_pending_inline_comments_as_drafts() {
+        // given — a published root plus the viewer's own unpublished reply,
+        // as left behind by `:submit draft`
+        let json = r#"{ "values": [
+          { "id": 1, "content": { "raw": "published" }, "user": { "display_name": "A" },
+            "pending": false, "parent": null, "inline": { "path": "a.rs", "to": 3 } },
+          { "id": 2, "content": { "raw": "my draft reply" }, "user": { "display_name": "B" },
+            "pending": true, "parent": { "id": 1 }, "inline": { "path": "a.rs", "to": 3 } }
+        ] }"#;
+        // when
+        let threads = group_into_review_threads(comments_of(json));
+        // then — the draft joins the thread it answers, flagged as a draft
+        assert_eq!(threads.len(), 1);
+        assert!(!threads[0].comments[0].is_draft);
+        assert!(threads[0].comments[1].is_draft);
+    }
+
+    #[test]
+    fn should_surface_a_pending_general_comment_as_a_pending_summary() {
+        // given — a draft review body
+        let json = r#"{ "values": [
+          { "id": 1, "content": { "raw": "draft summary" }, "user": { "display_name": "A" },
+            "pending": true, "parent": null }
+        ] }"#;
+        // when
+        let summaries = review_summaries(&comments_of(json));
+        // then
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].state, RemoteReviewState::Pending);
+    }
+
+    #[test]
     fn should_mark_thread_outdated_when_inline_says_so() {
         // given
         let json = r#"{ "values": [{
@@ -922,14 +983,21 @@ mod tests {
     }
 
     #[test]
-    fn should_skip_inline_comment_without_a_resolvable_anchor() {
-        // given — file-level comment with neither from nor to
-        let json = r#"{ "values": [{
-          "id": 1, "content": { "raw": "whole file" }, "user": { "display_name": "A" },
-          "parent": null, "inline": { "path": "a.rs", "from": null, "to": null }
-        }] }"#;
-        // when / then
-        assert!(group_into_review_threads(comments_of(json)).is_empty());
+    fn should_keep_file_level_comment_as_a_line_less_thread() {
+        // given — file-level comment with neither from nor to, plus a reply
+        let json = r#"{ "values": [
+          { "id": 1, "content": { "raw": "whole file" }, "user": { "display_name": "A" },
+            "parent": null, "inline": { "path": "a.rs", "from": null, "to": null } },
+          { "id": 2, "content": { "raw": "reply" }, "user": { "display_name": "B" },
+            "parent": { "id": 1 }, "inline": { "path": "a.rs", "from": null, "to": null } }
+        ] }"#;
+        // when
+        let threads = group_into_review_threads(comments_of(json));
+        // then
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].path, "a.rs");
+        assert_eq!(threads[0].line, None);
+        assert_eq!(threads[0].comments.len(), 2);
     }
 
     #[test]

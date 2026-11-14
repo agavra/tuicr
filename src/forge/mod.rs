@@ -3,7 +3,6 @@
 //! This module is intentionally transport-focused for the first integration
 //! slice. UI and review submission code should depend on the trait shape here
 //! instead of shelling out to forge-specific tools directly.
-#![allow(dead_code)]
 
 pub mod azure;
 pub mod bitbucket;
@@ -16,6 +15,7 @@ pub mod gitlab;
 pub mod local_git;
 pub mod pr_open;
 pub mod remote_comments;
+pub mod remote_url;
 pub mod selector;
 pub mod submit;
 pub mod traits;
@@ -34,13 +34,73 @@ use crate::forge::gitlab::glab::{parse_gitlab_remote_url, parse_gitlab_remote_ur
 use crate::forge::traits::ForgeRepository;
 use crate::vcs::VcsBackend;
 
+/// Run two independent forge requests at the same time and return both
+/// results in argument order.
+///
+/// `first` runs on the calling thread and `second` on a scoped thread, so a
+/// call costs the slower of the two round trips instead of their sum. Both
+/// always run to completion; callers decide which error wins, which keeps
+/// error reporting as deterministic as the sequential code it replaces. A
+/// panic in `second` is re-raised on the calling thread once `first` returns.
+/// A repository-relative path as the forge spells it: `/`-separated. Only
+/// Windows paths carry `\\` as a separator; on Unix it is a legal filename byte
+/// and must reach the forge untouched.
+pub(crate) fn forge_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.into_owned()
+    }
+}
+
+/// Percent-encode a path, keeping `/` intact so a repository-relative path
+/// stays a path.
+pub(crate) fn percent_encode_path(value: &str) -> String {
+    value
+        .split('/')
+        .map(percent_encode_component)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Percent-encode everything but RFC 3986 unreserved bytes (`/` and `%` too).
+pub(crate) fn percent_encode_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+pub(crate) fn join<A, B, RA, RB>(first: A, second: B) -> (RA, RB)
+where
+    A: FnOnce() -> RA,
+    B: FnOnce() -> RB + Send,
+    RB: Send,
+{
+    std::thread::scope(|scope| {
+        let second = scope.spawn(second);
+        let first = first();
+        let second = second
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        (first, second)
+    })
+}
+
 /// Return `Some(sha)` for `git merge-base <base> <head>` when both commits
 /// are present in the checkout at `repo_root`.
 ///
 /// Forge PR diffs are three-dot, so this — not the base branch tip a forge
 /// reports — is the revision the patch's old side lives at. Returns `None`
 /// when either object is missing or git fails, so callers can fall back to
-/// the forge (or leave `base_sha` unrefined). See the `base_sha` gotcha in AGENTS.md.
+/// the forge (or leave `base_sha` unrefined). See gotcha F6 in docs/FORGES.md.
 pub(crate) fn local_merge_base(repo_root: &Path, base_sha: &str, head_sha: &str) -> Option<String> {
     use std::ffi::OsStr;
 
@@ -62,6 +122,27 @@ pub(crate) fn local_merge_base(repo_root: &Path, base_sha: &str, head_sha: &str)
     .ok()?;
     let sha = output.trim();
     (!sha.is_empty()).then(|| sha.to_string())
+}
+
+/// Return `Some(diff)` for `git diff <start>..<end>` when both SHAs exist in
+/// the checkout at `repo_root`; `None` lets callers fall back to the forge.
+pub(crate) fn local_range_diff(
+    repo_root: &Path,
+    start_sha: &str,
+    end_sha: &str,
+) -> Option<Vec<crate::model::FilePatch>> {
+    use std::ffi::OsStr;
+
+    for sha in [start_sha, end_sha] {
+        crate::process::run_command_output(
+            "git",
+            Some(repo_root),
+            ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
+        )
+        .ok()?;
+    }
+    let range = format!("{start_sha}..{end_sha}");
+    crate::vcs::git::raw::run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
 /// Try to detect a GitHub forge repository for the local checkout at `repo_root`.
@@ -86,6 +167,11 @@ pub fn detect_gitlab_repository(repo_root: &Path) -> Option<ForgeRepository> {
 
 /// `repo_root`'s remote URLs, `origin` first, then every other remote.
 fn remote_urls(repo_root: &Path) -> Vec<String> {
+    remotes(repo_root).into_iter().map(|(_, url)| url).collect()
+}
+
+/// `repo_root`'s `(name, url)` remotes, `origin` first, each remote once.
+pub(crate) fn remotes(repo_root: &Path) -> Vec<(String, String)> {
     let Ok(repo) = Repository::discover(repo_root) else {
         // Local VCS discovery already falls back to Git for repository formats
         // libgit2 cannot open (notably reftable and SHA-256). Remote metadata
@@ -105,27 +191,30 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
                     ["remote", "get-url", "--", name],
                 )
                 .ok()
-                .map(|url| url.trim_end_matches(['\r', '\n']).to_string())
+                .map(|url| {
+                    (
+                        name.to_string(),
+                        url.trim_end_matches(['\r', '\n']).to_string(),
+                    )
+                })
             })
             .collect();
     };
-    let mut all_urls: Vec<String> = Vec::new();
-
-    if let Ok(remote) = repo.find_remote("origin")
-        && let Some(url) = remote.url()
-    {
-        all_urls.push(url.to_string());
-    }
+    let mut all: Vec<(String, String)> = Vec::new();
+    let mut push = |name: &str| {
+        if let Ok(remote) = repo.find_remote(name)
+            && let Some(url) = remote.url()
+        {
+            all.push((name.to_string(), url.to_string()));
+        }
+    };
+    push("origin");
     if let Ok(remotes) = repo.remotes() {
-        for name in remotes.iter().flatten() {
-            if let Ok(remote) = repo.find_remote(name)
-                && let Some(url) = remote.url()
-            {
-                all_urls.push(url.to_string());
-            }
+        for name in remotes.iter().flatten().filter(|name| *name != "origin") {
+            push(name);
         }
     }
-    all_urls
+    all
 }
 
 /// Try to detect an Azure DevOps forge repository for the local checkout at
@@ -141,7 +230,8 @@ pub fn detect_azure_repository(repo_root: &Path) -> Option<ForgeRepository> {
 ///
 /// Order matters. Bitbucket and GitLab both gate on the hostname, so trying
 /// them first won't claim GitHub Enterprise remotes. Azure next — its parser
-/// filters to `dev.azure.com` / `*.visualstudio.com` hosts. Gitea then, which
+/// accepts cloud hosts and the self-hosted hostname explicitly configured via
+/// `AZURE_DEVOPS_SERVER_URL`. Gitea then, which
 /// recognizes its own public hosts by name and self-hosted ones through the
 /// logins configured in `tea`. Gerrit follows: it is always self-hosted, so it
 /// gates on the canonical SSH port `29418`, a configured `GERRIT_URL`, or a
@@ -212,9 +302,57 @@ pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Op
         .then(|| root.to_path_buf())
 }
 
+/// Serializes tests that point `GIT_SSH_COMMAND` at a stub transport.
+#[cfg(test)]
+pub(crate) static GIT_SSH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_range_diff_needs_both_shas_in_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(dir.path().join("f.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "one"]);
+        let first = git(&["rev-parse", "HEAD"]);
+        std::fs::write(dir.path().join("f.txt"), "two\n").unwrap();
+        git(&["commit", "-qam", "two"]);
+        let second = git(&["rev-parse", "HEAD"]);
+
+        let patches = local_range_diff(dir.path(), &first, &second).expect("both shas exist");
+        assert_eq!(patches.len(), 1);
+        let missing = "0".repeat(40);
+        assert!(local_range_diff(dir.path(), &first, &missing).is_none());
+        // An empty endpoint would make `git diff` default it to HEAD and succeed.
+        assert!(local_range_diff(dir.path(), "", &second).is_none());
+        assert!(local_range_diff(dir.path(), &first, "").is_none());
+    }
+
+    #[test]
+    fn join_returns_both_results_in_argument_order() {
+        let (first, second) = join(|| "first", || 2);
+        assert_eq!((first, second), ("first", 2));
+    }
+
+    #[test]
+    #[should_panic(expected = "second failed")]
+    fn join_re_raises_a_panic_from_the_spawned_side() {
+        join(|| (), || -> () { panic!("second failed") });
+    }
 
     fn init_repo_with_origin(url: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -321,5 +459,39 @@ mod tests {
             local_checkout_for_repo(dir.path(), &target),
             Some(dir.path().to_path_buf())
         );
+    }
+
+    #[test]
+    fn should_percent_encode_path_keeping_separators_and_escaping_percent() {
+        assert_eq!(
+            percent_encode_path("src/a file#?%.rs"),
+            "src/a%20file%23%3F%25.rs"
+        );
+        assert_eq!(percent_encode_component("feat/x"), "feat%2Fx");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_keep_a_backslash_in_a_unix_forge_path() {
+        assert_eq!(forge_path(Path::new("a\\b/c.rs")), "a\\b/c.rs");
+    }
+
+    #[test]
+    fn should_list_origin_once_in_remotes() {
+        let dir = std::env::temp_dir().join(format!("tuicr-remotes-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", "https://github.com/a/b.git"]);
+        git(&["remote", "add", "up", "https://github.com/c/d.git"]);
+        let names: Vec<String> = remotes(&dir).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["origin", "up"]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

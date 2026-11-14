@@ -19,26 +19,17 @@ use crate::vcs::traits::{
 use crate::vcs::whitespace::{WhitespaceComparison, materialize_diff};
 use crate::vcs::{
     BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files, slice_context_lines,
+    split_commit_message,
 };
 
-/// Parse a jj description into (summary, optional body).
-fn parse_description(desc: &str) -> (String, Option<String>) {
+/// Split a jj description into (summary, optional body). The placeholder
+/// applies only when the whole description is blank.
+fn summary_and_body(desc: &str) -> (String, Option<String>) {
     if desc.trim().is_empty() {
         return ("(no description set)".to_string(), None);
     }
-
-    let mut lines = desc.lines();
-    let summary = lines.next().unwrap_or("(no description set)").to_string();
-    let body_text: String = lines
-        .skip_while(|l| l.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let body = if body_text.trim().is_empty() {
-        None
-    } else {
-        Some(body_text)
-    };
-    (summary, body)
+    let (subject, body) = split_commit_message(desc);
+    (subject.to_string(), body)
 }
 
 /// Jujutsu backend implementation using jj CLI commands
@@ -54,6 +45,23 @@ impl JjBackend {
         // This handles being called from subdirectories
         let root_output = Command::new("jj")
             .args(["root", "--color=never"])
+            .output()
+            .map_err(|e| TuicrError::VcsCommand(format!("Failed to run jj: {}", e)))?;
+
+        if !root_output.status.success() {
+            return Err(TuicrError::NotARepository);
+        }
+
+        let root_path = PathBuf::from(String::from_utf8_lossy(&root_output.stdout).trim());
+
+        Self::from_path(root_path, whitespace_mode)
+    }
+
+    /// Discover a Jujutsu repository from `path` rather than the current directory.
+    pub(crate) fn discover_from(path: &Path, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
+        let root_output = Command::new("jj")
+            .args(["root", "--color=never"])
+            .current_dir(path)
             .output()
             .map_err(|e| TuicrError::VcsCommand(format!("Failed to run jj: {}", e)))?;
 
@@ -157,7 +165,7 @@ impl JjBackend {
         &self,
         diff_args: &[&str],
         comparison: WhitespaceComparison,
-        highlighter: &SyntaxHighlighter,
+        _highlighter: &SyntaxHighlighter,
         ignore_working_copy: bool,
     ) -> Result<Vec<DiffFile>> {
         let args = Self::diff_args(comparison, diff_args);
@@ -179,7 +187,7 @@ impl JjBackend {
         patch_args.extend(["--git", "--ignore-working-copy"]);
         let patch = run_jj_command(&self.info.root_path, patch_args)?;
         let patches = pair_metadata_with_patch(metadata, patch.as_bytes())?;
-        diff_parser::parse_file_patches(patches, highlighter)
+        diff_parser::parse_file_patches(patches)
     }
 }
 
@@ -237,7 +245,7 @@ impl VcsBackend for JjBackend {
             None,
             &mut files,
             highlighter,
-            jj_show_batch,
+            jj_show_batch_unless_merge(is_merge(&self.info.root_path, "@")?),
         )?;
         Ok(files)
     }
@@ -360,7 +368,7 @@ impl VcsBackend for JjBackend {
 
             let id = parts[0].to_string();
             let short_id = parts[1].to_string();
-            let (summary, body) = parse_description(parts[2]);
+            let (summary, body) = summary_and_body(parts[2]);
             let author = parts[3].to_string();
 
             // jj timestamp format is ISO 8601: "2024-01-15T10:30:00.000-05:00"
@@ -399,7 +407,16 @@ impl VcsBackend for JjBackend {
         // Get the parent of the oldest commit to include its changes
         // In jj, we use {commit}- to get the parent(s)
         let from_rev = format!("{}-", oldest);
-        let diff_args = ["diff", "--from", &from_rev, "--to", newest];
+        // `--from` takes exactly one revision, so a merge's parents can't be
+        // named there. `jj diff -r` diffs against the merged parents instead,
+        // as `jj show` does.
+        let merge = is_merge(&self.info.root_path, oldest)?;
+        let range = format!("{}::{}", oldest, newest);
+        let diff_args: Vec<&str> = if merge {
+            vec!["diff", "-r", &range]
+        } else {
+            vec!["diff", "--from", &from_rev, "--to", newest]
+        };
         let mut files = self.load_diff(&diff_args, highlighter)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
@@ -407,7 +424,7 @@ impl VcsBackend for JjBackend {
             Some(newest),
             &mut files,
             highlighter,
-            jj_show_batch,
+            jj_show_batch_unless_merge(merge),
         )?;
         Ok(files)
     }
@@ -440,7 +457,7 @@ impl VcsBackend for JjBackend {
             }
             let id = parts[0].to_string();
             let short_id = parts[1].to_string();
-            let (summary, body) = parse_description(parts[2]);
+            let (summary, body) = summary_and_body(parts[2]);
             let author = parts[3].to_string();
             let time = DateTime::parse_from_rfc3339(parts[4])
                 .map(|dt| dt.with_timezone(&Utc))
@@ -477,7 +494,13 @@ impl VcsBackend for JjBackend {
 
         // Diff from the parent of the oldest commit to the working copy (@)
         let from_rev = format!("{}-", oldest);
-        let diff_args = ["diff", "--from", &from_rev, "--to", "@"];
+        let merge = is_merge(&self.info.root_path, oldest)?;
+        let range = format!("{}::@", oldest);
+        let diff_args: Vec<&str> = if merge {
+            vec!["diff", "-r", &range]
+        } else {
+            vec!["diff", "--from", &from_rev, "--to", "@"]
+        };
         let mut files = self.load_diff(&diff_args, highlighter)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
@@ -485,7 +508,7 @@ impl VcsBackend for JjBackend {
             None,
             &mut files,
             highlighter,
-            jj_show_batch,
+            jj_show_batch_unless_merge(merge),
         )?;
         Ok(files)
     }
@@ -521,6 +544,38 @@ fn jj_show_batch(root: &Path, rev: &str, paths: &[PathBuf]) -> Result<HashMap<Pa
     args.extend(filesets.iter().map(String::as_str));
     let output = run_jj_command(root, &args)?;
     Ok(parse_batched_files(&output))
+}
+
+/// Whether `rev` has more than one parent, so that `{rev}-` names several
+/// revisions and can't be passed where jj expects exactly one.
+fn is_merge(root: &Path, rev: &str) -> Result<bool> {
+    let revset = format!("parents({})", rev);
+    let output = run_jj_command(
+        root,
+        [
+            "log",
+            "-r",
+            &revset,
+            "--no-graph",
+            "-T",
+            "commit_id ++ \"\\n\"",
+        ],
+    )?;
+    Ok(output.lines().filter(|l| !l.trim().is_empty()).count() > 1)
+}
+
+/// `jj_show_batch`, except that a merge's base has no single revision to
+/// show, so the old side keeps its per-hunk highlighting instead.
+fn jj_show_batch_unless_merge(
+    merge: bool,
+) -> impl Fn(&Path, &str, &[PathBuf]) -> Result<HashMap<PathBuf, String>> {
+    move |root, rev, paths| {
+        if merge && rev.ends_with('-') {
+            Ok(HashMap::new())
+        } else {
+            jj_show_batch(root, rev, paths)
+        }
+    }
 }
 
 /// Run a jj command and return its stdout.
@@ -676,12 +731,17 @@ mod tests {
     #[test]
     fn empty_description_uses_jj_wording() {
         assert_eq!(
-            parse_description(""),
+            summary_and_body(""),
             ("(no description set)".to_string(), None)
         );
         assert_eq!(
-            parse_description("  \n"),
+            summary_and_body("  \n"),
             ("(no description set)".to_string(), None)
+        );
+        // Only an entirely blank description gets the placeholder.
+        assert_eq!(
+            summary_and_body("\nBody"),
+            (String::new(), Some("Body".to_string()))
         );
     }
 
@@ -1095,6 +1155,99 @@ mod tests {
             // Should have changes
             assert!(!diff.is_empty(), "Expected non-empty diff");
         }
+    }
+
+    /// Repo from issue #786: `@` is a merge of `left` and `right` that edits
+    /// an MDX file (full-file highlighted) and adds `merge.txt`.
+    fn setup_test_repo_with_merge() -> Option<tempfile::TempDir> {
+        if !jj_available() {
+            return None;
+        }
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+        let jj = |args: &[&str]| {
+            let out = jj_cmd()
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("Failed to run jj");
+            assert!(
+                out.status.success(),
+                "jj {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        jj(&["git", "init"]);
+        fs::write(root.join("doc.mdx"), "# Notes\n\n<Callout>hi</Callout>\n").unwrap();
+        jj(&["commit", "-m", "base"]);
+        fs::write(root.join("left.txt"), "left\n").unwrap();
+        jj(&["commit", "-m", "left"]);
+        jj(&["bookmark", "create", "left", "-r", "@-"]);
+        jj(&["new", "@--"]);
+        fs::write(root.join("right.txt"), "right\n").unwrap();
+        jj(&["commit", "-m", "right"]);
+        jj(&["bookmark", "create", "right", "-r", "@-"]);
+        jj(&["new", "left", "right", "-m", "merge"]);
+        fs::write(root.join("merge.txt"), "merge\n").unwrap();
+        fs::write(
+            root.join("doc.mdx"),
+            "# Notes\n\n<Callout>hello</Callout>\n",
+        )
+        .unwrap();
+        Some(temp_dir)
+    }
+
+    fn sorted_paths(files: &[DiffFile]) -> Vec<String> {
+        let mut paths: Vec<String> = files
+            .iter()
+            .map(|f| f.display_path().to_string_lossy().into_owned())
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    #[test]
+    fn test_jj_merge_commit_diffs_against_merged_parents() {
+        let Some(temp) = setup_test_repo_with_merge() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+        let backend = JjBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create jj backend");
+        let expected = vec!["doc.mdx".to_string(), "merge.txt".to_string()];
+
+        // `tuicr -w`
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("working-copy merge diff");
+        assert_eq!(sorted_paths(&files), expected);
+
+        // Selecting the merge commit in the commit list
+        let merge = backend
+            .get_recent_commits(0, 10)
+            .expect("Failed to get commits")
+            .into_iter()
+            .find(|c| c.summary == "merge")
+            .expect("Expected merge commit");
+        let files = backend
+            .get_commit_range_diff(
+                &ResolvedRevisionRange::from_owned_commit_ids(
+                    vec![merge.id.clone()],
+                    RevisionDiffTarget::CommitList,
+                ),
+                &SyntaxHighlighter::default(),
+            )
+            .expect("merge commit diff");
+        assert_eq!(sorted_paths(&files), expected);
+
+        let files = backend
+            .get_working_tree_with_commits_diff(
+                std::slice::from_ref(&merge.id),
+                &SyntaxHighlighter::default(),
+            )
+            .expect("merge commit plus working copy diff");
+        assert_eq!(sorted_paths(&files), expected);
     }
 
     /// Create a test repo with a renamed file (no content changes).

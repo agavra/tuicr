@@ -30,8 +30,90 @@ pub(crate) enum CommentLocation {
     },
 }
 
+/// Reversible serde codec for session paths. Serde's own `PathBuf` impl
+/// refuses non-UTF-8 paths, which would make the whole session unsaveable.
+/// UTF-8 paths stay plain strings (so existing files read unchanged); on Unix
+/// any other path is written as `"\0unix-hex:<hex bytes>"` (a path cannot
+/// contain NUL, so the tag is unambiguous) and decoded back to the exact bytes.
+mod path_codec {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    const TAG: &str = "\0unix-hex:";
+
+    fn encode(path: &Path) -> String {
+        if let Some(s) = path.to_str() {
+            return s.to_string();
+        }
+        #[cfg(unix)]
+        {
+            use std::fmt::Write;
+            use std::os::unix::ffi::OsStrExt;
+            let mut out = String::from(TAG);
+            for b in path.as_os_str().as_bytes() {
+                let _ = write!(out, "{b:02x}");
+            }
+            out
+        }
+        #[cfg(not(unix))]
+        {
+            path.to_string_lossy().into_owned()
+        }
+    }
+
+    fn decode(s: String) -> PathBuf {
+        #[cfg(unix)]
+        if let Some(hex) = s.strip_prefix(TAG) {
+            use std::os::unix::ffi::OsStringExt;
+            let bytes: Option<Vec<u8>> = (0..hex.len() / 2)
+                .map(|i| {
+                    hex.get(2 * i..2 * i + 2)
+                        .and_then(|h| u8::from_str_radix(h, 16).ok())
+                })
+                .collect();
+            if let Some(bytes) = bytes {
+                return PathBuf::from(std::ffi::OsString::from_vec(bytes));
+            }
+        }
+        PathBuf::from(s)
+    }
+
+    pub fn serialize<S: Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&encode(path))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<PathBuf, D::Error> {
+        Ok(decode(String::deserialize(d)?))
+    }
+
+    pub mod map {
+        use super::*;
+        use serde::ser::SerializeMap;
+
+        pub fn serialize<S: Serializer, V: serde::Serialize>(
+            map: &HashMap<PathBuf, V>,
+            s: S,
+        ) -> Result<S::Ok, S::Error> {
+            let mut out = s.serialize_map(Some(map.len()))?;
+            for (k, v) in map {
+                out.serialize_entry(&encode(k), v)?;
+            }
+            out.end()
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>, V: Deserialize<'de>>(
+            d: D,
+        ) -> Result<HashMap<PathBuf, V>, D::Error> {
+            let raw = HashMap::<String, V>::deserialize(d)?;
+            Ok(raw.into_iter().map(|(k, v)| (decode(k), v)).collect())
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileReview {
+    #[serde(with = "path_codec")]
     pub path: PathBuf,
     pub reviewed: bool,
     pub status: FileStatus,
@@ -95,6 +177,9 @@ pub enum SessionDiffSource {
     /// `ReviewSession::pr_session_key`; this variant is a discriminator so
     /// the persistence layer can route to PR-specific filename construction.
     PullRequest,
+    /// Single-file annotation surface opened with `--file <file>`. The
+    /// persisted `base_commit` is a stable hash of the canonical target path.
+    File,
     /// Whole-repo annotation surface. Every tracked file is shown in
     /// context-only rendering, sourced from `git ls-files`. The persisted
     /// `base_commit` for these sessions starts with `"pristine:"` so the
@@ -130,10 +215,16 @@ pub struct ReviewSession {
     /// without this field deserialize as `None`.
     #[serde(default)]
     pub commit_selection_range: Option<(usize, usize)>,
+    /// PR mode only: the reviewer marked the PR description reviewed, which
+    /// collapses it to its title row. Older sessions without this field
+    /// deserialize as `false`.
+    #[serde(default)]
+    pub pr_description_reviewed: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(default)]
     pub review_comments: Vec<Comment>,
+    #[serde(with = "path_codec::map")]
     pub files: HashMap<PathBuf, FileReview>,
     pub session_notes: Option<String>,
 }
@@ -161,6 +252,7 @@ impl ReviewSession {
             pr_session_key: None,
             remote_comments_visibility: PrCommentsVisibility::default(),
             commit_selection_range: None,
+            pr_description_reviewed: false,
             created_at: now,
             updated_at: now,
             review_comments: Vec::new(),
@@ -174,9 +266,11 @@ impl ReviewSession {
     }
 
     pub fn has_reviewed_state(&self) -> bool {
-        self.files
-            .values()
-            .any(|file| file.reviewed || !file.reviewed_hunks.is_empty())
+        self.pr_description_reviewed
+            || self
+                .files
+                .values()
+                .any(|file| file.reviewed || !file.reviewed_hunks.is_empty())
     }
 
     /// Registers a file in the session. Returns true if the file was previously
@@ -226,8 +320,14 @@ impl ReviewSession {
 
     /// Register a transient filtered diff without dropping hunk keys that
     /// belong to the broader persisted review scope.
+    /// A subset hash must not overwrite the persisted one, so an existing
+    /// file keeps its `reviewed` flag, `content_hash` and hunk marks.
     pub fn add_diff_file_preserving_hunks(&mut self, file: &DiffFile) -> bool {
-        self.add_file(file.display_path().clone(), file.status, file.content_hash)
+        let path = file.display_path().clone();
+        if !self.files.contains_key(&path) {
+            self.add_file(path, file.status, file.content_hash);
+        }
+        false
     }
 
     pub fn get_file_mut(&mut self, path: &PathBuf) -> Option<&mut FileReview> {
@@ -340,6 +440,11 @@ impl ReviewSession {
                 file.reviewed_hunks.clear();
             }
         }
+        // The PR description's mark is reset too, but it is not a file, so it
+        // stays out of the unreviewed-files count.
+        if scope == ClearScope::CommentsAndReviewed {
+            self.pr_description_reviewed = false;
+        }
         (cleared, unreviewed)
     }
 
@@ -380,6 +485,7 @@ mod tests {
                 content: content.to_string(),
                 old_lineno: Some(new_start),
                 new_lineno: Some(new_start),
+                raw_content: None,
                 highlighted_spans: None,
             }],
             old_start: new_start,
@@ -868,6 +974,56 @@ mod tests {
     }
 
     #[test]
+    fn should_default_pr_description_reviewed_to_false_for_legacy_session() {
+        // given a session JSON saved before pr_description_reviewed existed
+        // when
+        let session: ReviewSession =
+            serde_json::from_str(LEGACY_SESSION_JSON).expect("legacy session should parse");
+        // then
+        assert!(!session.pr_description_reviewed);
+    }
+
+    #[test]
+    fn should_round_trip_pr_description_reviewed_on_pr_session() {
+        // given
+        let mut session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abcdef0123456789".to_string(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        session.pr_description_reviewed = true;
+        // when
+        let json = serde_json::to_string(&session).unwrap();
+        let restored: ReviewSession = serde_json::from_str(&json).unwrap();
+        // then
+        assert!(restored.pr_description_reviewed);
+        assert!(restored.has_reviewed_state());
+    }
+
+    #[test]
+    fn should_clear_pr_description_reviewed_only_with_reviewed_marks() {
+        let mut session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abcdef0123456789".to_string(),
+            None,
+            SessionDiffSource::PullRequest,
+        );
+        session.pr_description_reviewed = true;
+
+        session.clear_comments(ClearScope::CommentsOnly);
+        assert!(session.pr_description_reviewed);
+
+        let (cleared, unreviewed) = session.clear_comments(ClearScope::CommentsAndReviewed);
+        assert_eq!(
+            (cleared, unreviewed),
+            (0, 0),
+            "the description is not a file"
+        );
+        assert!(!session.pr_description_reviewed);
+    }
+
+    #[test]
     fn should_default_commit_selection_range_to_none_for_legacy_session() {
         // given a session JSON saved before commit_selection_range existed
         // when
@@ -1096,5 +1252,23 @@ mod tests {
         assert!(invalidated);
         assert!(!session.is_file_reviewed(&path));
         assert_eq!(session.files.get(&path).unwrap().content_hash, Some(999));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_round_trip_non_utf8_file_paths() {
+        use std::os::unix::ffi::OsStringExt;
+        let bad = PathBuf::from(std::ffi::OsString::from_vec(b"caf\xe9.txt".to_vec()));
+        let mut session = test_session();
+        session.add_file(bad.clone(), FileStatus::Modified, 1);
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 2);
+
+        let json = serde_json::to_string(&session).expect("non-UTF-8 path must serialize");
+        let loaded: ReviewSession = serde_json::from_str(&json).unwrap();
+
+        assert!(loaded.files.contains_key(&bad));
+        assert_eq!(loaded.files[&bad].path, bad);
+        assert!(loaded.files.contains_key(&PathBuf::from("src/main.rs")));
+        assert!(json.contains("\"src/main.rs\""));
     }
 }

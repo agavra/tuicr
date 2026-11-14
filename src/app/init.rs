@@ -1,10 +1,11 @@
 use super::*;
 
 #[derive(Clone, Copy)]
-struct PrDisplayOptions {
-    show_checks: bool,
-    show_comments: bool,
-    comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
+pub(in crate::app) struct PrDisplayOptions {
+    pub(in crate::app) show_checks: bool,
+    pub(in crate::app) show_comments: bool,
+    pub(in crate::app) comments_visibility:
+        Option<crate::forge::remote_comments::PrCommentsVisibility>,
 }
 
 impl App {
@@ -30,16 +31,25 @@ impl App {
                     show_comments: options.show_pr_comments,
                     comments_visibility: options.pr_comments_visibility,
                 },
+                options.vcs_open_options(),
             );
         }
 
         // --file mode: open a single file for annotation without VCS
         if let Some(file_path) = options.file_path {
-            let vcs = Box::new(FileBackend::new(file_path)?);
+            let file_backend = FileBackend::new(file_path)?;
+            let session_source = match file_backend.mode() {
+                crate::vcs::file::FileMode::Single => SessionDiffSource::File,
+                crate::vcs::file::FileMode::Directory => SessionDiffSource::WorkingTree,
+                crate::vcs::file::FileMode::Pristine => {
+                    unreachable!("--file does not construct pristine mode")
+                }
+            };
+            let vcs = Box::new(file_backend);
             let vcs_info = vcs.info().clone();
             let highlighter = theme.syntax_highlighter();
             let diff_files = vcs.get_working_tree_diff(highlighter)?;
-            let session = Self::load_or_create_session(&vcs_info, SessionDiffSource::WorkingTree);
+            let session = Self::load_or_create_session(&vcs_info, session_source);
 
             let mut app = Self::build(
                 vcs,
@@ -160,6 +170,42 @@ impl App {
             )?;
             let commit_ids = revision_range.commit_ids.to_vec();
 
+            if commit_ids.is_empty() && !options.working_tree {
+                // Commit-range sessions need a selected commit for their identity.
+                // Preserve the ordinary empty-diff result instead of letting the
+                // session constructor unwrap an absent final commit.
+                return Err(TuicrError::NoChanges);
+            }
+
+            if options.working_tree && commit_ids.is_empty() {
+                // An empty range has no commit identity for a combined session;
+                // preserve `-w` behavior and review only staged/unstaged changes.
+                let diff_files = Self::get_working_tree_diff_with_ignore(
+                    vcs.as_ref(),
+                    &vcs_info.root_path,
+                    highlighter,
+                    options.path_filter,
+                )?;
+                let session =
+                    Self::load_or_create_session(&vcs_info, SessionDiffSource::StagedAndUnstaged);
+                let app = Self::build(
+                    vcs,
+                    vcs_info,
+                    theme,
+                    comment_type_configs,
+                    output_to_stdout,
+                    diff_files,
+                    session,
+                    DiffSource::StagedAndUnstaged,
+                    InputMode::Normal,
+                    Vec::new(),
+                    options.path_filter,
+                    options.repo_url_override.clone(),
+                )?
+                .with_vcs_open_options(options.vcs_open_options());
+                return Ok(app);
+            }
+
             if options.working_tree {
                 // Combined: commit range + staged/unstaged changes
                 let diff_files = Self::get_working_tree_with_commits_diff_with_ignore(
@@ -213,30 +259,7 @@ impl App {
                 )?
                 .with_vcs_open_options(options.vcs_open_options());
 
-                app.range_diff_files = Some(app.diff_files.clone());
-                app.commit_list = all_commits.clone();
-                let range = Self::initial_commit_range(options.commit_selection, all_commits.len());
-                app.commit_selection_range = range;
-                app.commit_list_cursor = range.map(|(start, _)| start).unwrap_or(0);
-                app.commit_list_scroll_offset = 0;
-                app.visible_commit_count = all_commits.len();
-                app.has_more_commit = false;
-                app.show_commit_selector = all_commits.len() > 1;
-                app.commit_diff_cache.clear();
-                app.review_commits = all_commits;
-                // `initial_commit_selection = oldest` scopes the review to a single
-                // commit; narrow the loaded diff to it.
-                if Self::is_strict_commit_selection(
-                    app.commit_selection_range,
-                    app.review_commits.len(),
-                ) {
-                    app.reload_inline_selection()?;
-                } else {
-                    app.insert_commit_message_if_single();
-                    app.sort_files_by_directory(true);
-                    app.expand_all_dirs();
-                    app.rebuild_annotations();
-                }
+                app.install_review_commits(all_commits, options.commit_selection)?;
 
                 return Ok(app);
             }
@@ -275,35 +298,7 @@ impl App {
             )?
             .with_vcs_open_options(options.vcs_open_options());
 
-            // Set up inline commit selector for multi-commit reviews
-            if review_commits.len() > 1 {
-                app.range_diff_files = Some(app.diff_files.clone());
-                app.commit_list = review_commits.clone();
-                let range =
-                    Self::initial_commit_range(options.commit_selection, review_commits.len());
-                app.commit_selection_range = range;
-                app.commit_list_cursor = range.map(|(start, _)| start).unwrap_or(0);
-                app.commit_list_scroll_offset = 0;
-                app.visible_commit_count = review_commits.len();
-                app.has_more_commit = false;
-                app.show_commit_selector = true;
-                app.commit_diff_cache.clear();
-            }
-            app.review_commits = review_commits;
-            // `initial_commit_selection = oldest` opens the review scoped to a single
-            // commit; narrow the loaded diff to it. Otherwise finalize the
-            // full-range diff already loaded above.
-            if Self::is_strict_commit_selection(
-                app.commit_selection_range,
-                app.review_commits.len(),
-            ) {
-                app.reload_inline_selection()?;
-            } else {
-                app.insert_commit_message_if_single();
-                app.sort_files_by_directory(true);
-                app.expand_all_dirs();
-                app.rebuild_annotations();
-            }
+            app.install_review_commits(review_commits, options.commit_selection)?;
 
             Ok(app)
         } else if options.working_tree {
@@ -469,6 +464,7 @@ impl App {
             theme,
             vcs,
             vcs_info,
+            parked_vcs: None,
             local_repo_root,
             session,
             persisted_session_snapshot,
@@ -500,7 +496,9 @@ impl App {
             help_state: HelpState::default(),
             summary_state: SummaryState::default(),
             file_filter: FileTreeFilter::default(),
+            transparent_background: false,
             theme_picker: ThemePickerState::default(),
+            file_picker: FilePickerState::default(),
             command_buffer: String::new(),
             command_completion: None,
             command_return_mode: InputMode::Normal,
@@ -518,7 +516,7 @@ impl App {
             comment_preferred_column: None,
             comment_vim_enabled: false,
             q_quits: false,
-            comment_tab_width: 4,
+            comment_tab_width: crate::vcs::TAB_WIDTH,
             comment_vim_editor: None,
             comment_vim_command: None,
             comment_vim_pending: CommentVimPending::None,
@@ -567,9 +565,11 @@ impl App {
             pr_submit_rx: None,
             current_pr_head: None,
             pr_info: None,
+            pr_info_rows_cache: std::cell::RefCell::new(None),
             show_pr_checks: false,
             show_pr_comments: true,
             should_quit: false,
+            full_redraw_pending: false,
             dirty: false,
             quit_warned: false,
             message: None,
@@ -578,6 +578,7 @@ impl App {
             show_file_list: true,
             minimal_ui: false,
             pending_minimal_ui_start: false,
+            file_list_position: FileListPosition::default(),
             compact_folders: false,
             is_pristine_mode: false,
             is_single_file_view: false,
@@ -590,6 +591,7 @@ impl App {
             cursor_line_highlight: true,
             leader_key: crate::config::DEFAULT_LEADER_KEY,
             scroll_offset: 0,
+            mouse_scroll_lines: crate::config::DEFAULT_MOUSE_SCROLL_LINES,
             file_list_area: None,
             comment_navigator_area: None,
             diff_area: None,
@@ -687,7 +689,10 @@ impl App {
             let id = config.id;
             let label = config.label.unwrap_or_else(|| id.clone());
             let definition = config.definition;
-            let color = config.color.as_deref().and_then(Self::parse_config_color);
+            let color = config
+                .color
+                .as_deref()
+                .and_then(crate::theme::parse_color_value);
             resolved.push(CommentTypeDefinition {
                 id,
                 label,
@@ -723,59 +728,10 @@ impl App {
         Self::first_comment_type(&self.comment_types)
     }
 
-    fn parse_config_color(value: &str) -> Option<Color> {
-        let normalized = value.trim().to_ascii_lowercase();
-        if normalized.is_empty() {
-            return None;
-        }
-
-        if let Some(hex) = normalized.strip_prefix('#')
-            && hex.len() == 6
-            && let Ok(rgb) = u32::from_str_radix(hex, 16)
-        {
-            let r = ((rgb >> 16) & 0xff) as u8;
-            let g = ((rgb >> 8) & 0xff) as u8;
-            let b = (rgb & 0xff) as u8;
-            return Some(Color::Rgb(r, g, b));
-        }
-
-        match normalized.as_str() {
-            "black" => Some(Color::Black),
-            "red" => Some(Color::Red),
-            "green" => Some(Color::Green),
-            "yellow" => Some(Color::Yellow),
-            "blue" => Some(Color::Blue),
-            "magenta" => Some(Color::Magenta),
-            "cyan" => Some(Color::Cyan),
-            "gray" | "grey" => Some(Color::Gray),
-            "darkgray" | "dark_gray" | "darkgrey" | "dark_grey" => Some(Color::DarkGray),
-            "lightred" | "light_red" => Some(Color::LightRed),
-            "lightgreen" | "light_green" => Some(Color::LightGreen),
-            "lightyellow" | "light_yellow" => Some(Color::LightYellow),
-            "lightblue" | "light_blue" => Some(Color::LightBlue),
-            "lightmagenta" | "light_magenta" => Some(Color::LightMagenta),
-            "lightcyan" | "light_cyan" => Some(Color::LightCyan),
-            "white" => Some(Color::White),
-            _ => None,
-        }
-    }
-
     /// Human-facing label for a comment type, e.g. `SUGGESTION`. Returns an
     /// empty string for [`CommentType::None`] so callers render no badge.
     pub fn comment_type_label(&self, comment_type: &CommentType) -> String {
-        if comment_type.is_none() {
-            return String::new();
-        }
-
-        if let Some(definition) = self
-            .comment_types
-            .iter()
-            .find(|definition| definition.id == comment_type.id())
-        {
-            return definition.label.to_ascii_uppercase();
-        }
-
-        comment_type.as_str()
+        super::resolve_comment_type_label(comment_type, &self.comment_types)
     }
 
     pub fn comment_type_color(&self, comment_type: &CommentType) -> Color {
@@ -832,9 +788,11 @@ impl App {
                 show_comments: true,
                 comments_visibility: None,
             },
+            VcsOpenOptions::default(),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_from_pr_target_with_pr_display_options(
         theme: Theme,
         comment_type_configs: Option<Vec<CommentTypeConfig>>,
@@ -843,15 +801,16 @@ impl App {
         repo_url_override: Option<ForgeRepository>,
         commit_selection: CommitSelectionStart,
         display_options: PrDisplayOptions,
+        vcs_open_options: VcsOpenOptions,
     ) -> Result<Self> {
         use crate::forge::azure::az::parse_pull_request_target_azure;
         use crate::forge::bitbucket::bkt::parse_pull_request_target_bitbucket;
+        use crate::forge::canonical::pr_target_repository;
         use crate::forge::gerrit::api::parse_pull_request_target_gerrit;
         use crate::forge::gitea::tea::parse_pull_request_target_gitea;
-        use crate::forge::github::gh::parse_pull_request_target;
+        use crate::forge::github::gh::{SystemGhRunner, parse_pull_request_target};
         use crate::forge::gitlab::glab::parse_pull_request_target_gitlab;
         use crate::forge::pr_open::open_pull_request;
-        use crate::forge::traits::ForgeKind;
 
         // Bitbucket first: its URL shape (`/pull-requests/<n>`) is distinct,
         // and the GitHub parser would otherwise claim the host. Gitea next:
@@ -878,43 +837,32 @@ impl App {
         //   3. detected local `origin` as the final fallback
         // URL- and owner-repo-hash targets carry their own repository, which
         // wins over all of the above since it's PR-specific.
-        let local_repo_root = std::env::current_dir().ok();
-        let detected_repo = local_repo_root
+        let launch_dir = std::env::current_dir().ok();
+        let detected_repo = launch_dir
             .as_deref()
             .and_then(crate::forge::detect_forge_repository);
+        let local_repo_root = launch_dir
+            .as_deref()
+            .and_then(|dir| checkout_root_for_launch_dir(dir, &vcs_open_options));
 
-        // Canonical resolution (fork parent lookup) only works for GitHub.
-        let canonical_repo = detected_repo.as_ref().and_then(|origin| {
-            if origin.kind == ForgeKind::GitHub {
-                use crate::forge::canonical::resolve_canonical_repository;
-                use crate::forge::github::gh::SystemGhRunner;
-                Some(resolve_canonical_repository(
-                    origin,
-                    repo_url_override.as_ref(),
-                    &SystemGhRunner,
-                ))
-            } else {
-                None
-            }
-        });
-        let target_repo = parsed
-            .repository
-            .clone()
-            .or_else(|| repo_url_override.clone())
-            .or_else(|| canonical_repo.clone())
-            .or_else(|| detected_repo.clone())
-            .ok_or_else(|| {
-                TuicrError::Forge(
-                    "tuicr pr <number> requires a local forge remote. \
-                     Use owner/repo#N or a full PR URL outside a checkout."
-                        .to_string(),
-                )
-            })?;
+        let target_repo = pr_target_repository(
+            parsed.repository.as_ref(),
+            repo_url_override.as_ref(),
+            detected_repo.as_ref(),
+            &SystemGhRunner,
+        )
+        .ok_or_else(|| {
+            TuicrError::Forge(
+                "tuicr pr <number> requires a local forge remote. \
+                 Use owner/repo#N or a full PR URL outside a checkout."
+                    .to_string(),
+            )
+        })?;
 
         // Use the local checkout for `.tuicrignore` only when it matches the
         // PR's target repository — using a foreign repo's checkout would
         // mis-filter the PR diff.
-        let local_checkout_for_target = local_repo_root
+        let local_checkout_for_target = launch_dir
             .as_deref()
             .and_then(|root| crate::forge::local_checkout_for_repo(root, &target_repo));
 
@@ -924,12 +872,10 @@ impl App {
             display_options.show_checks,
             display_options.show_comments,
         );
-        let highlighter = theme.syntax_highlighter();
         let mut opened = open_pull_request(
             backend.as_ref(),
             parsed,
             local_checkout_for_target.as_deref(),
-            highlighter,
         )?;
         // Seed before the persisted-session restore, which replaces the
         // fresh session wholesale, so a saved visibility always wins.
@@ -938,6 +884,44 @@ impl App {
         }
         let opened = Self::opened_pr_with_persisted_session(opened)?;
 
+        // Snapshot the PR details before consuming `opened` so we can kick
+        // off the remote-thread fetch after the app is built.
+        let details_for_threads = opened.details.clone();
+        let mut app = Self::from_opened_pr(
+            opened,
+            backend,
+            target_repo,
+            theme,
+            comment_type_configs,
+            output_to_stdout,
+            repo_url_override,
+            display_options,
+            commit_selection,
+            local_repo_root,
+            vcs_open_options,
+        )?;
+        // Spawn thread-fetch on startup; the main event loop will drain
+        // the receiver via `poll_pr_threads_events` once it begins.
+        app.spawn_pr_threads_fetch(&details_for_threads, local_checkout_for_target);
+        Ok(app)
+    }
+
+    /// Post-open half of `tuicr pr <target>`: build the app around an
+    /// already-opened PR. Split out so tests can supply the opened PR.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::app) fn from_opened_pr(
+        opened: crate::forge::pr_open::OpenedPullRequest,
+        backend: Box<dyn ForgeBackend>,
+        target_repo: ForgeRepository,
+        theme: Theme,
+        comment_type_configs: Option<Vec<CommentTypeConfig>>,
+        output_to_stdout: bool,
+        repo_url_override: Option<ForgeRepository>,
+        display_options: PrDisplayOptions,
+        commit_selection: CommitSelectionStart,
+        local_repo_root: Option<PathBuf>,
+        vcs_open_options: VcsOpenOptions,
+    ) -> Result<Self> {
         let pr_source = PullRequestDiffSource::from_details(&opened.details);
         let diff_source = DiffSource::PullRequest(Box::new(pr_source));
         let vcs_info = VcsInfo {
@@ -950,8 +934,6 @@ impl App {
         // routes through the forge backend, not the VCS box.
         let vcs: Box<dyn VcsBackend> = Box::new(PrNoopVcs::new(vcs_info.clone()));
 
-        // Snapshot the PR details before consuming `opened` so we can kick
-        // off the remote-thread fetch after `Self::build` returns.
         let details_for_threads = opened.details.clone();
         let commits_for_selector = opened.commits.clone();
         let review_metadata = opened.review_metadata.clone();
@@ -976,6 +958,7 @@ impl App {
         // directory here — PRs opened later from the PR tab resolve their
         // local checkout from it.
         app.local_repo_root = local_repo_root;
+        app.vcs_open_options = vcs_open_options;
         // Wire the forge backend so context expansion routes through it.
         app.forge_backend = Some(backend);
         app.forge_repository = Some(target_repo);
@@ -988,6 +971,11 @@ impl App {
         app.commit_selection_start = commit_selection;
         let since_last_review_message =
             app.apply_pr_commit_selector(commits_for_selector, review_metadata);
+        // A strict selection starts a range reload below; keep the message
+        // off the cumulative diff until that range has loaded.
+        let range_reload_pending =
+            Self::is_strict_commit_selection(app.commit_selection_range, app.pr_commits.len());
+        app.rebuild_pr_diff_view(!range_reload_pending);
         if matches!(&app.diff_source, DiffSource::PullRequest(_))
             && let Some(range) = app.commit_selection_range
             && !app.pr_commits.is_empty()
@@ -1003,9 +991,23 @@ impl App {
         } else if let Some(message) = since_last_review_message {
             app.set_message(message);
         }
-        // Spawn thread-fetch on startup; the main event loop will drain
-        // the receiver via `poll_pr_threads_events` once it begins.
-        app.spawn_pr_threads_fetch(&details_for_threads, local_checkout_for_target);
         Ok(app)
     }
+}
+
+/// The checkout root a `tuicr pr` launch directory belongs to, or `None`
+/// outside any checkout. Local sessions are scoped by this root, so a
+/// subdirectory launch must not narrow them and a non-checkout must not
+/// scope the tab to the directory.
+pub(in crate::app) fn checkout_root_for_launch_dir(
+    dir: &std::path::Path,
+    options: &VcsOpenOptions,
+) -> Option<PathBuf> {
+    crate::vcs::detect_vcs_in(
+        dir,
+        options.git_backend_preference,
+        options.diff_whitespace_mode.clone(),
+    )
+    .ok()
+    .map(|vcs| vcs.info().root_path.clone())
 }

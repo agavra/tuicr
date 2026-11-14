@@ -48,6 +48,7 @@ fn build_scroll_app(n: usize, viewport: usize, scroll_offset_config: usize) -> A
             content: format!("line {i}"),
             old_lineno: Some(i as u32),
             new_lineno: Some(i as u32),
+            raw_content: None,
             highlighted_spans: None,
         })
         .collect();
@@ -748,4 +749,60 @@ fn cursor_down_with_stale_cursor_past_end_does_not_underflow() {
         app.diff_state.cursor_line, max,
         "cursor should be clamped to the current max line"
     );
+}
+
+fn wheel_over_diff(app: &mut App, kind: crossterm::event::MouseEventKind) {
+    app.diff_area = Some(ratatui::layout::Rect::new(0, 0, 80, 20));
+    crate::handler::handle_mouse_event(
+        app,
+        crossterm::event::MouseEvent {
+            kind,
+            column: 10,
+            row: 10,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        },
+    );
+}
+
+#[test]
+fn mouse_wheel_scrolls_diff_three_lines_by_default() {
+    let mut app = build_scroll_app(40, 20, 0);
+    assert_eq!(app.mouse_scroll_lines, 3);
+
+    wheel_over_diff(&mut app, crossterm::event::MouseEventKind::ScrollDown);
+    assert_eq!(app.diff_state.scroll_offset, 3);
+
+    wheel_over_diff(&mut app, crossterm::event::MouseEventKind::ScrollUp);
+    assert_eq!(app.diff_state.scroll_offset, 0);
+}
+
+#[test]
+fn mouse_wheel_scrolls_diff_by_configured_lines() {
+    let mut app = build_scroll_app(40, 20, 0);
+    app.mouse_scroll_lines = 1;
+
+    wheel_over_diff(&mut app, crossterm::event::MouseEventKind::ScrollDown);
+    assert_eq!(app.diff_state.scroll_offset, 1);
+
+    app.mouse_scroll_lines = 7;
+    wheel_over_diff(&mut app, crossterm::event::MouseEventKind::ScrollDown);
+    assert_eq!(app.diff_state.scroll_offset, 8);
+
+    wheel_over_diff(&mut app, crossterm::event::MouseEventKind::ScrollUp);
+    assert_eq!(app.diff_state.scroll_offset, 1);
+}
+
+#[test]
+fn diff_state_wraps_off_by_default() {
+    assert!(!DiffState::default().wrap_lines);
+}
+
+#[test]
+fn reset_diff_state_preserves_wrap_preference() {
+    let mut app = build_scroll_app(40, 20, 5);
+    app.diff_state.wrap_lines = true;
+    app.diff_state.scroll_offset = 7;
+    app.reset_diff_state();
+    assert!(app.diff_state.wrap_lines);
+    assert_eq!(app.diff_state.scroll_offset, 0);
 }

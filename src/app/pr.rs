@@ -1,6 +1,22 @@
 use super::*;
 
 impl App {
+    /// Shared tail of every PR path that assigns `diff_files`: place (or drop)
+    /// the commit-message pseudo-file, then sort, expand and re-annotate.
+    ///
+    /// `insert_message` is false only while a strict initial selection's range
+    /// diff is still loading, so no message sits above the cumulative diff.
+    pub(in crate::app) fn rebuild_pr_diff_view(&mut self, insert_message: bool) {
+        if insert_message {
+            self.insert_commit_message_if_single();
+        } else {
+            self.diff_files.retain(|f| !f.is_commit_message);
+        }
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
+    }
+
     /// Re-enter PR mode after we've already opened a PR via the selector.
     /// Used by the selector → PR open path and by `:reload` in PR mode.
     pub fn enter_pr_diff_mode(
@@ -26,13 +42,22 @@ impl App {
         let read_only_reason = pr_source.read_only_reason();
         let virtual_root = session.repo_path.clone();
 
-        self.vcs_info = VcsInfo {
+        let pr_vcs_info = VcsInfo {
             root_path: virtual_root.clone(),
             head_commit: details.head_sha.clone(),
             branch_name: Some(details.head_ref_name.clone()),
             vcs_type: VcsType::File,
         };
-        self.vcs = Box::new(PrNoopVcs::new(self.vcs_info.clone()));
+        let local_info = std::mem::replace(&mut self.vcs_info, pr_vcs_info);
+        let local_vcs = std::mem::replace(
+            &mut self.vcs,
+            Box::new(PrNoopVcs::new(self.vcs_info.clone())),
+        );
+        // Keep the checkout's backend for the Local tab; a PR opened from
+        // another PR already has it parked (or reopens it on demand).
+        if !matches!(self.diff_source, DiffSource::PullRequest(_)) {
+            self.parked_vcs = Some((local_vcs, local_info));
+        }
         self.session = session;
         self.diff_files = diff_files;
         self.reset_persisted_session_tracking()?;
@@ -45,10 +70,16 @@ impl App {
         self.forge_review_summaries = Vec::new();
         self.forge_review_threads_loading = false;
         self.pr_threads_rx = None;
+        // Results fetched for the previous PR must not land in this one.
+        self.pr_reload_state = None;
+        self.pr_reload_rx = None;
+        self.pr_range_reload_state = None;
+        self.pr_range_reload_rx = None;
         // Latest known remote head — equal to the session head at open time;
         // refreshed by future `gh pr view` calls in PR 6.
         self.current_pr_head = Some(details.head_sha.clone());
         self.input_mode = InputMode::Normal;
+        self.file_picker = FilePickerState::default();
         // A prompt raised on the selector (e.g. a Sessions-tab delete) while
         // the PR was loading belongs to a screen that is now gone.
         self.pending_confirm = None;
@@ -62,7 +93,7 @@ impl App {
         self.show_commit_selector = false;
         self.range_diff_files = None;
         self.saved_inline_selection = None;
-        self.diff_state = DiffState::default();
+        self.reset_diff_state();
         self.pr_info = Some(pr_info);
 
         // PR mode populates the inline selector with the PR's commits when
@@ -77,10 +108,7 @@ impl App {
         let preserve_hunks =
             Self::is_strict_commit_selection(self.commit_selection_range, self.pr_commits.len());
         Self::register_diff_files(&mut self.session, &self.diff_files, preserve_hunks);
-
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        self.rebuild_pr_diff_view(!preserve_hunks);
 
         if let Some(reason) = read_only_reason {
             self.set_warning(format!("This PR is {reason} — review is read-only"));
@@ -99,6 +127,76 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// While a PR is open, swap the checkout's backend in so a local target can
+    /// be listed or loaded. Reopens it from the launch directory when tuicr
+    /// started on `tuicr pr`. Returns whether it swapped; pair with
+    /// `settle_local_vcs`.
+    fn activate_local_vcs(&mut self) -> bool {
+        if !matches!(self.diff_source, DiffSource::PullRequest(_)) {
+            return false;
+        }
+        let local = self.parked_vcs.take().or_else(|| {
+            let root = self.local_repo_root.as_deref()?;
+            let options = self.vcs_open_options.clone();
+            let vcs = crate::vcs::detect_vcs_in(
+                root,
+                options.git_backend_preference,
+                options.diff_whitespace_mode,
+            )
+            .ok()?;
+            let info = vcs.info().clone();
+            Some((vcs, info))
+        });
+        let Some((vcs, info)) = local else {
+            return false;
+        };
+        let pr_info = std::mem::replace(&mut self.vcs_info, info);
+        let pr_vcs = std::mem::replace(&mut self.vcs, vcs);
+        self.parked_vcs = Some((pr_vcs, pr_info));
+        true
+    }
+
+    /// Undo `activate_local_vcs`. If the local action replaced the PR with a
+    /// local review, keep the local backend and drop the PR state; otherwise
+    /// put the PR backend back.
+    fn settle_local_vcs(&mut self) {
+        if matches!(self.diff_source, DiffSource::PullRequest(_)) {
+            if let Some((vcs, info)) = self.parked_vcs.take() {
+                self.parked_vcs = Some((
+                    std::mem::replace(&mut self.vcs, vcs),
+                    std::mem::replace(&mut self.vcs_info, info),
+                ));
+            }
+            return;
+        }
+        self.parked_vcs = None;
+        self.pr_info = None;
+        self.forge_review_threads = Vec::new();
+        self.forge_review_summaries = Vec::new();
+        self.forge_review_threads_loading = false;
+        self.pr_threads_rx = None;
+        self.pr_reload_state = None;
+        self.pr_reload_rx = None;
+        self.pr_range_reload_state = None;
+        self.pr_range_reload_rx = None;
+        self.current_pr_head = None;
+        // Annotations were built while the PR state was still present.
+        self.rebuild_annotations();
+    }
+
+    /// Run a local-target action with the checkout's backend active.
+    pub(in crate::app) fn with_local_vcs<T>(
+        &mut self,
+        action: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        let swapped = self.activate_local_vcs();
+        let result = action(self);
+        if swapped {
+            self.settle_local_vcs();
+        }
+        result
     }
 
     /// Reload the PR's head from the forge. If the head SHA changed, this
@@ -268,21 +366,34 @@ impl App {
         self.spawn_pr_range_reload();
     }
 
+    /// Whether an async result for `(repository, number, head)` belongs to the
+    /// PR session on screen now, not the one it was spawned from.
+    pub(in crate::app) fn pr_result_is_current(
+        &self,
+        repository: &crate::forge::traits::ForgeRepository,
+        number: u64,
+        head_sha: &str,
+    ) -> bool {
+        matches!(&self.diff_source, DiffSource::PullRequest(pr)
+            if pr.key.repository == *repository
+                && pr.key.number == number
+                && pr.key.head_sha == head_sha)
+    }
+
     /// Restore the cached cumulative PR diff into the diff view. Used when
     /// the user toggles the selector back to "all commits".
-    fn apply_cached_full_pr_diff(&mut self) {
+    pub(in crate::app) fn apply_cached_full_pr_diff(&mut self) {
         let Some(files) = self.range_diff_files.clone() else {
             return;
         };
+        // A late subset result must not overwrite the all-commits view.
+        self.pr_range_reload_state = None;
+        self.pr_range_reload_rx = None;
         let anchor = self.capture_pr_cursor_anchor();
         self.diff_files = files;
         self.clear_expanded_gaps();
-        for file in &self.diff_files {
-            self.session.add_diff_file(file);
-        }
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        Self::register_diff_files(&mut self.session, &self.diff_files, true);
+        self.rebuild_pr_diff_view(true);
         if let Some(anchor) = anchor {
             self.restore_pr_cursor_to_anchor(&anchor);
         }
@@ -383,14 +494,17 @@ impl App {
         // Only apply if this result still matches the active in-flight
         // request — toggling again, switching PRs, or reloading the head
         // before this lands invalidates it.
-        let still_active = in_flight.as_ref().is_some_and(|s| {
-            s.start_sha == request.start_sha
-                && s.end_sha == request.end_sha
-                && s.repository == request.repository
-                && s.pr_number == request.pr_number
-                && s.head_sha == request.head_sha
-                && s.range == request.range
-        });
+        let still_active =
+            self.pr_result_is_current(&request.repository, request.pr_number, &request.head_sha)
+                && self.commit_selection_range == Some(request.range)
+                && in_flight.as_ref().is_some_and(|s| {
+                    s.start_sha == request.start_sha
+                        && s.end_sha == request.end_sha
+                        && s.repository == request.repository
+                        && s.pr_number == request.pr_number
+                        && s.head_sha == request.head_sha
+                        && s.range == request.range
+                });
         if !still_active {
             return;
         }
@@ -415,7 +529,6 @@ impl App {
     ) -> Result<()> {
         use crate::vcs::diff_parser::parse_file_patches;
 
-        let highlighter = self.theme.syntax_highlighter();
         let local_checkout = self
             .forge_backend
             .as_deref()
@@ -426,7 +539,7 @@ impl App {
             Some(root) => crate::tuicrignore::filter_file_patches(root, patches),
             None => patches,
         };
-        let parsed = match parse_file_patches(patches, highlighter) {
+        let parsed = match parse_file_patches(patches) {
             Ok(files) => files,
             Err(TuicrError::NoChanges) => Vec::new(),
             Err(e) => return Err(e),
@@ -437,9 +550,7 @@ impl App {
         // Range diffs can hide hunks that are still reviewed in the broader
         // PR session, so registration must not prune them.
         Self::register_diff_files(&mut self.session, &self.diff_files, true);
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        self.rebuild_pr_diff_view(true);
 
         if let Some(anchor) = &request.anchor {
             self.restore_pr_cursor_to_anchor(anchor);
@@ -529,6 +640,7 @@ impl App {
         if !in_flight
             .as_ref()
             .is_some_and(|s| s.pr_number == request.pr_number && s.repository == request.repository)
+            || !self.pr_result_is_current(&request.repository, request.pr_number, &request.head_sha)
         {
             return;
         }
@@ -566,7 +678,6 @@ impl App {
             .forge_backend
             .as_deref()
             .and_then(|backend| backend.local_checkout_path());
-        let highlighter = self.theme.syntax_highlighter();
         let opened = prepare_open_pr(
             details,
             patches,
@@ -574,7 +685,6 @@ impl App {
             review_metadata,
             pr_info,
             local_checkout.as_deref(),
-            highlighter,
         )?;
 
         let head_changed = opened.details.head_sha != request.head_sha;
@@ -594,23 +704,7 @@ impl App {
                 self.set_message("Reloaded PR at new head".to_string());
             }
         } else {
-            self.set_pr_last_reviewed_commit_from_metadata(
-                &opened.commits,
-                &opened.review_metadata,
-            );
-            // Keep the active base in sync even when the head has not changed.
-            if let DiffSource::PullRequest(pr) = &mut self.diff_source {
-                pr.base_sha = opened.details.base_sha.clone();
-            }
-            self.diff_files = opened.diff_files;
-            self.pr_info = Some(opened.pr_info);
-            self.clear_expanded_gaps();
-            for file in &self.diff_files {
-                self.session.add_diff_file(file);
-            }
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
-            self.rebuild_annotations();
+            self.apply_same_head_pr_reload(opened);
             self.refetch_pr_threads();
             self.set_message("Reloaded PR (no new commits)".to_string());
         }
@@ -631,6 +725,105 @@ impl App {
         self.diff_state.cursor_line = self.diff_state.cursor_line.min(self.max_cursor_line());
         self.ensure_cursor_visible();
         Ok(())
+    }
+
+    /// The PR's diff base or known commit list changed under an unmoved head:
+    /// any narrowed range, pending range fetch or persisted index now refers
+    /// to commits that are gone. Show the new cumulative diff with every
+    /// commit selected. Comments keep their `commit_id`; selecting all
+    /// commits explicitly (not `None`) keeps removed commits' comments hidden.
+    fn reset_pr_selection_to_cumulative(
+        &mut self,
+        diff_files: Vec<DiffFile>,
+        commits: Vec<crate::forge::traits::PullRequestCommit>,
+    ) {
+        // A late result for the old base or membership must not land.
+        self.pr_range_reload_state = None;
+        self.pr_range_reload_rx = None;
+        self.diff_files = diff_files;
+        self.clear_expanded_gaps();
+        Self::register_diff_files(&mut self.session, &self.diff_files, false);
+        if !commits.is_empty() {
+            self.review_commits = commits.iter().map(pr_commit_to_commit_info).collect();
+            self.commit_list = self.review_commits.clone();
+            self.pr_commits = commits;
+        }
+        self.commit_diff_cache.clear();
+        self.saved_inline_selection = None;
+        self.range_diff_files = (self.review_commits.len() > 1).then(|| self.diff_files.clone());
+        self.visible_commit_count = self.review_commits.len();
+        self.commit_list_cursor = 0;
+        self.commit_list_scroll_offset = 0;
+        self.has_more_commit = false;
+        self.commit_selection_range = self
+            .review_commits
+            .len()
+            .checked_sub(1)
+            .map(|last| (0, last));
+        if self.review_commits.len() < 2 {
+            self.show_commit_selector = false;
+            if self.focused_panel == FocusedPanel::CommitSelector {
+                self.focused_panel = FocusedPanel::Diff;
+            }
+        }
+        self.insert_commit_message_if_single();
+        // All commits selected persists as `None`; write it so a reopen cannot
+        // restore stale indices.
+        self.persist_pr_commit_selection_range();
+    }
+
+    /// Take in a reload that found the PR's head unchanged: refresh the
+    /// diff, the PR info and the reviewed-commit markers, and keep the
+    /// session.
+    pub(in crate::app) fn apply_same_head_pr_reload(
+        &mut self,
+        opened: crate::forge::pr_open::OpenedPullRequest,
+    ) {
+        self.reresolve_pr_session_path();
+        // An empty incoming list means membership is unknown (a degraded fetch,
+        // gotcha F7 in docs/FORGES.md), never "commits removed", so it only skips the membership
+        // comparison; a changed base still counts.
+        let identity_changed = matches!(
+            &self.diff_source,
+            DiffSource::PullRequest(pr) if pr.base_sha != opened.details.base_sha
+        ) || (!opened.commits.is_empty()
+            && !opened
+                .commits
+                .iter()
+                .map(|c| &c.oid)
+                .eq(self.pr_commits.iter().map(|c| &c.oid)));
+        self.set_pr_last_reviewed_commit_from_metadata(&opened.commits, &opened.review_metadata);
+        // Keep the active base in sync even when the head has not changed.
+        if let DiffSource::PullRequest(pr) = &mut self.diff_source {
+            pr.base_sha = opened.details.base_sha.clone();
+        }
+        self.pr_info = Some(opened.pr_info);
+        if identity_changed {
+            self.reset_pr_selection_to_cumulative(opened.diff_files, opened.commits);
+        } else if Self::is_strict_commit_selection(
+            self.commit_selection_range,
+            self.pr_commits.len(),
+        ) {
+            // The diff base and commit list are unchanged: the narrowed diff
+            // on screen is still the diff of the selection. Only the
+            // cumulative diff behind it is refreshed.
+            self.range_diff_files = Some(opened.diff_files);
+        } else {
+            // The whole-range cache is what a later widening restores, so it
+            // must not outlive the diff it was taken from.
+            if self.range_diff_files.is_some() {
+                self.range_diff_files = Some(opened.diff_files.clone());
+            }
+            self.diff_files = opened.diff_files;
+            self.clear_expanded_gaps();
+            for file in &self.diff_files {
+                self.session.add_diff_file(file);
+            }
+            self.insert_commit_message_if_single();
+        }
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
     }
 
     /// Synchronous reload. Production code uses `spawn_pr_reload` for the
@@ -662,7 +855,7 @@ impl App {
     #[allow(dead_code)]
     pub fn reload_pull_request_with_backend(
         &mut self,
-        backend: Box<dyn ForgeBackend>,
+        backend: Box<dyn ForgeBackend + Sync>,
         local_checkout: Option<std::path::PathBuf>,
     ) -> Result<bool> {
         use crate::forge::pr_open::open_pull_request;
@@ -678,13 +871,7 @@ impl App {
             current.key.number,
             current.key.number.to_string(),
         );
-        let highlighter = self.theme.syntax_highlighter();
-        let opened = open_pull_request(
-            backend.as_ref(),
-            target,
-            local_checkout.as_deref(),
-            highlighter,
-        )?;
+        let opened = open_pull_request(backend.as_ref(), target, local_checkout.as_deref())?;
 
         let head_changed = opened.details.head_sha != current.key.head_sha;
         if head_changed {
@@ -698,23 +885,7 @@ impl App {
         } else {
             // Same head: re-parse the diff to pick up any side-channel
             // changes (rare), but keep the session intact.
-            self.set_pr_last_reviewed_commit_from_metadata(
-                &opened.commits,
-                &opened.review_metadata,
-            );
-            // Keep the active base in sync even when the head has not changed.
-            if let DiffSource::PullRequest(pr) = &mut self.diff_source {
-                pr.base_sha = opened.details.base_sha.clone();
-            }
-            self.diff_files = opened.diff_files;
-            self.pr_info = Some(opened.pr_info);
-            self.clear_expanded_gaps();
-            for file in &self.diff_files {
-                self.session.add_diff_file(file);
-            }
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
-            self.rebuild_annotations();
+            self.apply_same_head_pr_reload(opened);
         }
 
         // Same-head reload keeps the old cursor; clamp it into the (possibly
@@ -1031,7 +1202,6 @@ impl App {
         use crate::forge::pr_open::prepare_open_pr;
 
         let local_checkout = self.local_checkout_for(&request.repository);
-        let highlighter = self.theme.syntax_highlighter();
         let mut opened = prepare_open_pr(
             details.clone(),
             patches,
@@ -1039,7 +1209,6 @@ impl App {
             review_metadata,
             pr_info,
             local_checkout.as_deref(),
-            highlighter,
         )?;
         self.seed_configured_visibility(&mut opened.session);
         let opened = Self::opened_pr_with_persisted_session(opened)?;
@@ -1182,7 +1351,34 @@ impl App {
                     let _ = self.save_current_session_merging_external();
                 }
                 self.rebuild_annotations();
+                if threads_loaded {
+                    self.notice_outdated_drafts();
+                }
             }
+        }
+    }
+
+    /// Point at the viewer's drafts left on a superseded patch set. The
+    /// default view hides them like any outdated thread, since their lines
+    /// belong to the older patch set, and once a draft submit has pruned the
+    /// local copies nothing else would say they exist.
+    fn notice_outdated_drafts(&mut self) {
+        use crate::forge::remote_comments::PrCommentsVisibility;
+
+        if self.session.remote_comments_visibility != PrCommentsVisibility::Unresolved {
+            return;
+        }
+        let count = self
+            .forge_review_threads
+            .iter()
+            .filter(|thread| thread.is_outdated)
+            .flat_map(|thread| &thread.comments)
+            .filter(|comment| comment.is_draft)
+            .count();
+        match count {
+            0 => {}
+            1 => self.set_message("1 of your drafts is on an older patch set"),
+            n => self.set_message(format!("{n} of your drafts are on an older patch set")),
         }
     }
 
@@ -1269,7 +1465,7 @@ impl App {
     pub fn open_pr_with_backend(
         &mut self,
         summary: &crate::forge::traits::PullRequestSummary,
-        backend: Box<dyn ForgeBackend>,
+        backend: Box<dyn ForgeBackend + Sync>,
         local_checkout: Option<std::path::PathBuf>,
     ) -> Result<()> {
         use crate::forge::pr_open::open_pull_request;
@@ -1280,28 +1476,40 @@ impl App {
             summary.number,
             summary.number.to_string(),
         );
-        let highlighter = self.theme.syntax_highlighter();
-        let mut opened = open_pull_request(
-            backend.as_ref(),
-            target,
-            local_checkout.as_deref(),
-            highlighter,
-        )?;
+        let mut opened = open_pull_request(backend.as_ref(), target, local_checkout.as_deref())?;
         self.seed_configured_visibility(&mut opened.session);
         let opened = Self::opened_pr_with_persisted_session(opened)?;
         // Sync thread + summary fetch — tests assert on
         // `app.forge_review_threads`/`forge_review_summaries` immediately
         // after this returns.
-        let threads = backend
-            .list_review_threads(&opened.details)
-            .unwrap_or_default();
-        let summaries = backend
-            .list_review_summaries(&opened.details)
-            .unwrap_or_default();
+        let threads = backend.list_review_threads(&opened.details);
+        let summaries = backend.list_review_summaries(&opened.details);
         self.enter_pr_diff_mode(backend, opened)?;
-        self.forge_review_threads = crate::forge::remote_comments::dedupe_threads(threads);
-        self.forge_review_summaries = summaries;
-        self.prune_locked_comments();
+        // Match the async path: a failed fetch leaves the remote lists empty
+        // and must not prune locked comments, whose remote copies were not
+        // loaded.
+        let mut fetched = true;
+        match threads {
+            Ok(t) => self.forge_review_threads = crate::forge::remote_comments::dedupe_threads(t),
+            Err(e) => {
+                self.forge_review_threads = Vec::new();
+                self.set_warning(format!("Failed to load remote comments: {e}"));
+                fetched = false;
+            }
+        }
+        match summaries {
+            Ok(s) => self.forge_review_summaries = s,
+            Err(e) => {
+                self.forge_review_summaries = Vec::new();
+                if fetched {
+                    self.set_warning(format!("Failed to load remote reviews: {e}"));
+                }
+                fetched = false;
+            }
+        }
+        if fetched {
+            self.prune_locked_comments();
+        }
         self.rebuild_annotations();
         Ok(())
     }

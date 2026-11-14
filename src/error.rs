@@ -23,6 +23,12 @@ pub enum TuicrError {
     #[error("Review session corrupted: {0}")]
     CorruptedSession(String),
 
+    /// The session file a cached path or `SessionRef` pointed at is no longer
+    /// the one identity resolution picks (another file appeared). Nothing was
+    /// written; reload the session.
+    #[error("Review session target changed: {0}")]
+    SessionTargetChanged(String),
+
     #[error("Clipboard error: {0}")]
     Clipboard(String),
 
@@ -31,6 +37,20 @@ pub enum TuicrError {
 
     #[error("{0}")]
     Forge(String),
+
+    /// A submit that failed after some comments were already posted. The
+    /// message is what the user sees; the receipts let the app lock the posted
+    /// comments so a retry does not duplicate them.
+    #[error("{message}")]
+    PartialSubmit {
+        message: String,
+        receipts: crate::forge::traits::SubmitReceipts,
+    },
+
+    /// A collection exceeded tuicr's finite pagination bound. Unlike other
+    /// best-effort failures this is shown to the user, never swallowed.
+    #[error("{0}")]
+    ForgeLimit(String),
 
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),

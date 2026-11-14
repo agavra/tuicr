@@ -3,12 +3,16 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
-use crate::forge::remote_comments::{RemoteCommentSide, RemoteReviewComment, RemoteReviewThread};
+use crate::forge::remote_comments::{
+    RemoteCommentSide, RemoteReviewComment, RemoteReviewState, RemoteReviewSummary,
+    RemoteReviewThread,
+};
 use crate::forge::traits::{
     ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
 };
 use crate::model::{FilePatch, FileStatus};
 use crate::vcs::git::raw::is_binary_patch;
+use crate::vcs::split_commit_message;
 
 /// One entry from GitLab's merge-request diffs API.
 #[derive(Debug, Deserialize)]
@@ -81,6 +85,7 @@ impl GlabMrSummary {
             head_ref_name: self.source_branch,
             base_ref_name: self.target_branch,
             updated_at: self.updated_at,
+            last_commit_at: None,
             url: self.web_url,
             state: normalize_state(&self.state),
             is_draft: self.draft,
@@ -206,6 +211,8 @@ pub struct GlabCommit {
     #[serde(default)]
     pub title: String,
     #[serde(default)]
+    pub message: String,
+    #[serde(default)]
     pub author_name: String,
     #[serde(default)]
     pub committed_date: Option<DateTime<Utc>>,
@@ -222,6 +229,7 @@ impl GlabCommit {
             oid: self.id,
             short_oid,
             summary: self.title,
+            body: split_commit_message(&self.message).1,
             author: self.author_name,
             timestamp: self.committed_date,
         }
@@ -238,15 +246,18 @@ pub struct GlabDiscussion {
 }
 
 impl GlabDiscussion {
-    pub fn into_review_thread(self) -> Option<RemoteReviewThread> {
+    pub fn into_review_thread(self, head_sha: &str) -> Option<RemoteReviewThread> {
         let root = self.notes.first()?;
 
-        if self.individual_note {
-            // General MR note (review summary), no diff position.
+        if self.individual_note || root.position.is_none() {
+            // General MR note (review summary), no diff position. Replying to
+            // an individual note turns it into a positionless discussion with
+            // `individual_note == false`, so key off the missing position.
             // Skip system events (e.g. "requested review from @X") and empty bodies.
             if root.system || root.body.is_empty() {
                 return None;
             }
+            let is_resolved = root.resolved;
             let comments = self
                 .notes
                 .into_iter()
@@ -256,8 +267,7 @@ impl GlabDiscussion {
                     author: Some(note.author.username),
                     body: note.body,
                     created_at: note.created_at,
-                    in_reply_to: None,
-                    url: String::new(),
+                    ..Default::default()
                 })
                 .collect::<Vec<_>>();
             if comments.is_empty() {
@@ -268,7 +278,7 @@ impl GlabDiscussion {
                 path: String::new(),
                 line: None,
                 side: RemoteCommentSide::Right,
-                is_resolved: false,
+                is_resolved,
                 is_outdated: false,
                 comments,
             });
@@ -277,31 +287,15 @@ impl GlabDiscussion {
         // Only inline (positional) discussions have a position on the root note.
         let position = root.position.as_ref()?;
 
-        // Skip non-text positions (e.g. image diffs).
-        if position.position_type != "text" {
-            return None;
-        }
-
-        let (path, line, side) = if let Some(new_line) = position.new_line {
-            // Comment on the new (right) side.
-            let path = position.new_path.clone().unwrap_or_default();
-            (path, Some(new_line), RemoteCommentSide::Right)
-        } else {
-            let old_line = position.old_line?;
-            // Comment on the old (left) side only.
-            let path = position
-                .old_path
-                .clone()
-                .or_else(|| position.new_path.clone())
-                .unwrap_or_default();
-            (path, Some(old_line), RemoteCommentSide::Left)
-        };
-
-        if path.is_empty() {
-            return None;
-        }
+        let (path, line, side) = position.anchor()?;
 
         let is_resolved = root.resolved;
+        // GitLab leaves an outdated position at the revision it was made on.
+        let is_outdated = !head_sha.is_empty()
+            && position
+                .head_sha
+                .as_deref()
+                .is_some_and(|h| !h.is_empty() && h != head_sha);
         let comments = self
             .notes
             .into_iter()
@@ -310,8 +304,7 @@ impl GlabDiscussion {
                 author: Some(note.author.username),
                 body: note.body,
                 created_at: note.created_at,
-                in_reply_to: None,
-                url: String::new(),
+                ..Default::default()
             })
             .collect();
 
@@ -321,7 +314,7 @@ impl GlabDiscussion {
             line,
             side,
             is_resolved,
-            is_outdated: false,
+            is_outdated,
             comments,
         })
     }
@@ -366,6 +359,100 @@ pub struct GlabNotePosition {
     pub old_line: Option<u32>,
 }
 
+impl GlabNotePosition {
+    /// The diff anchor of a text position: path, line and side. `None` for
+    /// non-text positions (e.g. image diffs) and anchors without a path.
+    fn anchor(&self) -> Option<(String, Option<u32>, RemoteCommentSide)> {
+        if self.position_type != "text" {
+            return None;
+        }
+        let (path, line, side) = if let Some(new_line) = self.new_line {
+            // Comment on the new (right) side.
+            let path = self.new_path.clone().unwrap_or_default();
+            (path, Some(new_line), RemoteCommentSide::Right)
+        } else {
+            let old_line = self.old_line?;
+            // Comment on the old (left) side only.
+            let path = self
+                .old_path
+                .clone()
+                .or_else(|| self.new_path.clone())
+                .unwrap_or_default();
+            (path, Some(old_line), RemoteCommentSide::Left)
+        };
+        if path.is_empty() {
+            return None;
+        }
+        Some((path, line, side))
+    }
+}
+
+/// An unpublished draft note from `/merge_requests/:iid/draft_notes`, which
+/// only its author can read. `:submit draft` posts everything there.
+#[derive(Debug, Deserialize)]
+pub struct GlabDraftNote {
+    pub id: u64,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub discussion_id: Option<String>,
+    #[serde(default)]
+    pub position: Option<GlabNotePosition>,
+}
+
+/// Split draft notes into inline threads and review-level summaries. A draft
+/// reply attaches to the published thread it answers; one whose thread is
+/// missing is dropped.
+pub fn draft_notes_to_review(
+    notes: Vec<GlabDraftNote>,
+    threads: &mut Vec<RemoteReviewThread>,
+    author: Option<&str>,
+    url: &str,
+) -> Vec<RemoteReviewSummary> {
+    let mut summaries = Vec::new();
+    for note in notes {
+        if note.note.is_empty() {
+            continue;
+        }
+        let comment = RemoteReviewComment {
+            id: format!("draft-{}", note.id),
+            author: author.map(str::to_string),
+            body: note.note.clone(),
+            is_draft: true,
+            ..Default::default()
+        };
+        if let Some(discussion_id) = note.discussion_id.as_deref() {
+            if let Some(thread) = threads.iter_mut().find(|t| t.id == discussion_id) {
+                thread.comments.push(comment);
+            }
+            continue;
+        }
+        // GitLab sends general draft notes with a position object whose
+        // coordinates are all null, so only a resolvable anchor makes a thread.
+        let anchor = note.position.as_ref().and_then(GlabNotePosition::anchor);
+        match anchor {
+            Some((path, line, side)) => threads.push(RemoteReviewThread {
+                id: comment.id.clone(),
+                path,
+                line,
+                side,
+                is_resolved: false,
+                is_outdated: false,
+                comments: vec![comment],
+            }),
+            None => summaries.push(RemoteReviewSummary {
+                id: comment.id,
+                author: author.map(str::to_string),
+                body: note.note,
+                state: RemoteReviewState::Pending,
+                created_at: None,
+                url: url.to_string(),
+            }),
+        }
+    }
+    summaries
+}
+
 fn normalize_state(state: &str) -> String {
     match state.to_ascii_lowercase().as_str() {
         "opened" | "open" => "OPEN".to_string(),
@@ -379,11 +466,67 @@ fn normalize_state(state: &str) -> String {
 mod tests {
     use super::*;
     use crate::forge::traits::ForgeRepository;
-    use crate::syntax::SyntaxHighlighter;
     use crate::vcs::diff_parser::parse_file_patches;
+
+    fn draft(json: &str) -> GlabDraftNote {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn should_read_general_draft_with_null_position_as_summary() {
+        let notes = vec![draft(
+            r#"{"id":5,"note":"Example title","discussion_id":null,"position":{"old_path":null,"new_path":null,"position_type":"text","old_line":null,"new_line":null}}"#,
+        )];
+        let mut threads = Vec::new();
+        let summaries = draft_notes_to_review(notes, &mut threads, Some("me"), "u");
+        assert!(threads.is_empty());
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].body, "Example title");
+    }
+
+    #[test]
+    fn should_append_draft_reply_to_its_discussion() {
+        let mut threads = vec![RemoteReviewThread {
+            id: "disc1".into(),
+            path: "a.rs".into(),
+            line: Some(1),
+            side: RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![RemoteReviewComment::default()],
+        }];
+        let notes = vec![draft(r#"{"id":7,"note":"reply","discussion_id":"disc1"}"#)];
+        let summaries = draft_notes_to_review(notes, &mut threads, None, "u");
+        assert!(summaries.is_empty());
+        assert_eq!(threads[0].comments.len(), 2);
+        assert_eq!(threads[0].comments[1].body, "reply");
+        assert!(threads[0].comments[1].is_draft);
+    }
 
     fn gitlab_repo() -> ForgeRepository {
         ForgeRepository::gitlab("gitlab.com", "owner", "repo")
+    }
+
+    #[test]
+    fn should_read_commit_body_from_message_and_summary_from_title() {
+        // given
+        let json = r#"{
+            "id": "abcdef1234567890",
+            "short_id": "abcdef12",
+            "title": "Fix the parser",
+            "message": "Fix the parser\n\nHandle nested expressions.\n",
+            "author_name": "Alice",
+            "committed_date": "2026-01-01T00:00:00Z"
+        }"#;
+        let commit: GlabCommit = serde_json::from_str(json).unwrap();
+        // when
+        let converted = commit.into_pull_request_commit();
+        // then
+        assert_eq!(converted.summary, "Fix the parser");
+        assert_eq!(
+            converted.body.as_deref(),
+            Some("Handle nested expressions.")
+        );
     }
 
     #[test]
@@ -395,8 +538,7 @@ mod tests {
             "diff":"@@ -1,2 +1 @@\n--- count rows\n SELECT 1;\n"
         }"#;
         let diff: GlabDiff = serde_json::from_str(json).unwrap();
-        let files = parse_file_patches(vec![diff.into_file_patch()], &SyntaxHighlighter::default())
-            .unwrap();
+        let files = parse_file_patches(vec![diff.into_file_patch()]).unwrap();
 
         assert_eq!(files[0].status, FileStatus::Renamed);
         assert_eq!(
@@ -522,7 +664,7 @@ mod tests {
                 system: false,
             }],
         };
-        let thread = discussion.into_review_thread().unwrap();
+        let thread = discussion.into_review_thread("").unwrap();
         assert_eq!(thread.id, "disc-1");
         assert_eq!(thread.path, "src/lib.rs");
         assert_eq!(thread.line, Some(42));
@@ -532,24 +674,87 @@ mod tests {
         assert_eq!(thread.comments[0].author.as_deref(), Some("bob"));
     }
 
+    fn note(id: u64, body: &str, position: Option<GlabNotePosition>) -> GlabNote {
+        GlabNote {
+            id,
+            body: body.to_string(),
+            author: GlabNoteAuthor::default(),
+            created_at: None,
+            commit_id: None,
+            position,
+            resolved: false,
+            system: false,
+        }
+    }
+
+    fn text_position(head_sha: Option<&str>) -> GlabNotePosition {
+        GlabNotePosition {
+            position_type: "text".to_string(),
+            head_sha: head_sha.map(str::to_string),
+            new_path: Some("src/lib.rs".to_string()),
+            new_line: Some(5),
+            old_path: None,
+            old_line: None,
+        }
+    }
+
     #[test]
-    fn should_skip_discussion_without_position() {
-        // A non-individual_note discussion without a diff position is dropped.
+    fn should_keep_replied_general_comment_as_review_level_thread() {
+        // A reply turns an individual note into a positionless discussion.
         let discussion = GlabDiscussion {
             id: "disc-2".to_string(),
             individual_note: false,
-            notes: vec![GlabNote {
-                id: 101,
-                body: "general comment".to_string(),
-                author: GlabNoteAuthor::default(),
-                created_at: None,
-                commit_id: None,
-                position: None,
-                resolved: false,
-                system: false,
-            }],
+            notes: vec![note(101, "general comment", None), note(102, "reply", None)],
         };
-        assert!(discussion.into_review_thread().is_none());
+        let thread = discussion.into_review_thread("head").unwrap();
+        assert_eq!(thread.path, "");
+        assert_eq!(thread.line, None);
+        assert_eq!(thread.comments.len(), 2);
+    }
+
+    #[test]
+    fn should_mark_discussion_outdated_when_position_head_differs() {
+        let mk = |h| GlabDiscussion {
+            id: "d".to_string(),
+            individual_note: false,
+            notes: vec![note(1, "x", Some(text_position(h)))],
+        };
+        assert!(
+            mk(Some("old"))
+                .into_review_thread("new")
+                .unwrap()
+                .is_outdated
+        );
+        assert!(
+            !mk(Some("new"))
+                .into_review_thread("new")
+                .unwrap()
+                .is_outdated
+        );
+        assert!(!mk(None).into_review_thread("new").unwrap().is_outdated);
+        assert!(!mk(Some("old")).into_review_thread("").unwrap().is_outdated);
+    }
+
+    #[test]
+    fn should_keep_resolved_state_on_replied_general_thread() {
+        let mut root = note(1, "general", None);
+        root.resolved = true;
+        let discussion = GlabDiscussion {
+            id: "d".to_string(),
+            individual_note: false,
+            notes: vec![root, note(2, "reply", None)],
+        };
+        assert!(discussion.into_review_thread("head").unwrap().is_resolved);
+    }
+
+    #[test]
+    fn should_not_mark_empty_position_head_sha_outdated() {
+        let discussion = GlabDiscussion {
+            id: "d".to_string(),
+            individual_note: false,
+            notes: vec![note(1, "x", Some(text_position(Some(""))))],
+        };
+        assert!(!discussion.into_review_thread("new").unwrap().is_outdated);
     }
 
     #[test]
@@ -571,7 +776,7 @@ mod tests {
                 system: false,
             }],
         };
-        let thread = discussion.into_review_thread().unwrap();
+        let thread = discussion.into_review_thread("").unwrap();
         assert_eq!(thread.id, "disc-3");
         assert_eq!(thread.path, "");
         assert_eq!(thread.line, None);
@@ -597,6 +802,6 @@ mod tests {
                 system: true,
             }],
         };
-        assert!(discussion.into_review_thread().is_none());
+        assert!(discussion.into_review_thread("").is_none());
     }
 }

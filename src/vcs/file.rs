@@ -8,7 +8,7 @@ use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
 
 use super::traits::{VcsBackend, VcsInfo, VcsType};
-use crate::vcs::slice_context_lines;
+use crate::vcs::{enhance_with_full_file_highlight, slice_context_lines};
 
 /// A backend for reviewing files outside of a VCS repository (`--file`)
 /// and for the whole-repo `--all-files` mode.
@@ -94,14 +94,23 @@ impl FileBackend {
             )));
         };
 
+        let head_commit = match mode {
+            FileMode::Single => single_file_session_identity(&files[0].0),
+            FileMode::Directory => "file".to_string(),
+            FileMode::Pristine => unreachable!("pristine mode uses new_pristine"),
+        };
         let info = VcsInfo {
             root_path,
-            head_commit: "file".to_string(),
+            head_commit,
             branch_name: None,
             vcs_type: VcsType::File,
         };
 
         Ok(Self { info, files, mode })
+    }
+
+    pub(crate) fn mode(&self) -> FileMode {
+        self.mode
     }
 
     /// Create a [`FileBackend`] in pristine mode from a pre-enumerated
@@ -157,10 +166,17 @@ impl FileBackend {
 
     fn build_diff_file_for_path(
         &self,
-        _highlighter: &SyntaxHighlighter,
+        highlighter: &SyntaxHighlighter,
         abs_path: &Path,
-        file_size: u64,
+        discovered_size: u64,
     ) -> Option<DiffFile> {
+        // The file may have grown or shrunk since discovery (`:e` reuses this
+        // backend), so the ceiling applies to the size now; the cached one is
+        // only a fallback when the stat fails.
+        let file_size = std::fs::metadata(abs_path)
+            .map(|m| m.len())
+            .unwrap_or(discovered_size);
+
         // Binary check first so a too-large binary is skipped (not surfaced
         // as a misleading is_too_large text placeholder), and so single-file
         // mode (which never went through `collect_text_files`) is also guarded.
@@ -220,6 +236,7 @@ impl FileBackend {
                 content: content.clone(),
                 old_lineno,
                 new_lineno: Some(line_num),
+                raw_content: lines[i].contains('\t').then(|| lines[i].to_string()),
                 highlighted_spans: None,
             });
         }
@@ -252,7 +269,7 @@ impl FileBackend {
 
         let hunks = vec![hunk];
         let content_hash = DiffFile::compute_content_hash(&hunks);
-        Some(DiffFile {
+        let mut file = DiffFile {
             old_path: None,
             new_path: Some(rel_path),
             status: file_status,
@@ -261,7 +278,16 @@ impl FileBackend {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
-        })
+        };
+        // Render-time coloring skips container grammars (Vue, Svelte, ...),
+        // so color them here from the content already read.
+        enhance_with_full_file_highlight(
+            std::slice::from_mut(&mut file),
+            highlighter,
+            |_| None,
+            |_| Some(content.clone()),
+        );
+        Some(file)
     }
 }
 
@@ -329,6 +355,11 @@ impl VcsBackend for FileBackend {
     }
 }
 
+fn single_file_session_identity(path: &Path) -> String {
+    let hash = crate::hash::fnv1a_64(path.as_os_str().as_encoded_bytes());
+    format!("{hash:016x}")
+}
+
 fn collect_text_files(root: &Path) -> Vec<(PathBuf, u64)> {
     let mut builder = WalkBuilder::new(root);
     builder
@@ -377,6 +408,54 @@ mod tests {
     }
 
     #[test]
+    fn container_grammar_file_is_colored_in_single_file_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("App.vue");
+        fs::write(
+            &path,
+            "<template>\n  <p>hi</p>\n</template>\n<script>\nexport default { name: 'a' }\n</script>\n",
+        )
+        .unwrap();
+
+        let backend = FileBackend::new(path.to_str().unwrap()).unwrap();
+        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+
+        assert!(
+            diffs[0].hunks[0]
+                .lines
+                .iter()
+                .all(|l| l.highlighted_spans.is_some())
+        );
+    }
+
+    #[test]
+    fn file_that_grew_past_the_ceiling_after_discovery_is_too_large() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grow.txt");
+        fs::write(&path, "small\n").unwrap();
+        let backend = FileBackend::new(path.to_str().unwrap()).unwrap();
+
+        fs::write(&path, "x\n".repeat(MAX_FILE_BYTES as usize / 2 + 1)).unwrap();
+        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+
+        assert!(diffs[0].is_too_large);
+    }
+
+    #[test]
+    fn file_that_shrank_below_the_ceiling_after_discovery_is_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shrink.txt");
+        fs::write(&path, "x".repeat(MAX_FILE_BYTES as usize + 1)).unwrap();
+        let backend = FileBackend::new(path.to_str().unwrap()).unwrap();
+
+        fs::write(&path, "short\n").unwrap();
+        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+
+        assert!(!diffs[0].is_too_large);
+        assert_eq!(diffs[0].hunks[0].lines.len(), 1);
+    }
+
+    #[test]
     fn single_file_mode_returns_one_diff_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hello.txt");
@@ -391,6 +470,96 @@ mod tests {
             Path::new("hello.txt")
         );
         assert_eq!(diffs[0].hunks[0].lines.len(), 2);
+    }
+
+    #[test]
+    fn single_file_session_identity_distinguishes_siblings_and_ignores_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir.path().join("a.md");
+        let path_b = dir.path().join("b.md");
+        fs::write(&path_a, "first").unwrap();
+        fs::write(&path_b, "second").unwrap();
+
+        let identity_a = FileBackend::new(path_a.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+        let identity_b = FileBackend::new(path_b.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+
+        assert_ne!(identity_a, identity_b);
+        fs::write(&path_a, "changed contents").unwrap();
+        let changed_identity_a = FileBackend::new(path_a.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+        assert_eq!(identity_a, changed_identity_a);
+    }
+
+    #[test]
+    fn single_file_session_identity_uses_canonical_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("review.md");
+        fs::write(&path, "content").unwrap();
+        let alias = dir.path().join(".").join("review.md");
+
+        let direct = FileBackend::new(path.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+        let aliased = FileBackend::new(alias.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+
+        assert_eq!(direct, aliased);
+    }
+
+    #[test]
+    fn single_file_session_identity_preserves_canonical_path_case() {
+        let upper = single_file_session_identity(Path::new("C:\\review\\A.md"));
+        let lower = single_file_session_identity(Path::new("C:\\review\\a.md"));
+
+        assert_ne!(upper, lower);
+    }
+
+    #[test]
+    fn moving_a_single_file_changes_its_session_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("original.md");
+        let moved = dir.path().join("moved.md");
+        fs::write(&original, "content").unwrap();
+        let original_identity = FileBackend::new(original.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+
+        fs::rename(&original, &moved).unwrap();
+        let moved_identity = FileBackend::new(moved.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+
+        assert_ne!(original_identity, moved_identity);
+    }
+
+    #[test]
+    fn directory_mode_keeps_legacy_session_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "content").unwrap();
+
+        let backend = FileBackend::new(dir.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(backend.info().head_commit, "file");
     }
 
     #[test]

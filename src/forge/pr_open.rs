@@ -15,12 +15,12 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
+use crate::forge::join;
 use crate::forge::traits::{
     ForgeBackend, PrSessionKey, PullRequestCommit, PullRequestDetails, PullRequestInfo,
     PullRequestReviewMetadata, PullRequestTarget,
 };
 use crate::model::{DiffFile, FilePatch, ReviewSession, SessionDiffSource};
-use crate::syntax::SyntaxHighlighter;
 use crate::tuicrignore;
 use crate::vcs::diff_parser::parse_file_patches;
 
@@ -57,10 +57,9 @@ pub type PrFetchData = (
 /// root are applied. When absent (PR opened via URL outside a checkout, or
 /// for a different repo), no filtering happens.
 pub fn open_pull_request(
-    backend: &dyn ForgeBackend,
+    backend: &(dyn ForgeBackend + Sync),
     target: PullRequestTarget,
     local_checkout: Option<&Path>,
-    highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
     let (details, patches, commits, review_metadata, pr_info) = fetch_pr_data(backend, target)?;
     prepare_open_pr(
@@ -70,7 +69,6 @@ pub fn open_pull_request(
         review_metadata,
         pr_info,
         local_checkout,
-        highlighter,
     )
 }
 
@@ -81,7 +79,37 @@ pub fn open_pull_request(
 /// The commit list is best-effort: if the forge fails on that endpoint
 /// only, we still return the diff so PR review proceeds without the
 /// inline selector. The first two calls remain required.
-pub fn fetch_pr_data(backend: &dyn ForgeBackend, target: PullRequestTarget) -> Result<PrFetchData> {
+///
+/// Only the PR metadata and the diff-base refinement have to come first.
+/// The diff, the commit list, and the review metadata need nothing but the
+/// pinned `details`, so they run concurrently: startup waits for the slowest
+/// of them, not their sum. Each one still paginates sequentially.
+///
+/// The head can advance while those calls are in flight, which would pair
+/// head A's metadata (and session key) with head B's diff. After the fan-out
+/// the head is read again; on a mismatch the whole fetch is retried once,
+/// then the open fails.
+pub fn fetch_pr_data(
+    backend: &(dyn ForgeBackend + Sync),
+    target: PullRequestTarget,
+) -> Result<PrFetchData> {
+    for _ in 0..2 {
+        let data = fetch_pr_data_once(backend, target.clone())?;
+        let current = backend.get_pull_request_info(target.clone())?;
+        if current.details.head_sha == data.0.head_sha {
+            return Ok(data);
+        }
+    }
+    Err(TuicrError::Forge(format!(
+        "Pull request #{} changed while it was being loaded; try again",
+        target.number
+    )))
+}
+
+fn fetch_pr_data_once(
+    backend: &(dyn ForgeBackend + Sync),
+    target: PullRequestTarget,
+) -> Result<PrFetchData> {
     let mut pr_info = backend.get_pull_request_info(target)?;
     // Pin `base_sha` to the commit the displayed patch is actually taken
     // from before anything downstream reads it. Everything that resolves the
@@ -92,14 +120,28 @@ pub fn fetch_pr_data(backend: &dyn ForgeBackend, target: PullRequestTarget) -> R
         pr_info.details.base_sha = base_sha;
     }
     let details = pr_info.details.clone();
-    let patches = backend.get_pull_request_diff(&details)?;
-    let commits = backend
-        .list_pull_request_commits(&details)
-        .unwrap_or_default();
-    let review_metadata = backend
-        .list_pull_request_review_metadata(&details)
-        .unwrap_or_default();
+    let (patches, (commits, review_metadata)) = join(
+        || backend.get_pull_request_diff(&details),
+        || {
+            join(
+                || backend.list_pull_request_commits(&details),
+                || backend.list_pull_request_review_metadata(&details),
+            )
+        },
+    );
+    let patches = patches?;
+    // Best-effort lists degrade to empty, except a pagination-bound refusal:
+    // silently showing zero commits would misrepresent the PR.
+    let commits = best_effort(commits)?;
+    let review_metadata = best_effort(review_metadata)?;
     Ok((details, patches, commits, review_metadata, pr_info))
+}
+
+fn best_effort<T: Default>(result: Result<T>) -> Result<T> {
+    match result {
+        Err(error @ TuicrError::ForgeLimit(_)) => Err(error),
+        other => Ok(other.unwrap_or_default()),
+    }
 }
 
 /// CPU-only half of the PR open path: apply `.tuicrignore` to the raw
@@ -114,7 +156,6 @@ pub fn prepare_open_pr(
     review_metadata: PullRequestReviewMetadata,
     pr_info: PullRequestInfo,
     local_checkout: Option<&Path>,
-    highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
     let had_patches = !patches.is_empty();
     let patches = match local_checkout {
@@ -125,7 +166,7 @@ pub fn prepare_open_pr(
     let diff_files = if had_patches && patches.is_empty() {
         Vec::new()
     } else {
-        match parse_file_patches(patches, highlighter) {
+        match parse_file_patches(patches) {
             Ok(files) => files,
             Err(TuicrError::NoChanges) => {
                 return Err(TuicrError::Forge(format!(
@@ -198,7 +239,7 @@ mod tests {
     };
     use crate::model::DiffLine;
     use chrono::Utc;
-    use std::cell::RefCell;
+    use std::sync::Mutex;
 
     fn repo() -> ForgeRepository {
         ForgeRepository::github("github.com", "agavra", "tuicr")
@@ -228,11 +269,13 @@ mod tests {
     struct StaticBackend {
         details: PullRequestDetails,
         patch: String,
-        calls: RefCell<Vec<&'static str>>,
+        calls: Mutex<Vec<&'static str>>,
         /// Stands in for a backend whose `base_sha` is the base branch tip
         /// rather than the merge base the patch is taken from. `None` models
         /// a backend that already reports the merge base (GitLab).
         diff_base_sha: Option<String>,
+        /// Head SHAs returned by successive metadata reads (last one repeats).
+        heads: Mutex<Vec<String>>,
     }
 
     impl StaticBackend {
@@ -240,9 +283,15 @@ mod tests {
             Self {
                 details,
                 patch: patch.to_string(),
-                calls: RefCell::new(Vec::new()),
+                calls: Mutex::new(Vec::new()),
                 diff_base_sha: None,
+                heads: Mutex::new(Vec::new()),
             }
+        }
+
+        fn with_heads(self, heads: &[&str]) -> Self {
+            *self.heads.lock().unwrap() = heads.iter().rev().map(|h| h.to_string()).collect();
+            self
         }
 
         fn with_diff_base_sha(mut self, sha: &str) -> Self {
@@ -253,7 +302,7 @@ mod tests {
 
     impl ForgeBackend for StaticBackend {
         fn resolve_diff_base_sha(&self, _pr: &PullRequestDetails) -> Option<String> {
-            self.calls.borrow_mut().push("resolve_diff_base_sha");
+            self.calls.lock().unwrap().push("resolve_diff_base_sha");
             self.diff_base_sha.clone()
         }
 
@@ -261,17 +310,23 @@ mod tests {
             unimplemented!()
         }
         fn get_pull_request(&self, _target: PullRequestTarget) -> Result<PullRequestDetails> {
-            self.calls.borrow_mut().push("get_pull_request");
-            Ok(self.details.clone())
+            self.calls.lock().unwrap().push("get_pull_request");
+            let mut details = self.details.clone();
+            let mut heads = self.heads.lock().unwrap();
+            if let Some(head) = heads.pop() {
+                details.head_sha = head;
+            }
+            Ok(details)
         }
         fn get_pull_request_diff(&self, _pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
-            self.calls.borrow_mut().push("get_pull_request_diff");
+            self.calls.lock().unwrap().push("get_pull_request_diff");
             Ok(crate::vcs::diff_parser::git_fixture_file_patches(
                 &self.patch,
             ))
         }
-        fn fetch_file_lines(&self, _req: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
-            unimplemented!()
+        fn fetch_file_content(&self, _req: ForgeFileLinesRequest) -> Result<String> {
+            self.calls.lock().unwrap().push("fetch_file_content");
+            Ok("one\ntwo\nthree\n".to_string())
         }
         fn list_review_threads(
             &self,
@@ -320,9 +375,8 @@ index 1111111..2222222 100644
         // given
         let backend = StaticBackend::new(details(), SIMPLE_PATCH);
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        let opened = open_pull_request(&backend, target, None).unwrap();
         // then
         assert_eq!(opened.diff_files.len(), 1);
         assert_eq!(opened.key.head_sha, "abcdef0123456789");
@@ -340,13 +394,41 @@ index 1111111..2222222 100644
         // resolved between metadata and patch so `base_sha` is already
         // pinned to the patch's old side by the time anything reads it.
         assert_eq!(
-            backend.calls.borrow().as_slice(),
+            backend.calls.lock().unwrap().as_slice(),
             &[
                 "get_pull_request",
                 "resolve_diff_base_sha",
-                "get_pull_request_diff"
+                "get_pull_request_diff",
+                "get_pull_request"
             ],
         );
+    }
+
+    #[test]
+    fn should_retry_once_when_the_head_moves_during_the_fetch() {
+        // given — the head advances after the first fetch's metadata read
+        let backend = StaticBackend::new(details(), SIMPLE_PATCH)
+            .with_heads(&["aaaa", "bbbb", "bbbb", "bbbb"]);
+        // when
+        let (details, ..) = fetch_pr_data(&backend, target()).unwrap();
+        // then — the second attempt pins the new head, re-checked as stable
+        assert_eq!(details.head_sha, "bbbb");
+        let calls = backend.calls.lock().unwrap();
+        assert_eq!(
+            calls.iter().filter(|c| **c == "get_pull_request").count(),
+            4
+        );
+    }
+
+    #[test]
+    fn should_error_when_the_head_keeps_moving() {
+        // given
+        let backend = StaticBackend::new(details(), SIMPLE_PATCH)
+            .with_heads(&["aaaa", "bbbb", "cccc", "dddd"]);
+        // when
+        let error = fetch_pr_data(&backend, target()).unwrap_err();
+        // then
+        assert!(error.to_string().contains("changed while"), "{error}");
     }
 
     /// Patch fixture covering add/modify/delete/rename in a single PR diff.
@@ -388,9 +470,8 @@ rename to new_name.rs
         // given a backend serving a patch with add/modify/delete/rename
         let backend = StaticBackend::new(details(), MULTI_STATUS_PATCH);
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        let opened = open_pull_request(&backend, target, None).unwrap();
         // then — all four files are recognized with correct statuses
         assert_eq!(opened.diff_files.len(), 4);
         let statuses: Vec<(String, crate::model::FileStatus)> = opened
@@ -423,15 +504,130 @@ rename to new_name.rs
         // given a PR with no file changes (empty patch)
         let backend = StaticBackend::new(details(), "");
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let err = open_pull_request(&backend, target, None, &highlighter).unwrap_err();
+        let err = open_pull_request(&backend, target, None).unwrap_err();
         // then
         let msg = err.to_string();
         assert!(
             msg.contains("Pull request #125 has no file changes"),
             "unexpected error message: {msg}"
         );
+    }
+
+    fn lines_request(start_line: u32, end_line: u32) -> ForgeFileLinesRequest {
+        ForgeFileLinesRequest::for_file(
+            repo(),
+            "base".to_string(),
+            "head".to_string(),
+            crate::model::FileStatus::Modified,
+            None,
+            Some(&PathBuf::from("a.rs")),
+            (start_line, end_line),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn should_slice_file_content_for_the_default_fetch_file_lines() {
+        let backend = StaticBackend::new(details(), SIMPLE_PATCH);
+        let lines = backend.fetch_file_lines(lines_request(2, 3)).unwrap();
+        let text: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
+        assert_eq!(text, ["two", "three"]);
+    }
+
+    #[test]
+    fn should_return_no_lines_for_an_empty_or_inverted_range() {
+        let backend = StaticBackend::new(details(), SIMPLE_PATCH);
+        assert!(
+            backend
+                .fetch_file_lines(lines_request(0, 3))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            backend
+                .fetch_file_lines(lines_request(3, 2))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !backend
+                .calls
+                .lock()
+                .unwrap()
+                .contains(&"fetch_file_content"),
+            "an empty range must not fetch the file"
+        );
+    }
+
+    #[test]
+    fn should_pick_the_old_path_and_base_sha_for_a_deleted_file() {
+        let (old, new) = (PathBuf::from("old.rs"), PathBuf::from("new.rs"));
+        let request = |status| {
+            ForgeFileLinesRequest::for_file(
+                repo(),
+                "base".to_string(),
+                "head".to_string(),
+                status,
+                Some(&old),
+                Some(&new),
+                (0, 0),
+            )
+            .unwrap()
+        };
+        let deleted = request(crate::model::FileStatus::Deleted);
+        assert_eq!(
+            (deleted.path.as_path(), deleted.sha()),
+            (old.as_path(), "base")
+        );
+        let renamed = request(crate::model::FileStatus::Renamed);
+        assert_eq!(
+            (renamed.path.as_path(), renamed.sha()),
+            (new.as_path(), "head")
+        );
+        assert!(
+            ForgeFileLinesRequest::for_file(
+                repo(),
+                String::new(),
+                String::new(),
+                crate::model::FileStatus::Modified,
+                None,
+                None,
+                (0, 0),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn should_list_commits_newest_first() {
+        // given the forge's oldest-first commit list
+        let commit = |oid: &str| crate::forge::traits::PullRequestCommit {
+            oid: oid.to_string(),
+            short_oid: oid.to_string(),
+            summary: oid.to_string(),
+            body: None,
+            author: "alice".to_string(),
+            timestamp: None,
+        };
+        // when
+        let opened = prepare_open_pr(
+            details(),
+            vec![FilePatch::new(
+                None,
+                Some(std::path::PathBuf::from("a.rs")),
+                crate::model::FileStatus::Modified,
+                "@@ -1 +1 @@\n-old\n+new\n",
+            )],
+            vec![commit("oldest"), commit("newest")],
+            crate::forge::traits::PullRequestReviewMetadata::default(),
+            crate::forge::traits::PullRequestInfo::from_details(details()),
+            None,
+        )
+        .unwrap();
+        // then
+        let oids: Vec<&str> = opened.commits.iter().map(|c| c.oid.as_str()).collect();
+        assert_eq!(oids, ["newest", "oldest"]);
     }
 
     #[test]
@@ -456,7 +652,6 @@ rename to new_name.rs
                 "@@not-a-hunk\n+minified one-liner\n",
             ),
         ];
-        let highlighter = SyntaxHighlighter::default();
         // when
         let opened = prepare_open_pr(
             details(),
@@ -465,7 +660,6 @@ rename to new_name.rs
             crate::forge::traits::PullRequestReviewMetadata::default(),
             crate::forge::traits::PullRequestInfo::from_details(details()),
             Some(dir.path()),
-            &highlighter,
         )
         .expect("ignored patch must never reach the parser");
         // then only the kept file was parsed into the review
@@ -482,7 +676,6 @@ rename to new_name.rs
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         std::fs::write(dir.path().join(".tuicrignore"), "dist/\n")
             .expect("failed to write .tuicrignore");
-        let highlighter = SyntaxHighlighter::default();
 
         let opened = prepare_open_pr(
             details(),
@@ -496,7 +689,6 @@ rename to new_name.rs
             crate::forge::traits::PullRequestReviewMetadata::default(),
             crate::forge::traits::PullRequestInfo::from_details(details()),
             Some(dir.path()),
-            &highlighter,
         )
         .expect("an ignored-only PR should open as an empty review");
 
@@ -510,9 +702,8 @@ rename to new_name.rs
         let backend =
             StaticBackend::new(details(), SIMPLE_PATCH).with_diff_base_sha("mergebase111");
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        let opened = open_pull_request(&backend, target, None).unwrap();
         // then — both the standalone details and the copy carried on pr_info
         // report the merge base, so PR-mode entry, the info panel, and the
         // reload paths can't disagree about the old side.
@@ -520,7 +711,7 @@ rename to new_name.rs
         assert_eq!(opened.pr_info.details.base_sha, "mergebase111");
         // and — resolution happened before the patch was fetched, so nothing
         // downstream ever observes the unrefined tip.
-        let calls = backend.calls.borrow();
+        let calls = backend.calls.lock().unwrap();
         let resolved_at = calls
             .iter()
             .position(|c| *c == "resolve_diff_base_sha")
@@ -538,11 +729,287 @@ rename to new_name.rs
         // (GitLab's diff_refs.base_sha), modeled by returning None.
         let backend = StaticBackend::new(details(), SIMPLE_PATCH);
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        let opened = open_pull_request(&backend, target, None).unwrap();
         // then — untouched.
         assert_eq!(opened.details.base_sha, "1234567890abcdef");
         assert_eq!(opened.pr_info.details.base_sha, "1234567890abcdef");
+    }
+
+    /// Fake forge whose calls each sleep for `delay`, recording the call
+    /// order and how many calls were in flight at once. Calls named in
+    /// `fail` return a forge error after the sleep.
+    struct SlowBackend {
+        delay: std::time::Duration,
+        fail: Vec<&'static str>,
+        limit: Vec<&'static str>,
+        calls: Mutex<Vec<&'static str>>,
+        in_flight: std::sync::atomic::AtomicUsize,
+        peak_in_flight: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SlowBackend {
+        fn new(delay_ms: u64, fail: &[&'static str]) -> Self {
+            Self {
+                delay: std::time::Duration::from_millis(delay_ms),
+                fail: fail.to_vec(),
+                limit: Vec::new(),
+                calls: Mutex::new(Vec::new()),
+                in_flight: Default::default(),
+                peak_in_flight: Default::default(),
+            }
+        }
+
+        fn call<T>(&self, name: &'static str, value: impl FnOnce() -> T) -> Result<T> {
+            use std::sync::atomic::Ordering::SeqCst;
+            self.calls.lock().unwrap().push(name);
+            let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+            self.peak_in_flight.fetch_max(now, SeqCst);
+            std::thread::sleep(self.delay);
+            self.in_flight.fetch_sub(1, SeqCst);
+            if self.limit.contains(&name) {
+                Err(TuicrError::ForgeLimit(format!("{name} hit the bound")))
+            } else if self.fail.contains(&name) {
+                Err(TuicrError::Forge(format!("{name} failed")))
+            } else {
+                Ok(value())
+            }
+        }
+
+        fn peak_in_flight(&self) -> usize {
+            self.peak_in_flight
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl ForgeBackend for SlowBackend {
+        fn list_pull_requests(&self, _query: PullRequestListQuery) -> Result<PagedPullRequests> {
+            unimplemented!()
+        }
+        fn get_pull_request(&self, _target: PullRequestTarget) -> Result<PullRequestDetails> {
+            // A fixed timestamp keeps results from separate runs comparable.
+            self.call("get_pull_request", || PullRequestDetails {
+                updated_at: None,
+                ..details()
+            })
+        }
+        fn resolve_diff_base_sha(&self, _pr: &PullRequestDetails) -> Option<String> {
+            Some("mergebase111".to_string())
+        }
+        fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
+            assert_eq!(pr.base_sha, "mergebase111", "diff saw an unpinned base");
+            self.call("get_pull_request_diff", || {
+                crate::vcs::diff_parser::git_fixture_file_patches(SIMPLE_PATCH)
+            })
+        }
+        fn list_pull_request_commits(
+            &self,
+            pr: &PullRequestDetails,
+        ) -> Result<Vec<PullRequestCommit>> {
+            assert_eq!(pr.base_sha, "mergebase111", "commits saw an unpinned base");
+            self.call("list_pull_request_commits", || {
+                ["c1", "c2"]
+                    .into_iter()
+                    .map(|oid| PullRequestCommit {
+                        oid: oid.to_string(),
+                        short_oid: oid.to_string(),
+                        summary: format!("commit {oid}"),
+                        body: None,
+                        author: "alice".to_string(),
+                        timestamp: None,
+                    })
+                    .collect()
+            })
+        }
+        fn list_pull_request_review_metadata(
+            &self,
+            pr: &PullRequestDetails,
+        ) -> Result<PullRequestReviewMetadata> {
+            assert_eq!(pr.base_sha, "mergebase111", "metadata saw an unpinned base");
+            self.call("list_pull_request_review_metadata", || {
+                PullRequestReviewMetadata {
+                    viewer_login: Some("alice".to_string()),
+                    reviews: Vec::new(),
+                }
+            })
+        }
+        fn fetch_file_lines(&self, _req: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
+            unimplemented!()
+        }
+        fn list_review_threads(
+            &self,
+            _pr: &PullRequestDetails,
+        ) -> Result<Vec<crate::forge::remote_comments::RemoteReviewThread>> {
+            unimplemented!()
+        }
+        fn get_pull_request_commit_range_diff(
+            &self,
+            _pr: &PullRequestDetails,
+            _start_sha: &str,
+            _end_sha: &str,
+        ) -> Result<Vec<FilePatch>> {
+            unimplemented!()
+        }
+        fn create_review(
+            &self,
+            _pr: &PullRequestDetails,
+            _request: crate::forge::traits::CreateReviewRequest<'_>,
+        ) -> Result<crate::forge::traits::GhCreateReviewResponse> {
+            unimplemented!()
+        }
+    }
+
+    /// `fetch_pr_data` as it was before the independent calls ran
+    /// concurrently: the reference the concurrent version must agree with.
+    fn fetch_pr_data_sequential(
+        backend: &dyn ForgeBackend,
+        target: PullRequestTarget,
+    ) -> Result<PrFetchData> {
+        let mut pr_info = backend.get_pull_request_info(target)?;
+        if let Some(base_sha) = backend.resolve_diff_base_sha(&pr_info.details) {
+            pr_info.details.base_sha = base_sha;
+        }
+        let details = pr_info.details.clone();
+        let patches = backend.get_pull_request_diff(&details)?;
+        let commits = backend
+            .list_pull_request_commits(&details)
+            .unwrap_or_default();
+        let review_metadata = backend
+            .list_pull_request_review_metadata(&details)
+            .unwrap_or_default();
+        Ok((details, patches, commits, review_metadata, pr_info))
+    }
+
+    fn target() -> PullRequestTarget {
+        PullRequestTarget::with_repository(repo(), 125, "125")
+    }
+
+    fn outcome(result: Result<PrFetchData>) -> std::result::Result<PrFetchData, String> {
+        result.map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn should_surface_a_pagination_limit_instead_of_dropping_commits() {
+        for name in [
+            "list_pull_request_commits",
+            "list_pull_request_review_metadata",
+        ] {
+            let mut backend = SlowBackend::new(0, &[]);
+            backend.limit = vec![name];
+            let error = fetch_pr_data(&backend, target()).expect_err(name);
+            assert!(
+                matches!(error, TuicrError::ForgeLimit(_)),
+                "{name}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_still_degrade_ordinary_commit_failures_to_empty() {
+        let backend = SlowBackend::new(0, &["list_pull_request_commits"]);
+        let (_, _, commits, _, _) = fetch_pr_data(&backend, target()).unwrap();
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn should_fetch_diff_commits_and_review_metadata_concurrently() {
+        // given — every forge call takes 150ms.
+        let delay_ms = 150;
+        let sequential_backend = SlowBackend::new(delay_ms, &[]);
+        let concurrent_backend = SlowBackend::new(delay_ms, &[]);
+        // when
+        let started = std::time::Instant::now();
+        fetch_pr_data_sequential(&sequential_backend, target()).unwrap();
+        let sequential = started.elapsed();
+        let started = std::time::Instant::now();
+        fetch_pr_data(&concurrent_backend, target()).unwrap();
+        let concurrent = started.elapsed();
+        eprintln!("4 calls x {delay_ms}ms: sequential {sequential:?}, concurrent {concurrent:?}");
+        // then — the sequential path pays for all four calls; the concurrent
+        // one pays for the PR metadata, the slowest of the other three and the
+        // head re-check.
+        assert!(sequential >= std::time::Duration::from_millis(4 * delay_ms));
+        assert!(
+            concurrent < std::time::Duration::from_millis(4 * delay_ms),
+            "expected ~{}ms, took {concurrent:?}",
+            3 * delay_ms
+        );
+        assert_eq!(sequential_backend.peak_in_flight(), 1);
+        assert_eq!(concurrent_backend.peak_in_flight(), 3);
+        // and — PR metadata is still fetched before anything that needs it.
+        assert_eq!(
+            concurrent_backend.calls.lock().unwrap().first(),
+            Some(&"get_pull_request")
+        );
+    }
+
+    #[test]
+    fn should_return_the_same_results_and_errors_as_the_sequential_fetch() {
+        let scenarios: &[&[&'static str]] = &[
+            &[],
+            &["get_pull_request"],
+            &["get_pull_request_diff"],
+            &["list_pull_request_commits"],
+            &["list_pull_request_review_metadata"],
+            &[
+                "list_pull_request_commits",
+                "list_pull_request_review_metadata",
+            ],
+            &["get_pull_request_diff", "list_pull_request_commits"],
+            &[
+                "get_pull_request_diff",
+                "list_pull_request_commits",
+                "list_pull_request_review_metadata",
+            ],
+        ];
+        for fail in scenarios {
+            // given
+            let sequential = SlowBackend::new(0, fail);
+            let concurrent = SlowBackend::new(0, fail);
+            // when
+            let expected = outcome(fetch_pr_data_sequential(&sequential, target()));
+            let actual = outcome(fetch_pr_data(&concurrent, target()));
+            // then
+            assert_eq!(actual, expected, "failing calls: {fail:?}");
+        }
+    }
+
+    #[test]
+    fn should_surface_the_diff_error_and_degrade_optional_calls() {
+        // given — the diff and the commit list both fail.
+        let backend = SlowBackend::new(0, &["get_pull_request_diff", "list_pull_request_commits"]);
+        // when
+        let error = fetch_pr_data(&backend, target()).unwrap_err();
+        // then — the required call's error wins; the best-effort one is dropped.
+        assert_eq!(error.to_string(), "get_pull_request_diff failed");
+
+        // given — only the best-effort calls fail.
+        let backend = SlowBackend::new(
+            0,
+            &[
+                "list_pull_request_commits",
+                "list_pull_request_review_metadata",
+            ],
+        );
+        // when
+        let (_, patches, commits, review_metadata, _) = fetch_pr_data(&backend, target()).unwrap();
+        // then — the diff still opens, without the commit selector.
+        assert_eq!(patches.len(), 1);
+        assert!(commits.is_empty());
+        assert_eq!(review_metadata, PullRequestReviewMetadata::default());
+    }
+
+    #[test]
+    fn should_not_start_dependent_calls_when_pr_metadata_fails() {
+        // given
+        let backend = SlowBackend::new(0, &["get_pull_request"]);
+        // when
+        let result = fetch_pr_data(&backend, target());
+        // then
+        assert!(result.is_err());
+        assert_eq!(
+            backend.calls.lock().unwrap().as_slice(),
+            &["get_pull_request"]
+        );
     }
 }

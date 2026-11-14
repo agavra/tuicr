@@ -14,23 +14,26 @@
 //!   the opposite of `git diff old..new`. Verified against the live API.
 
 use std::ffi::OsStr;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
 use crate::forge::local_git::read_blob;
-use crate::forge::local_merge_base;
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
+use crate::forge::remote_url::{
+    parse_scp_like_remote, read_ssh_hostname, strip_scheme, trim_url_suffix,
+};
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
     CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
     GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
     PullRequestListQuery, PullRequestListScope, PullRequestReviewMetadata, PullRequestTarget,
+    SubmitReceipts,
 };
-use crate::model::{DiffLine, FilePatch};
+use crate::forge::{forge_path, percent_encode_component, percent_encode_path};
+use crate::forge::{local_merge_base, local_range_diff};
+use crate::model::FilePatch;
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
-use crate::vcs::git::raw::{pair_metadata_with_patch, run_git_diff};
-use crate::vcs::slice_context_lines;
+use crate::vcs::git::raw::pair_metadata_with_patch;
 
 use super::models::{
     BbComment, BbCommit, BbDiffStat, BbPaged, BbPullRequest, BbUser, group_into_review_threads,
@@ -50,7 +53,7 @@ const MAX_PR_LIST_PAGE_LEN: usize = 50;
 
 /// Ceiling on pages walked when draining a collection, so a pathological
 /// repository can't spin forever.
-const MAX_PAGES: usize = 10;
+const MAX_PAGES: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BktCommandError {
@@ -86,22 +89,6 @@ impl From<CommandOutputError> for BktCommandError {
             }
         }
     }
-}
-
-/// Return `Some(diff)` when both SHAs exist locally, via `git diff <start>..<end>`.
-fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<Vec<FilePatch>> {
-    for sha in [start_sha, end_sha] {
-        let exists = run_command_output(
-            "git",
-            Some(repo_root),
-            ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
-        );
-        if exists.is_err() {
-            return None;
-        }
-    }
-    let range = format!("{start_sha}..{end_sha}");
-    run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
 #[derive(Debug, Clone)]
@@ -244,10 +231,14 @@ where
             let parsed: BbPaged<T> = serde_json::from_str(&output)?;
             all.extend(parsed.values);
             fetched += 1;
-            if fetched >= MAX_PAGES {
-                break;
-            }
             next = parsed.next;
+            if fetched >= MAX_PAGES && next.is_some() {
+                // Returning a prefix would truncate comments or break the
+                // diffstat/patch pairing, so fail loudly instead.
+                return Err(TuicrError::ForgeLimit(format!(
+                    "Bitbucket collection exceeds {MAX_PAGES} pages; refusing to use a partial list"
+                )));
+            }
         }
         Ok(all)
     }
@@ -262,14 +253,13 @@ where
     }
 
     fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
-        let path_str = request.path.to_string_lossy().replace('\\', "/");
-        // `bkt api` percent-encodes nothing for us, but the `src` endpoint
-        // takes the path as literal path segments, so it needs no encoding.
+        // `bkt api` percent-encodes nothing for us, so a `#`, `?` or `%` in the
+        // path would be read as URL syntax.
         let path = format!(
             "{}/src/{}/{}",
             Self::repo_path(&request.repository),
-            request.sha(),
-            path_str,
+            percent_encode_component(request.sha()),
+            percent_encode_path(&forge_path(&request.path)),
         );
         self.run_api(path, &[])
     }
@@ -311,7 +301,7 @@ where
     /// selections add `start_to` / `start_from`; Bitbucket ignores a start
     /// that equals the end, so single-line comments simply omit it.
     fn inline_anchor(comment: &crate::forge::submit::InlineComment) -> serde_json::Value {
-        let path = comment.path.to_string_lossy().replace('\\', "/");
+        let path = forge_path(&comment.path);
         let mut inline = serde_json::json!({ "path": path });
         let (line_key, start_key) = match comment.side {
             GhSide::Right => ("to", "start_to"),
@@ -342,7 +332,9 @@ where
         ];
         match query.scope {
             PullRequestListScope::Open => params.push(("state", "OPEN".to_string())),
-            PullRequestListScope::ReviewRequested => {
+            // `PersonallyRequested` is not in Bitbucket's scope cycle; Cloud
+            // has no team reviewers, so it would mean the same thing anyway.
+            PullRequestListScope::ReviewRequested | PullRequestListScope::PersonallyRequested => {
                 // Cloud has no workspace-wide "review requested" endpoint; the
                 // repository-scoped `q` filter is the equivalent.
                 let uuid = self.viewer_uuid()?.ok_or_else(|| {
@@ -518,15 +510,6 @@ where
         Ok(review_summaries(&self.list_comments(pr)?))
     }
 
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
-        if request.start_line == 0 || request.start_line > request.end_line {
-            return Ok(Vec::new());
-        }
-        let (start_line, end_line) = (request.start_line, request.end_line);
-        let content = self.fetch_file_content(request)?;
-        Ok(slice_context_lines(&content, start_line, end_line))
-    }
-
     /// Local blob when the checkout has the PR's SHA, REST otherwise. The PR's
     /// exact SHAs may or may not be present locally; we silently fall back.
     fn fetch_file_content(&self, request: ForgeFileLinesRequest) -> Result<String> {
@@ -550,62 +533,79 @@ where
         pr: &PullRequestDetails,
         request: CreateReviewRequest<'_>,
     ) -> Result<GhCreateReviewResponse> {
-        // Bitbucket has no pending-review primitive reachable through `bkt`,
-        // and Cloud's request-changes endpoint is not yet wired up here.
-        // Reject up front rather than silently downgrading to a plain comment.
-        match request.event {
-            SubmitEvent::Comment | SubmitEvent::Approve => {}
-            SubmitEvent::RequestChanges => {
-                return Err(TuicrError::UnsupportedOperation(
-                    "Requesting changes is not supported for Bitbucket yet. \
-                     Use `:submit` to post comments, then request changes in Bitbucket."
-                        .to_string(),
-                ));
+        let mut receipts = SubmitReceipts::default();
+        let result = (|| -> Result<GhCreateReviewResponse> {
+            // Bitbucket has no review object. Every comment posts on its own; a
+            // draft marks each one `pending`, which only its author can see until
+            // they publish from Bitbucket's own UI — mirroring GitHub's pending
+            // review and GitLab's draft notes. Approval and change requests are
+            // separate participant-state calls made after the comments land.
+            let is_draft = request.event == SubmitEvent::Draft;
+            let mut first_comment_id: Option<u64> = None;
+
+            // The review body becomes a general (non-inline) comment.
+            if !request.body.is_empty() {
+                let mut body = serde_json::json!({ "content": { "raw": request.body } });
+                if is_draft {
+                    body["pending"] = serde_json::Value::Bool(true);
+                }
+                let id = self.post_comment(pr, &body)?;
+                receipts.body_posted = true;
+                first_comment_id = first_comment_id.or(id);
             }
-            SubmitEvent::Draft => {
-                return Err(TuicrError::UnsupportedOperation(
-                    "Draft (pending) reviews are not supported for Bitbucket yet. \
-                     Use `:submit` to publish comments directly."
-                        .to_string(),
-                ));
+
+            for comment in request.comments {
+                let mut body = serde_json::json!({
+                    "content": { "raw": comment.body },
+                    "inline": Self::inline_anchor(comment),
+                });
+                if is_draft {
+                    body["pending"] = serde_json::Value::Bool(true);
+                }
+                let id = self.post_comment(pr, &body)?;
+                receipts.comment_ids.push(comment.comment_id.clone());
+                first_comment_id = first_comment_id.or(id);
             }
-        }
 
-        let mut first_comment_id: Option<u64> = None;
+            let state = match request.event {
+                SubmitEvent::Approve => {
+                    let mut args = vec![
+                        "pr".to_string(),
+                        "approve".to_string(),
+                        pr.number.to_string(),
+                    ];
+                    args.extend(Self::repo_args(&pr.repository));
+                    self.runner.run(&args).map_err(map_approve_error)?;
+                    "APPROVED"
+                }
+                SubmitEvent::RequestChanges => {
+                    // `bkt` has no first-class command for this; Cloud's endpoint
+                    // takes no body.
+                    let args = vec![
+                        "api".to_string(),
+                        format!(
+                            "{}/pullrequests/{}/request-changes",
+                            Self::repo_path(&pr.repository),
+                            pr.number
+                        ),
+                        "--method".to_string(),
+                        "POST".to_string(),
+                    ];
+                    self.runner.run(&args).map_err(map_request_changes_error)?;
+                    "CHANGES_REQUESTED"
+                }
+                SubmitEvent::Draft => "PENDING",
+                SubmitEvent::Comment => "COMMENTED",
+            };
 
-        // The review body becomes a general (non-inline) comment.
-        if !request.body.is_empty() {
-            let body = serde_json::json!({ "content": { "raw": request.body } });
-            let id = self.post_comment(pr, &body)?;
-            first_comment_id = first_comment_id.or(id);
-        }
-
-        for comment in request.comments {
-            let body = serde_json::json!({
-                "content": { "raw": comment.body },
-                "inline": Self::inline_anchor(comment),
-            });
-            let id = self.post_comment(pr, &body)?;
-            first_comment_id = first_comment_id.or(id);
-        }
-
-        let approved = request.event == SubmitEvent::Approve;
-        if approved {
-            let mut args = vec![
-                "pr".to_string(),
-                "approve".to_string(),
-                pr.number.to_string(),
-            ];
-            args.extend(Self::repo_args(&pr.repository));
-            self.runner.run(&args).map_err(map_approve_error)?;
-        }
-
-        // Synthesized: Bitbucket returns no review object to report.
-        Ok(GhCreateReviewResponse {
-            id: first_comment_id.unwrap_or(0),
-            html_url: pr.url.clone(),
-            state: if approved { "APPROVED" } else { "COMMENTED" }.to_string(),
-        })
+            // Synthesized: Bitbucket returns no review object to report.
+            Ok(GhCreateReviewResponse {
+                id: first_comment_id.unwrap_or(0),
+                html_url: pr.url.clone(),
+                state: state.to_string(),
+            })
+        })();
+        result.map_err(|err| receipts.into_error(err))
     }
 }
 
@@ -644,7 +644,7 @@ pub fn parse_bitbucket_remote_url(remote_url: &str) -> Option<ForgeRepository> {
     }
 
     if let Some((host, path)) = parse_scp_like_remote(trimmed) {
-        let resolved = resolve_ssh_hostname(host);
+        let resolved = read_ssh_hostname(host);
         if !is_bitbucket_cloud_host(&resolved) {
             return None;
         }
@@ -664,11 +664,12 @@ pub fn parse_bitbucket_remote_url(remote_url: &str) -> Option<ForgeRepository> {
     bitbucket_repository_from_path(BITBUCKET_CLOUD_HOST, path)
 }
 
-/// True only for Bitbucket Cloud. `altssh.bitbucket.org` is the SSH-over-443
-/// transport host used on networks that block port 22; it maps back to the
-/// same Cloud instance.
+/// True only for Bitbucket Cloud. `ssh.bitbucket.org` serves SSH on port 22;
+/// `altssh.bitbucket.org` serves SSH on port 443. Both map to the same Cloud
+/// instance.
 fn is_bitbucket_cloud_host(host: &str) -> bool {
     host.eq_ignore_ascii_case(BITBUCKET_CLOUD_HOST)
+        || host.eq_ignore_ascii_case("ssh.bitbucket.org")
         || host.eq_ignore_ascii_case("altssh.bitbucket.org")
         || host.eq_ignore_ascii_case("api.bitbucket.org")
 }
@@ -739,74 +740,8 @@ fn parse_numeric_target(target: &str) -> Option<PullRequestTarget> {
     Some(PullRequestTarget::number(number, target))
 }
 
-fn strip_scheme(value: &str) -> Option<&str> {
-    value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-        .or_else(|| value.strip_prefix("ssh://"))
-}
-
-fn trim_url_suffix(value: &str) -> &str {
-    value
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(value)
-        .trim_end_matches('/')
-}
-
 fn strip_git_suffix(value: &str) -> &str {
     value.strip_suffix(".git").unwrap_or(value)
-}
-
-fn parse_scp_like_remote(remote_url: &str) -> Option<(&str, &str)> {
-    if remote_url.contains("://") {
-        return None;
-    }
-    let (host_part, path) = remote_url.split_once(':')?;
-    if host_part.contains('/') || path.is_empty() {
-        return None;
-    }
-    let host = host_part
-        .rsplit_once('@')
-        .map(|(_, host)| host)
-        .unwrap_or(host_part);
-    Some((host, path))
-}
-
-fn resolve_ssh_hostname(alias: &str) -> String {
-    let Ok(home) = std::env::var("HOME") else {
-        return alias.to_string();
-    };
-    let path = PathBuf::from(home).join(".ssh/config");
-    let Ok(content) = fs::read_to_string(path) else {
-        return alias.to_string();
-    };
-    resolve_ssh_hostname_from_config(alias, &content)
-}
-
-fn resolve_ssh_hostname_from_config(alias: &str, config: &str) -> String {
-    let mut in_block = false;
-    for raw in config.lines() {
-        let line = raw.split_once('#').map_or(raw, |(before, _)| before).trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (key, value) = line
-            .split_once(|c: char| c.is_whitespace() || c == '=')
-            .unwrap_or((line, ""));
-        let value = value
-            .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
-            .trim();
-
-        if key.eq_ignore_ascii_case("Host") {
-            in_block = value.split_whitespace().any(|pat| pat == alias);
-        } else if key.eq_ignore_ascii_case("Match") {
-            in_block = false;
-        } else if in_block && key.eq_ignore_ascii_case("HostName") {
-            return value.to_string();
-        }
-    }
-    alias.to_string()
 }
 
 fn map_bkt_error(error: BktCommandError) -> TuicrError {
@@ -857,6 +792,19 @@ fn map_approve_error(error: BktCommandError) -> TuicrError {
     }
 }
 
+fn map_request_changes_error(error: BktCommandError) -> TuicrError {
+    match &error {
+        BktCommandError::Failed { stderr, .. } if looks_like_permission_failure(stderr) => {
+            TuicrError::Forge(
+                "Comments were posted, but Bitbucket rejected the change request: \
+                 you may not be a reviewer on this pull request."
+                    .to_string(),
+            )
+        }
+        _ => map_bkt_error(error),
+    }
+}
+
 fn detail(stderr: String, status: Option<i32>) -> String {
     if stderr.is_empty() {
         status
@@ -898,7 +846,6 @@ mod tests {
 
     use super::*;
     use crate::forge::submit::InlineComment;
-    use crate::model::FileStatus;
 
     /// Runner that records every argv it is handed and replays canned
     /// responses in order, so tests assert on the exact commands built
@@ -1248,7 +1195,7 @@ mod tests {
     }
 
     #[test]
-    fn should_stop_after_the_page_ceiling_even_if_next_keeps_coming() {
+    fn should_error_rather_than_truncate_when_next_outlives_the_page_ceiling() {
         // given — a server that always advertises another page
         struct AlwaysMore;
         impl BktCommandRunner for AlwaysMore {
@@ -1259,10 +1206,44 @@ mod tests {
             }
         }
         let backend = BitbucketBktBackend::with_runner(Some(repo()), AlwaysMore);
-        // when
-        let commits = backend.list_pull_request_commits(&details()).unwrap();
-        // then — bounded, not an infinite loop
-        assert_eq!(commits.len(), MAX_PAGES);
+        // when / then — bounded, and not a silently partial Ok
+        assert!(backend.list_pull_request_commits(&details()).is_err());
+    }
+
+    #[test]
+    fn should_read_ten_pages_and_exactly_the_ceiling_but_not_more() {
+        // Every page but the last advertises `next`.
+        struct Pages {
+            last: usize,
+            seen: std::cell::Cell<usize>,
+        }
+        impl BktCommandRunner for Pages {
+            fn run(&self, _args: &[String]) -> BktCommandResult<String> {
+                let n = self.seen.get() + 1;
+                self.seen.set(n);
+                let next = if n < self.last {
+                    r#","next":"https://api.bitbucket.org/2.0/next""#
+                } else {
+                    ""
+                };
+                Ok(format!(
+                    r#"{{"values":[{{"hash":"a","message":"m"}}]{next}}}"#
+                ))
+            }
+        }
+        let run = |last| {
+            let runner = Pages {
+                last,
+                seen: Default::default(),
+            };
+            BitbucketBktBackend::with_runner(Some(repo()), runner)
+                .list_pull_request_commits(&details())
+        };
+        // past the old cap, and a complete final page at the ceiling
+        assert_eq!(run(11).unwrap().len(), 11);
+        assert_eq!(run(MAX_PAGES).unwrap().len(), MAX_PAGES);
+        // one more page of `next` beyond the ceiling is an error, not a prefix
+        assert!(matches!(run(MAX_PAGES + 1), Err(TuicrError::ForgeLimit(_))));
     }
 
     #[test]
@@ -1331,7 +1312,7 @@ mod tests {
             base_sha: "b".repeat(40),
             head_sha: "a".repeat(40),
             path: PathBuf::from("src/lib.rs"),
-            status: FileStatus::Modified,
+            status: crate::model::FileStatus::Modified,
             side: crate::forge::traits::ForgeFileSide::Head,
             start_line: 2,
             end_line: 3,
@@ -1361,6 +1342,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "overall looks fine",
             comments: &comments,
         };
@@ -1389,6 +1371,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "",
             comments: &comments,
         };
@@ -1406,6 +1389,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "",
             comments: &comments,
         };
@@ -1426,6 +1410,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "",
             comments: &comments,
         };
@@ -1446,6 +1431,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "",
             comments: &comments,
         };
@@ -1465,6 +1451,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Approve,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "",
             comments: &comments,
         };
@@ -1496,6 +1483,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "hello",
             comments: &[],
         };
@@ -1510,25 +1498,117 @@ mod tests {
     }
 
     #[test]
-    fn should_reject_request_changes_and_draft_before_posting_anything() {
-        for event in [SubmitEvent::RequestChanges, SubmitEvent::Draft] {
+    fn should_post_every_comment_as_pending_on_draft() {
+        // given
+        let backend = backend(vec![r#"{"id":111}"#, r#"{"id":222}"#]);
+        let comments = vec![inline_comment(14, GhSide::Right, Some(10))];
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Draft,
+            commit_id: &"a".repeat(40),
+            base_commit_id: None,
+            body: "draft summary",
+            comments: &comments,
+        };
+        // when
+        let response = backend.create_review(&details(), request).unwrap();
+        // then — body and inline comment both pending, nothing else sent
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 2);
+        for call in calls.iter() {
+            assert_eq!(call[0], "api");
+            let posted: serde_json::Value = serde_json::from_str(&call[5]).unwrap();
+            assert_eq!(posted["pending"], true, "not pending: {posted}");
+        }
+        let inline: serde_json::Value = serde_json::from_str(&calls[1][5]).unwrap();
+        assert_eq!(inline["inline"]["start_to"], 10);
+        assert_eq!(response.id, 111);
+        assert_eq!(response.state, "PENDING");
+    }
+
+    #[test]
+    fn should_not_mark_comments_pending_outside_draft() {
+        for event in [
+            SubmitEvent::Comment,
+            SubmitEvent::Approve,
+            SubmitEvent::RequestChanges,
+        ] {
             // given
-            let backend = backend(vec![]);
+            let backend = backend(vec![r#"{"id":1}"#, "{}"]);
             let request = CreateReviewRequest {
                 event,
                 commit_id: &"a".repeat(40),
+                base_commit_id: None,
                 body: "text",
                 comments: &[],
             };
             // when
-            let err = backend.create_review(&details(), request).unwrap_err();
-            // then — nothing was sent, so the user can retry with `:submit`
-            assert!(
-                err.to_string().contains("not supported for Bitbucket yet"),
-                "unexpected error for {event:?}: {err}"
-            );
-            assert!(backend.runner.calls.borrow().is_empty());
+            backend.create_review(&details(), request).unwrap();
+            // then
+            let calls = backend.runner.calls.borrow();
+            let posted: serde_json::Value = serde_json::from_str(&calls[0][5]).unwrap();
+            assert!(posted.get("pending").is_none(), "{event:?}: {posted}");
         }
+    }
+
+    #[test]
+    fn should_request_changes_after_posting_comments() {
+        // given
+        let backend = backend(vec![r#"{"id":1}"#, "{}"]);
+        let comments = vec![inline_comment(3, GhSide::Right, None)];
+        let request = CreateReviewRequest {
+            event: SubmitEvent::RequestChanges,
+            commit_id: &"a".repeat(40),
+            base_commit_id: None,
+            body: "",
+            comments: &comments,
+        };
+        // when
+        let response = backend.create_review(&details(), request).unwrap();
+        // then — comments land first, so a rejected request keeps the feedback
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[1],
+            vec![
+                "api",
+                "/2.0/repositories/example-workspace/repo/pullrequests/830/request-changes",
+                "--method",
+                "POST",
+            ]
+        );
+        assert_eq!(response.state, "CHANGES_REQUESTED");
+    }
+
+    #[test]
+    fn should_say_comments_survived_when_only_the_change_request_fails() {
+        // given — the request-changes call fails after comments posted
+        struct RequestChangesFails;
+        impl BktCommandRunner for RequestChangesFails {
+            fn run(&self, args: &[String]) -> BktCommandResult<String> {
+                if args[1].ends_with("/request-changes") {
+                    return Err(BktCommandError::Failed {
+                        status: Some(1),
+                        stderr: "403 Forbidden".to_string(),
+                    });
+                }
+                Ok(r#"{"id":1}"#.to_string())
+            }
+        }
+        let backend = BitbucketBktBackend::with_runner(Some(repo()), RequestChangesFails);
+        let request = CreateReviewRequest {
+            event: SubmitEvent::RequestChanges,
+            commit_id: &"a".repeat(40),
+            base_commit_id: None,
+            body: "text",
+            comments: &[],
+        };
+        // when
+        let err = backend.create_review(&details(), request).unwrap_err();
+        // then — the message must not imply the comments were lost
+        assert!(
+            err.to_string().contains("Comments were posted"),
+            "unexpected error: {err}"
+        );
     }
 
     // ---- error mapping ---------------------------------------------------
@@ -1563,6 +1643,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "text",
             comments: &[],
         };
@@ -1594,6 +1675,7 @@ mod tests {
         let request = CreateReviewRequest {
             event: SubmitEvent::Approve,
             commit_id: &"a".repeat(40),
+            base_commit_id: None,
             body: "text",
             comments: &[],
         };
@@ -1898,6 +1980,123 @@ mod tests {
                 parse_pull_request_target_bitbucket(target).is_err(),
                 "wrongly claimed {target:?}"
             );
+        }
+    }
+
+    #[test]
+    fn should_percent_encode_the_src_path_but_keep_separators() {
+        // given — `#`, `?` and `%` are URL syntax to `bkt api`
+        let backend = backend(vec!["text"]);
+        let request = ForgeFileLinesRequest {
+            repository: repo(),
+            base_sha: "b".repeat(40),
+            head_sha: "a".repeat(40),
+            path: PathBuf::from("src/a#b?c%2F.md"),
+            status: crate::model::FileStatus::Modified,
+            side: crate::forge::traits::ForgeFileSide::Head,
+            start_line: 0,
+            end_line: 0,
+        };
+        // when
+        let text = backend.fetch_file_content(request).unwrap();
+        // then
+        assert_eq!(text, "text");
+        let calls = backend.runner.calls.borrow();
+        assert!(
+            calls[0][1].ends_with(&format!("/src/{}/src/a%23b%3Fc%252F.md", "a".repeat(40))),
+            "{:?}",
+            calls[0]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_keep_a_unix_backslash_in_the_src_path() {
+        // given
+        let backend = backend(vec![""]);
+        let request = ForgeFileLinesRequest {
+            repository: repo(),
+            base_sha: "b".repeat(40),
+            head_sha: "a".repeat(40),
+            path: PathBuf::from("a\\b.rs"),
+            status: crate::model::FileStatus::Modified,
+            side: crate::forge::traits::ForgeFileSide::Head,
+            start_line: 0,
+            end_line: 0,
+        };
+        // when
+        backend.fetch_file_content(request).unwrap();
+        // then
+        assert!(backend.runner.calls.borrow()[0][1].ends_with("/a%5Cb.rs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_keep_a_unix_backslash_in_the_inline_anchor() {
+        // given
+        let backend = backend(vec![r#"{"id":1}"#]);
+        let mut comment = inline_comment(1, GhSide::Right, None);
+        comment.path = PathBuf::from("src/a\\b.rs");
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Comment,
+            commit_id: &"a".repeat(40),
+            base_commit_id: None,
+            body: "",
+            comments: &[comment],
+        };
+        // when
+        backend.create_review(&details(), request).unwrap();
+        // then
+        let calls = backend.runner.calls.borrow();
+        let inline: serde_json::Value = serde_json::from_str(&calls[0][5]).unwrap();
+        assert_eq!(inline["inline"]["path"], "src/a\\b.rs");
+    }
+
+    #[test]
+    fn should_report_posted_comments_when_the_approval_fails() {
+        // given — body and one inline comment post, then approve fails
+        struct ApproveFails;
+        impl BktCommandRunner for ApproveFails {
+            fn run(&self, args: &[String]) -> BktCommandResult<String> {
+                if args[0] == "pr" && args[1] == "approve" {
+                    return Err(BktCommandError::Failed {
+                        status: Some(1),
+                        stderr: "403 Forbidden".to_string(),
+                    });
+                }
+                Ok(r#"{"id":1}"#.to_string())
+            }
+        }
+        let backend = BitbucketBktBackend::with_runner(Some(repo()), ApproveFails);
+        let comment = InlineComment {
+            path: "src/lib.rs".into(),
+            line: 3,
+            side: GhSide::Right,
+            counterpart_line: None,
+            start_line: None,
+            start_side: None,
+            range_anchors: None,
+            old_path: None,
+            body: "x".to_string(),
+            comment_id: "c-bb".to_string(),
+        };
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Approve,
+            commit_id: &"a".repeat(40),
+            base_commit_id: None,
+            body: "summary",
+            comments: &[comment],
+        };
+        // when
+        let err = backend.create_review(&details(), request).unwrap_err();
+        // then
+        match err {
+            TuicrError::PartialSubmit { receipts, message } => {
+                assert!(receipts.body_posted);
+                assert_eq!(receipts.comment_ids, vec!["c-bb".to_string()]);
+                assert!(message.contains("Comments were posted"), "{message}");
+            }
+            other => panic!("expected PartialSubmit, got {other:?}"),
         }
     }
 }

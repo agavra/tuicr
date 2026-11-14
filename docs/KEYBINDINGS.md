@@ -18,6 +18,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `{N}G` | Go to source line N in current file |
 | `{N}{motion}` | Vim-style count prefix — repeats `j` / `k` / `h` / `l` / `{` / `}` / `[` / `]` `N` times |
 | `{` / `}` | Jump to previous / next file |
+| `<leader>p` | Open the file picker (see below) |
 | `[` / `]` | Jump to previous / next hunk |
 | `m` / `M` | Jump to next / previous comment |
 | `/` | Search within diff (case-insensitive regex); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
@@ -27,6 +28,27 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |
 | `zb` | Scroll cursor to bottom of screen |
+| `Ctrl-l` | Clear and redraw the whole screen |
+
+`Ctrl-l` works in every mode, including while typing a comment, a `:` command or
+a search. Use it when the terminal leaves stale text on screen, for example after
+a font size change in a window that wasn't visible. tuicr also redraws in full
+whenever the terminal reports a resize.
+
+## File picker
+
+`<leader>p` opens a popup over the diff that lists the files in the review, so you
+can jump to one without showing the file list. It lists only the files on screen:
+the file tree's `i` / `e` filters and hidden reviewed files (`:set reviewed!`)
+apply. The diff's current file starts selected.
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Select next file |
+| `k` / `↑` | Select previous file |
+| `/` | Filter paths by case-insensitive substring; the list narrows as you type. `↑` / `↓` move the selection, `Enter` jumps to it and closes, `Esc` drops the filter and keeps the popup open |
+| `Enter` | Jump to the selected file, the same as `Enter` in the file tree (single-file view switches to it) |
+| `Esc` | Close without moving |
 
 ## Diff search
 
@@ -121,8 +143,8 @@ considers files that pass the active filters.
 | Key | Action |
 |-----|--------|
 | `Tab` / `Shift-Tab` | Cycle focus forward / backward between file list, comment navigator, diff, and commit selector |
-| `<leader>h` | Move focus one panel left (side-by-side: new side → old side → file list) |
-| `<leader>l` | Move focus one panel right (side-by-side: file list → diff → old side → new side) |
+| `<leader>h` | Move focus one panel left (side-by-side: new side → old side → file list; mirrored when `file_list_position = "right"`) |
+| `<leader>l` | Move focus one panel right (side-by-side: file list → diff → old side → new side; mirrored when `file_list_position = "right"`) |
 | `<leader>k` | Move focus up (comments to files, or diff/files to commit selector when visible) |
 | `<leader>j` | Move focus down (files to comments when visible, otherwise diff) |
 | `<leader>e` | Toggle file list visibility |
@@ -144,7 +166,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 
 | Key | Action |
 |-----|--------|
-| `r` | Toggle file reviewed |
+| `r` | Toggle file reviewed (on the PR description: mark it reviewed and collapse it to one row) |
 | `R` | Toggle hunk reviewed |
 | `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
@@ -157,6 +179,11 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `y` | Copy review to clipboard |
 | `Y` | Copy the comment at cursor to clipboard |
 
+In PR review, `r` with the cursor anywhere on the PR description marks the
+description reviewed and collapses it to its `═══ ✓ PR #N title` row; `r` on that
+row expands it again. The mark is saved with the session like a file's reviewed
+mark (`:w`), carries over when the PR gets new commits, and `:clear` resets it.
+
 `e` opens the file at the cursor's line. Terminal editors (`vim`, `nvim`, `nano`, …)
 take over the screen and tuicr reloads the diff once they exit. Windowed editors
 (`code`, `cursor`, `zed`, `subl`, …) open in their own window while tuicr stays on
@@ -168,7 +195,7 @@ In PR review `e` opens the revision under review, not whatever the checkout
 happens to hold. When the local file *is* that revision you get the real file and
 your edits land in it; otherwise — wrong branch checked out, file added or deleted
 by the PR, no checkout at all — tuicr writes a read-only copy of the PR's content
-to a temp directory and opens that, so the text and the line the cursor sits on
+to a private per-user cache directory and opens that, so the text and the line the cursor sits on
 match the diff. The status bar names which one you got, e.g.
 `Opened src/main.rs @ 1a2b3c4 (read-only PR copy)`. Binary files are only opened
 from the checkout, never copied.
@@ -179,7 +206,15 @@ from the checkout, never copied.
 |-----|--------|
 | `j` / `k` | Extend selection down / up |
 | `c` / `Enter` | Create comment for selected range |
+| `s` | Start an editable suggestion prefilled with the selected code lines |
 | `Esc` / `v` / `V` | Cancel selection |
+
+Range comments must stay within one file: if the selection spans files, `c` / `Enter` warns "Invalid selection" and cancels visual mode without creating a comment.
+
+Suggestions replace whole lines on the new side of a single diff hunk. Selections
+across gaps (including deleted-only rows) or expanded context are rejected.
+Unchanged context between added code blocks is included in the suggestion.
+GitLab suggestions can include at most 100 lines above the final selected line.
 
 ## Comment mode
 
@@ -224,7 +259,7 @@ In command mode,
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
-| `:summary` | Show all pending local-draft comments; `j`/`k` select and `Enter` jumps |
+| `:summary` | Show all pending local-draft comments; `j`/`k` select, `dd` deletes, and `Enter` jumps |
 | `:diff` | Toggle diff view (unified / side-by-side) |
 | `:theme` | Open the runtime theme picker (live preview; `/` filters, `Enter` applies and saves, `Esc` reverts) |
 | `:theme <name>` | Apply and save `<name>` directly, without opening the picker |
@@ -260,10 +295,10 @@ In command mode,
 | `:messages` | Open full details for the current error |
 | `:version` | Show tuicr version |
 | `:update` | Check for updates |
-| `:q` (`:quit`) | Quit (warns on unsaved comments; discards review-only state) |
+| `:q` (`:quit`) | Quit (warns on unsaved comments; discards review-only state unless the saved session holds comments, e.g. added by `tuicr review add`) |
 | `:q!` (`:quit!`) | Force quit |
 | `:x` / `:wq` | Save and quit (prompts to copy if comments exist) |
-| `ZZ` | Save and quit |
+| `ZZ` | Save and quit (stays open and reports the error if the save fails, like `:wq`) |
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
 
@@ -276,6 +311,9 @@ or previous comment; the view scrolls automatically to keep the selection visibl
 to the continuous diff and jumps to the selected comment, leaving single-file view if necessary,
 while `Esc` returns without jumping. Reviewed files and hunks are revealed for the jump without
 losing their reviewed state.
+Press `dd` to delete the selected local draft, including comments whose original file or line
+is absent from the current diff. Other comments are kept. Return with `Esc` and use `:w` to
+save the deletion, following the existing diff-view deletion workflow.
 
 The theme picker lists every bundled theme plus any local `*.toml` themes in the theme directory.
 `j`/`k` move the selection and immediately repaint the UI with that theme (live preview) without
@@ -291,15 +329,20 @@ Not every forge supports every event:
 |---|---|---|---|---|---|---|
 | `comment` | yes | yes | yes | yes | yes | yes |
 | `approve` | yes | yes | yes | yes | yes (vote +10) | yes (vote +2) |
-| `request-changes` | yes | yes | yes | no | yes (vote -10) | yes (vote -1) |
-| `draft` | yes | yes | yes | no | yes (plain comment) | yes |
+| `request-changes` | yes | yes | yes | yes | yes (vote -10) | yes (vote -1) |
+| `draft` | yes | yes | yes | yes | yes (plain comment) | yes |
 
-Bitbucket rejects `request-changes` and `draft` up front rather than silently downgrading them.
+Bitbucket `draft` posts pending comments that the author publishes from Bitbucket's own UI.
 Azure DevOps has no pending-review primitive, so `draft` posts as a plain comment with no vote.
 Gitea requires a review summary for `request-changes` and `draft`, and for `comment` when there
 are no inline comments; inline comments alone do not satisfy it. GitLab `draft` creates draft
 notes that the author publishes from GitLab's own "Submit review" UI. Gerrit `draft` stores draft
 comments that the author publishes from Gerrit's Reply UI.
+
+GitLab, Bitbucket and Azure DevOps post a submit as several requests. If one fails midway, the
+comments that already posted are locked and not posted again; the rest stay local drafts. Retry
+with the same command. `:submit request-changes` may run with nothing left but the vote (a bare
+retry); GitHub rejects an empty request-changes review, so it needs a comment there.
 
 ## Commit selection / review target selector
 
@@ -310,17 +353,28 @@ comments that the author publishes from Gerrit's Reply UI.
 | `Space` | Toggle local commit selection |
 | `Enter` | Confirm local commit range, open PR, load more PRs, or resume a saved review |
 | `/` | Filter currently loaded PR rows locally |
-| `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
+| `r` | In Pull Requests tab, cycle all open PRs / PRs requesting your review / (GitHub) PRs requesting you by name |
 | `a` | In Sessions tab, show or hide saved reviews holding no progress |
 | `dd` | In Sessions tab, delete the saved review under the cursor (asks to confirm) |
 | `Esc` | Return to the diff |
 | `:q` | Quit |
+
+In the Pull Requests tab, `r` steps through the list scopes the forge supports and
+refetches the first page: all open PRs, then PRs requesting your review, then back. On
+GitHub a third scope, `requested (me)`, sits between "requested" and "all": it lists only
+PRs that request your review by name, leaving out requests made to a team you belong to.
 
 The Sessions tab lists saved reviews for the current checkout, so you can pick one
 instead of retyping the commit range it was opened with. Rows show the review target,
 comment count, reviewed files, and age. Reviews with no comments and no reviewed files
 are omitted; press `a` to show them. Selecting a saved PR review re-fetches it from the
 forge, the same as opening it from the Pull Requests tab.
+
+Opening a different local target (a commit selection on the Local tab, or a saved review
+on the Sessions tab) first saves the review on screen, so its unsaved marks and comments
+are kept. If that save fails, the switch is aborted and the current review stays open
+with its unsaved changes. The commit pane of the replaced review is closed, and focus
+returns to the diff if it was in that pane.
 
 Press `dd` to delete the saved review under the cursor. tuicr asks to confirm first, and
 refuses to delete a review that is open in another tuicr, since that process would write
@@ -332,13 +386,26 @@ crash, or by `tuicr review delete`/`clear` emptying a review another tuicr had o
 Shown at the top of the diff when reviewing multiple commits. Focus it with `<leader>k` or `Tab`.
 When opening a GitHub PR or GitLab MR you have reviewed before, tuicr may preselect only commits
 newer than your latest submitted review; commits already covered by that review are marked with
-`✓`. Use `Space` / `Enter` here to expand or adjust the range. Bitbucket does not record which
+`✓`. Use `Space` to expand or adjust the range, or `Enter` to jump to a single commit. Bitbucket does not record which
 commit an approval covered, so no commits are preselected there.
+
+When exactly one commit is selected, its message is shown above its diff as a
+`Commit Message (<sha>)` entry, in local and pull request reviews alike. A review of a single
+commit, including a single-commit pull request, shows the message without the selector. Comments
+on a commit message in a pull request are submitted in the review summary rather than inline.
+When a pull request opens with a narrowed range, the message appears once the selected range has
+loaded. When the PR's diff base or its known commit list changes, a reload resets the selection to
+all commits.
+
+Reviewed marks belong to the whole review, not to the selected commits: pressing `r` on a file
+while narrowed to one commit marks the entire cumulative file, and the mark stays when you
+widen or change the selection.
 
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Navigate commits |
-| `Space` / `Enter` | Toggle commit selection (updates diff) |
+| `Space` | Toggle commit selection (updates diff) |
+| `Enter` | Select only the commit under the cursor, unselecting the others (updates diff) |
 | `(` / `)` | Cycle through individual commits |
 | `Esc` | Return focus to diff |
 

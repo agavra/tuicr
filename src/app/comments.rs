@@ -744,7 +744,30 @@ impl App {
         let Some(location) = self.find_comment_at_cursor() else {
             return false;
         };
-        if !self.session.remove_comment(&location) {
+        self.delete_comment(&location)
+    }
+
+    /// Delete the selected draft by identity, even when its diff location is gone.
+    pub fn delete_selected_summary_comment(&mut self) -> bool {
+        let Some(comment_id) = self
+            .summary_state
+            .comment_ids
+            .get(self.summary_state.selected_comment)
+        else {
+            return false;
+        };
+        let Some(location) = self.session.find_comment_by_id(comment_id) else {
+            return false;
+        };
+        if !self.delete_comment(&location) {
+            return false;
+        }
+        self.summary_state.selection_needs_scroll = true;
+        true
+    }
+
+    fn delete_comment(&mut self, location: &CommentLocation) -> bool {
+        if !self.session.remove_comment(location) {
             return false;
         }
         let message = match location {
@@ -759,8 +782,11 @@ impl App {
     }
 
     pub fn clear_comments(&mut self, scope: ClearScope) {
+        let description_was_reviewed = self.session.pr_description_reviewed;
         let (cleared, unreviewed) = self.session.clear_comments(scope);
-        if cleared == 0 && unreviewed == 0 {
+        let description_unreviewed =
+            description_was_reviewed && !self.session.pr_description_reviewed;
+        if cleared == 0 && unreviewed == 0 && !description_unreviewed {
             self.set_message("No comments to clear");
             return;
         }
@@ -768,6 +794,7 @@ impl App {
         self.dirty = true;
         self.rebuild_annotations();
         let msg = match (cleared, unreviewed) {
+            (0, 0) => "Unreviewed the PR description".to_string(),
             (0, n) => format!("Unreviewed {n} files"),
             (c, 0) => format!("Cleared {c} comments"),
             (c, n) => format!("Cleared {c} comments, unreviewed {n} files"),
@@ -878,6 +905,9 @@ impl App {
     /// line (vim `A` / the default non-vim behavior); otherwise at its start
     /// (vim `i`). Returns true if a comment was found and edit mode entered.
     pub fn enter_edit_mode(&mut self, cursor_at_end: bool) -> bool {
+        if self.cursor_on_locked_comment() {
+            return false;
+        }
         let location = self.find_comment_at_cursor();
         // First annotation row of the comment under the cursor, so we can place
         // the text cursor on the line the diff cursor is actually pointing at.
@@ -990,6 +1020,19 @@ impl App {
         self.comment_line_range = None;
     }
 
+    /// True when the comment with this id has already been written to the forge.
+    fn comment_is_locked(&self, id: &str) -> bool {
+        self.session
+            .review_comments
+            .iter()
+            .chain(self.session.files.values().flat_map(|f| {
+                f.file_comments
+                    .iter()
+                    .chain(f.line_comments.values().flatten())
+            }))
+            .any(|c| c.id == id && c.is_locked())
+    }
+
     pub fn save_comment(&mut self) {
         if self.comment_buffer.trim().is_empty() {
             self.set_message("Comment cannot be empty");
@@ -1002,49 +1045,48 @@ impl App {
         let mut autosave_error = None;
 
         // Check if we're editing an existing comment
-        if let Some(editing_id) = &self.editing_comment_id {
-            if let Some(comment) = self
-                .session
+        if let Some(editing_id) = self.editing_comment_id.clone() {
+            if self.comment_is_locked(&editing_id) {
+                // Keep the mode and buffer so the typed text is not lost.
+                self.set_warning("Comment was submitted and is now read-only");
+                return;
+            }
+            let comment_type = self.comment_type.clone();
+            // The comment is found by its own location, not the cursor's file.
+            let session = &mut self.session;
+            if let Some(comment) = session
                 .review_comments
                 .iter_mut()
-                .find(|c| &c.id == editing_id)
+                .find(|c| c.id == editing_id)
             {
                 comment.content = content.clone();
-                comment.comment_type = self.comment_type.clone();
+                comment.comment_type = comment_type;
                 message = "Review comment updated".to_string();
-            } else if let Some(path) = self.current_file_path().cloned()
-                && let Some(review) = self.session.get_file_mut(&path)
+            } else if let Some(comment) = session
+                .files
+                .values_mut()
+                .flat_map(|r| r.file_comments.iter_mut())
+                .find(|c| c.id == editing_id)
             {
-                if let Some(comment) = review
-                    .file_comments
-                    .iter_mut()
-                    .find(|c| &c.id == editing_id)
-                {
-                    comment.content = content.clone();
-                    comment.comment_type = self.comment_type.clone();
-                    message = "Comment updated".to_string();
-                } else {
-                    // If not found in file comments, search in line comments
-                    let mut found_comment = None;
-                    for comments in review.line_comments.values_mut() {
-                        if let Some(comment) = comments.iter_mut().find(|c| &c.id == editing_id) {
-                            found_comment = Some(comment);
-                            break;
-                        }
-                    }
-
-                    if let Some(comment) = found_comment {
-                        comment.content = content.clone();
-                        comment.comment_type = self.comment_type.clone();
-                        message = if let Some((line, _)) = self.comment_line {
-                            format!("Comment on line {line} updated")
-                        } else {
-                            "Comment updated".to_string()
-                        };
-                    } else {
-                        message = "Error: Comment to edit not found".to_string();
-                    }
-                }
+                comment.content = content.clone();
+                comment.comment_type = comment_type;
+                message = "Comment updated".to_string();
+            } else if let Some((line, comment)) = session
+                .files
+                .values_mut()
+                .flat_map(|r| r.line_comments.iter_mut())
+                .find_map(|(line, comments)| {
+                    comments
+                        .iter_mut()
+                        .find(|c| c.id == editing_id)
+                        .map(|c| (*line, c))
+                })
+            {
+                comment.content = content.clone();
+                comment.comment_type = comment_type;
+                message = format!("Comment on line {line} updated");
+            } else {
+                message = "Error: Comment to edit not found".to_string();
             }
         } else if self.comment_is_review_level {
             let request = AddCommentRequest {

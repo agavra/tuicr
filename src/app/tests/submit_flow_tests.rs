@@ -5,6 +5,7 @@ use crate::app::*;
 use crate::forge::submit::{ResolverAction, SubmitEvent, UnmappableReason};
 use crate::forge::traits::{
     ForgeRepository, PrSessionKey, PullRequestDetails, PullRequestInfo, PullRequestIssueComment,
+    SubmitReceipts,
 };
 use crate::model::comment::{Comment, CommentLifecycleState, CommentType, LineContext};
 use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineOrigin};
@@ -71,6 +72,7 @@ fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
                     content: "a".to_string(),
                     old_lineno: Some(10),
                     new_lineno: Some(10),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
                 DiffLine {
@@ -78,6 +80,7 @@ fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
                     content: "b".to_string(),
                     old_lineno: None,
                     new_lineno: Some(11),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
             ],
@@ -143,6 +146,39 @@ fn add_line_comment(app: &mut App, path: &str, line: u32, comment: Comment) {
     review.line_comments.entry(line).or_default().push(comment);
 }
 
+fn register_commit_message_file(app: &mut App, short_id: &str) -> DiffFile {
+    let file = DiffFile {
+        old_path: None,
+        new_path: Some(DiffFile::commit_message_path(short_id)),
+        status: FileStatus::Added,
+        hunks: vec![DiffHunk {
+            header: String::new(),
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: 3,
+            lines: ["Subject", "", "Body"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, content)| DiffLine {
+                    origin: LineOrigin::Context,
+                    content: content.to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(index as u32 + 1),
+                    raw_content: None,
+                    highlighted_spans: None,
+                })
+                .collect(),
+        }],
+        is_binary: false,
+        is_too_large: false,
+        is_commit_message: true,
+        content_hash: 0,
+    };
+    app.session.add_diff_file(&file);
+    file
+}
+
 fn deliver_matching_pr_threads_event(
     app: &mut App,
     threads: std::result::Result<Vec<crate::forge::remote_comments::RemoteReviewThread>, String>,
@@ -180,6 +216,7 @@ fn should_use_subset_head_sha_as_commit_id_when_inline_selector_is_strict_subset
             oid: "abcdef0123".to_string(),
             short_oid: "abcdef0".to_string(),
             summary: "C3".to_string(),
+            body: None,
             author: "me".to_string(),
             timestamp: None,
         },
@@ -187,6 +224,7 @@ fn should_use_subset_head_sha_as_commit_id_when_inline_selector_is_strict_subset
             oid: "deadbeef02".to_string(),
             short_oid: "deadbee".to_string(),
             summary: "C2".to_string(),
+            body: None,
             author: "me".to_string(),
             timestamp: None,
         },
@@ -194,6 +232,7 @@ fn should_use_subset_head_sha_as_commit_id_when_inline_selector_is_strict_subset
             oid: "facecafe01".to_string(),
             short_oid: "facecaf".to_string(),
             summary: "C1".to_string(),
+            body: None,
             author: "me".to_string(),
             timestamp: None,
         },
@@ -218,6 +257,11 @@ fn should_use_subset_head_sha_as_commit_id_when_inline_selector_is_strict_subset
         state.commit_id, "deadbeef02",
         "subset → commit_id should be the newest selected commit (start_idx), not the PR head",
     );
+    assert_eq!(
+        state.base_commit_id.as_deref(),
+        Some("facecafe01"),
+        "subset → the old side is the parent of the oldest selected commit",
+    );
 }
 
 #[test]
@@ -232,6 +276,7 @@ fn should_use_pr_head_sha_as_commit_id_when_full_commit_range_selected() {
             oid: "abcdef0123".to_string(),
             short_oid: "abcdef0".to_string(),
             summary: "C2".to_string(),
+            body: None,
             author: "me".to_string(),
             timestamp: None,
         },
@@ -239,6 +284,7 @@ fn should_use_pr_head_sha_as_commit_id_when_full_commit_range_selected() {
             oid: "facecafe01".to_string(),
             short_oid: "facecaf".to_string(),
             summary: "C1".to_string(),
+            body: None,
             author: "me".to_string(),
             timestamp: None,
         },
@@ -259,6 +305,50 @@ fn should_use_pr_head_sha_as_commit_id_when_full_commit_range_selected() {
 
     let state = app.submit_state.as_ref().expect("submit state");
     assert_eq!(state.commit_id, "abcdef0123");
+    assert_eq!(
+        state.base_commit_id, None,
+        "full range → merge-base old side"
+    );
+}
+
+#[test]
+fn should_use_pr_base_as_old_side_when_subset_includes_the_oldest_commit() {
+    use crate::forge::traits::PullRequestCommit;
+
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let commit = |oid: &str| PullRequestCommit {
+        oid: oid.to_string(),
+        short_oid: oid[..7].to_string(),
+        summary: oid.to_string(),
+        body: None,
+        author: "me".to_string(),
+        timestamp: None,
+    };
+    app.pr_commits = vec![
+        commit("abcdef0123"),
+        commit("deadbeef02"),
+        commit("facecafe01"),
+    ];
+    app.commit_selection_range = Some((1, 2));
+    let base_sha = match &app.diff_source {
+        DiffSource::PullRequest(pr) => pr.base_sha.clone(),
+        _ => unreachable!(),
+    };
+    add_line_comment(
+        &mut app,
+        "src/lib.rs",
+        11,
+        Comment::new(
+            "comment".to_string(),
+            CommentType::from_id("issue"),
+            Some(LineSide::New),
+        ),
+    );
+
+    app.start_submit(SubmitEvent::Comment);
+
+    let state = app.submit_state.as_ref().expect("submit state");
+    assert_eq!(state.base_commit_id.as_deref(), Some(base_sha.as_str()));
 }
 
 #[test]
@@ -340,6 +430,206 @@ fn should_open_resolver_when_any_comment_is_unmappable() {
     assert_eq!(state.resolver_choices.len(), 1);
     // Default action is MoveToSummary per spec
     assert_eq!(state.resolver_choices[0], ResolverAction::MoveToSummary);
+}
+
+#[test]
+fn should_map_a_comment_on_a_file_only_in_the_selected_commit() {
+    use crate::forge::submit::GhSide;
+
+    // given a narrowed multi-commit PR whose displayed diff has a file the
+    // cumulative cache lacks (the cache is stale or differs)
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.pr_commits = vec![
+        pr_commit("abcdef0123"),
+        pr_commit("deadbeef02"),
+        pr_commit("facecafe01"),
+    ];
+    app.review_commits = app
+        .pr_commits
+        .iter()
+        .map(pr_commit_to_commit_info)
+        .collect();
+    app.commit_selection_range = Some((1, 1));
+    app.range_diff_files = Some(app.diff_files.clone());
+    let mut only = app.diff_files[0].clone();
+    only.old_path = Some(PathBuf::from("src/only.rs"));
+    only.new_path = Some(PathBuf::from("src/only.rs"));
+    app.session.add_diff_file(&only);
+    app.diff_files = vec![only];
+    add_line_comment(
+        &mut app,
+        "src/only.rs",
+        11,
+        line_comment(LineSide::New, Some(11), None),
+    );
+
+    // when
+    app.start_submit(SubmitEvent::Comment);
+
+    // then the comment maps to the displayed file, at the subset's head
+    let state = app.submit_state.as_ref().expect("submit state");
+    assert!(state.unmappable.is_empty());
+    assert_eq!(state.mappable.len(), 1);
+    let inline = &state.mappable[0];
+    assert_eq!(inline.path, PathBuf::from("src/only.rs"));
+    assert_eq!(inline.line, 11);
+    assert_eq!(inline.side, GhSide::Right);
+    assert_eq!(state.commit_id, "deadbeef02");
+}
+
+#[test]
+fn should_resolve_commit_message_comments_missing_from_cumulative_pr_diff() {
+    // given a single-commit view of a multi-commit PR
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.pr_commits = vec![pr_commit("abcdef0123"), pr_commit("deadbeef02")];
+    app.review_commits = app
+        .pr_commits
+        .iter()
+        .map(pr_commit_to_commit_info)
+        .collect();
+    app.commit_selection_range = Some((1, 1));
+    app.range_diff_files = Some(app.diff_files.clone());
+    let file = register_commit_message_file(&mut app, "deadbee");
+    let path = file.display_path().to_path_buf();
+    app.diff_files.insert(0, file);
+    let inline_comment = line_comment(LineSide::New, Some(11), None);
+    let inline_id = inline_comment.id.clone();
+    add_line_comment(&mut app, "src/lib.rs", 11, inline_comment);
+    let mut comment = line_comment(LineSide::New, Some(1), None);
+    comment.commit_id = Some("deadbeef02".to_string());
+    add_line_comment(&mut app, path.to_str().unwrap(), 1, comment);
+
+    // when
+    app.start_submit(SubmitEvent::Comment);
+
+    // then — the real inline anchor is unchanged; the message is not dropped
+    assert_eq!(app.input_mode, InputMode::SubmitResolver);
+    let state = app.submit_state.as_ref().expect("submit state");
+    assert_eq!(state.mappable.len(), 1);
+    assert_eq!(state.mappable[0].comment_id, inline_id);
+    assert_eq!(state.unmappable.len(), 1);
+    assert_eq!(state.unmappable[0].file, path);
+    assert_eq!(state.unmappable[0].reason, UnmappableReason::CommitMessage);
+}
+
+#[test]
+fn should_not_map_single_commit_pr_message_comments_inline() {
+    // given a single-commit PR whose displayed diff contains the message
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.pr_commits = vec![pr_commit("abcdef0123")];
+    let file = register_commit_message_file(&mut app, "abcdef0");
+    let path = file.display_path().to_path_buf();
+    app.diff_files.insert(0, file);
+    add_line_comment(
+        &mut app,
+        path.to_str().unwrap(),
+        1,
+        line_comment(LineSide::New, Some(1), None),
+    );
+
+    // when
+    app.start_submit(SubmitEvent::Comment);
+
+    // then — the synthetic line never becomes a forge inline anchor
+    assert!(app.range_diff_files.is_none());
+    let state = app.submit_state.as_ref().expect("submit state");
+    assert!(state.mappable.is_empty());
+    assert_eq!(state.unmappable.len(), 1);
+    assert_eq!(state.unmappable[0].file, path);
+    assert_eq!(state.unmappable[0].reason, UnmappableReason::CommitMessage);
+}
+
+#[test]
+fn should_order_commit_message_comments_oldest_first_then_by_anchor() {
+    // given message comments saved out of line order on two PR commits
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.pr_commits = vec![pr_commit("abcdef0123"), pr_commit("deadbeef02")];
+    for short_id in ["abcdef0", "deadbee"] {
+        let file = register_commit_message_file(&mut app, short_id);
+        let path = file.display_path();
+        app.session
+            .get_file_mut(path)
+            .unwrap()
+            .file_comments
+            .push(Comment::new(
+                "file".to_string(),
+                CommentType::from_id("note"),
+                None,
+            ));
+        for line in [3, 1] {
+            add_line_comment(
+                &mut app,
+                path.to_str().unwrap(),
+                line,
+                Comment::new(
+                    format!("line {line}"),
+                    CommentType::from_id("note"),
+                    Some(LineSide::New),
+                ),
+            );
+        }
+    }
+
+    // when
+    app.start_submit(SubmitEvent::Comment);
+
+    // then
+    let state = app.submit_state.as_ref().expect("submit state");
+    let comments: Vec<_> = state
+        .unmappable
+        .iter()
+        .map(|item| (item.file.to_str().unwrap(), item.comment.content.as_str()))
+        .collect();
+    assert_eq!(
+        comments,
+        vec![
+            ("Commit Message (deadbee)", "file"),
+            ("Commit Message (deadbee)", "line 1"),
+            ("Commit Message (deadbee)", "line 3"),
+            ("Commit Message (abcdef0)", "file"),
+            ("Commit Message (abcdef0)", "line 1"),
+            ("Commit Message (abcdef0)", "line 3"),
+        ]
+    );
+}
+
+#[test]
+fn should_skip_locked_and_hidden_commit_message_comments() {
+    // given only the older commit selected, plus a locked and a hidden draft
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.pr_commits = vec![pr_commit("abcdef0123"), pr_commit("deadbeef02")];
+    app.review_commits = app
+        .pr_commits
+        .iter()
+        .map(pr_commit_to_commit_info)
+        .collect();
+    app.commit_selection_range = Some((1, 1));
+    let hidden_file = register_commit_message_file(&mut app, "abcdef0");
+    let mut hidden = line_comment(LineSide::New, Some(1), None);
+    hidden.commit_id = Some("abcdef0123".to_string());
+    add_line_comment(
+        &mut app,
+        hidden_file.display_path().to_str().unwrap(),
+        1,
+        hidden,
+    );
+    let file = register_commit_message_file(&mut app, "deadbee");
+    let path = file.display_path();
+    let mut locked = line_comment(LineSide::New, Some(1), None);
+    locked.lifecycle_state = CommentLifecycleState::Submitted;
+    add_line_comment(&mut app, path.to_str().unwrap(), 1, locked);
+    let visible = line_comment(LineSide::New, Some(3), None);
+    let visible_id = visible.id.clone();
+    add_line_comment(&mut app, path.to_str().unwrap(), 3, visible);
+
+    // when
+    app.start_submit(SubmitEvent::Comment);
+
+    // then — message comments use the same draft/visibility filter as files
+    let state = app.submit_state.as_ref().expect("submit state");
+    assert!(state.mappable.is_empty());
+    assert_eq!(state.unmappable.len(), 1);
+    assert_eq!(state.unmappable[0].comment.id, visible_id);
 }
 
 #[test]
@@ -637,6 +927,7 @@ fn make_in_flight(
         review_comment_ids: Vec::new(),
         moved_to_summary_count,
         head_sha_snapshot: head_sha.to_string(),
+        pr_head_sha: "abcdef0123".to_string(),
         repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
         pr_number: 125,
         started_at: Instant::now(),
@@ -660,6 +951,7 @@ fn pr_commit(oid: &str) -> crate::forge::traits::PullRequestCommit {
         oid: oid.to_string(),
         short_oid: oid.chars().take(7).collect(),
         summary: oid.to_string(),
+        body: None,
         author: "me".to_string(),
         timestamp: None,
     }
@@ -880,6 +1172,45 @@ fn should_keep_locked_line_comments_when_remote_thread_refetch_fails() {
 }
 
 #[test]
+fn should_still_show_draft_submitted_comments_after_refetch_prunes_them() {
+    // `:submit draft` -> refetch -> prune: the local copies are deleted, so the
+    // backend must hand the drafts back or they vanish from the UI.
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let comment = Comment::new(
+        "overall draft".to_string(),
+        CommentType::from_id("note"),
+        None,
+    );
+    let comment_id = comment.id.clone();
+    app.session.review_comments.push(comment);
+    let mut in_flight = make_in_flight(SubmitEvent::Draft, &[], "abcdef0123", 0);
+    in_flight.review_comment_ids = vec![comment_id];
+    app.apply_submit_success(&in_flight, &make_response(42, "u", "PENDING"));
+    assert_eq!(
+        app.session.review_comments[0].lifecycle_state,
+        CommentLifecycleState::PushedDraft
+    );
+
+    deliver_matching_pr_threads_event(
+        &mut app,
+        Ok(Vec::new()),
+        Ok(vec![crate::forge::remote_comments::RemoteReviewSummary {
+            id: "draft-1".to_string(),
+            author: Some("me".to_string()),
+            body: "overall draft".to_string(),
+            state: crate::forge::remote_comments::RemoteReviewState::Pending,
+            created_at: None,
+            url: "u".to_string(),
+        }]),
+    );
+    app.poll_pr_threads_events();
+
+    assert!(app.session.review_comments.is_empty());
+    assert_eq!(app.forge_review_summaries.len(), 1);
+    assert_eq!(app.forge_review_summaries[0].body, "overall draft");
+}
+
+#[test]
 fn should_keep_locked_review_comments_when_remote_summary_refetch_fails() {
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
     let mut review_locked = Comment::new("summary".to_string(), CommentType::from_id("note"), None);
@@ -981,39 +1312,77 @@ fn should_keep_comments_as_local_draft_on_submit_failure() {
     assert!(msg.content.contains("pull request write permission"));
 }
 
+fn deliver_submit_result(app: &mut App, in_flight: SubmitInFlightState, review_id: u64) {
+    app.pr_submit_state = Some(in_flight.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_submit_rx = Some(rx);
+    tx.send(PrSubmitEvent::Done {
+        repository: in_flight.repository.clone(),
+        pr_number: in_flight.pr_number,
+        head_sha: in_flight.head_sha_snapshot.clone(),
+        result: Ok(make_response(review_id, "u", "COMMENTED")),
+        partial: Default::default(),
+    })
+    .unwrap();
+    app.poll_pr_submit_events();
+}
+
 #[test]
-fn should_discard_stale_submit_result_when_head_sha_changed() {
-    // given a PR session pretending we already swapped heads after submit dispatched.
+fn should_persist_late_submit_receipt_to_its_own_session_when_another_pr_is_open() {
+    // given PR 125 @ OLD_HEAD has a saved local draft, a submit in flight for
+    // it, and a different head of the PR (standing in for another PR) on screen
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
     let comment = line_comment(LineSide::New, Some(11), None);
     let comment_id = comment.id.clone();
     add_line_comment(&mut app, "src/lib.rs", 11, comment);
-    // record that a submit was in flight for an *older* head.
-    let in_flight = make_in_flight(SubmitEvent::Comment, &[comment_id.as_str()], "OLD_HEAD", 0);
-    app.pr_submit_state = Some(in_flight);
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.pr_submit_rx = Some(rx);
-    // simulate the bg thread coming back for the OLD head, but with
-    // a fresh-head session note: poll path checks repository/pr_number/head_sha.
-    tx.send(PrSubmitEvent::Done {
-        repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
-        pr_number: 125,
-        head_sha: "DIFFERENT_HEAD".to_string(),
-        result: Ok(make_response(42, "u", "COMMENTED")),
-    })
-    .unwrap();
-    drop(tx);
-    // when
-    app.poll_pr_submit_events();
-    // then — comment lifecycle untouched, info message about discarded result.
+    let mut origin = app.session.clone();
+    origin.pr_session_key = Some(PrSessionKey::new(
+        ForgeRepository::github("github.com", "agavra", "tuicr"),
+        125,
+        "OLD_HEAD".to_string(),
+    ));
+    crate::persistence::storage::save_session(&origin).unwrap();
+    let mut in_flight = make_in_flight(SubmitEvent::Comment, &[comment_id.as_str()], "OLD_HEAD", 0);
+    in_flight.pr_head_sha = "OLD_HEAD".to_string();
+
+    // when the late result arrives
+    deliver_submit_result(&mut app, in_flight.clone(), 42);
+
+    // then the open session is untouched and says so
     let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
-    let saved = &review.line_comments.get(&11).unwrap()[0];
-    assert_eq!(saved.lifecycle_state, CommentLifecycleState::LocalDraft);
+    assert_eq!(
+        review.line_comments[&11][0].lifecycle_state,
+        CommentLifecycleState::LocalDraft
+    );
     let msg = app.message.as_ref().expect("info message");
-    assert!(
-        msg.content.contains("Discarded stale submit result"),
-        "got: {}",
-        msg.content
+    assert!(msg.content.contains("Discarded stale submit result"));
+    // and the originating session records the receipt, so the draft is not resubmitted
+    let key = PrSessionKey::new(in_flight.repository.clone(), 125, "OLD_HEAD".to_string());
+    let (_, saved) = crate::persistence::storage::load_pr_session(&key)
+        .unwrap()
+        .expect("origin session");
+    let saved = &saved.files[&PathBuf::from("src/lib.rs")].line_comments[&11][0];
+    assert_eq!(saved.lifecycle_state, CommentLifecycleState::Submitted);
+    assert_eq!(saved.remote_review_id.as_deref(), Some("42"));
+}
+
+#[test]
+fn should_apply_subset_submit_result_when_pr_head_is_unchanged() {
+    // given a submit whose commit_id is a selected subset commit, not the PR head
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let comment = line_comment(LineSide::New, Some(11), None);
+    let comment_id = comment.id.clone();
+    add_line_comment(&mut app, "src/lib.rs", 11, comment);
+    let in_flight = make_in_flight(SubmitEvent::Comment, &[comment_id.as_str()], "subset99", 0);
+
+    // when its result arrives
+    deliver_submit_result(&mut app, in_flight, 7);
+
+    // then it still applies
+    let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+    assert_eq!(
+        review.line_comments[&11][0].lifecycle_state,
+        CommentLifecycleState::Submitted
     );
 }
 
@@ -1038,6 +1407,7 @@ fn should_apply_result_via_poll_when_head_sha_matches() {
         pr_number: 125,
         head_sha: "abcdef0123".to_string(),
         result: Ok(make_response(123, "u", "COMMENTED")),
+        partial: Default::default(),
     })
     .unwrap();
     drop(tx);
@@ -1213,17 +1583,16 @@ fn should_yank_remote_comment_from_its_anchor_line_or_thread() {
                 id: "comment-1".into(),
                 author: Some("alice".into()),
                 body: "remote comment".into(),
-                created_at: None,
-                in_reply_to: None,
                 url: "https://example.com/comment-1".into(),
+                ..Default::default()
             },
             RemoteReviewComment {
                 id: "comment-2".into(),
                 author: Some("bob".into()),
                 body: "remote reply".into(),
-                created_at: None,
                 in_reply_to: Some("comment-1".into()),
                 url: "https://example.com/comment-2".into(),
+                ..Default::default()
             },
         ],
     }];
@@ -1286,9 +1655,8 @@ fn should_yank_rendered_remote_thread_when_hidden_thread_shares_its_anchor() {
         id: id.into(),
         author: Some("alice".into()),
         body: body.into(),
-        created_at: None,
-        in_reply_to: None,
         url: format!("https://example.com/{id}"),
+        ..Default::default()
     };
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
     app.forge_review_threads = vec![
@@ -1352,17 +1720,16 @@ fn should_yank_reply_from_multiline_review_level_thread_footer() {
                 id: "root".into(),
                 author: Some("alice".into()),
                 body: "root comment".into(),
-                created_at: None,
-                in_reply_to: None,
                 url: "https://example.com/root".into(),
+                ..Default::default()
             },
             RemoteReviewComment {
                 id: "reply".into(),
                 author: Some("bob".into()),
                 body: "first reply line\nsecond reply line".into(),
-                created_at: None,
                 in_reply_to: Some("root".into()),
                 url: "https://example.com/reply".into(),
+                ..Default::default()
             },
         ],
     }];
@@ -1451,4 +1818,442 @@ fn should_yank_top_level_pr_comment() {
         app.remote_comment_content_at_cursor(),
         Some("Top-level PR comment".to_string())
     );
+}
+
+#[test]
+fn should_point_at_drafts_left_on_an_older_patch_set() {
+    use crate::forge::remote_comments::{
+        PrCommentsVisibility, RemoteCommentSide, RemoteReviewComment, RemoteReviewThread,
+    };
+
+    let thread = |id: &str, is_outdated: bool, is_draft: bool| RemoteReviewThread {
+        id: id.into(),
+        path: "src/lib.rs".into(),
+        line: Some(10),
+        side: RemoteCommentSide::Right,
+        is_resolved: false,
+        is_outdated,
+        comments: vec![RemoteReviewComment {
+            id: id.into(),
+            author: Some("me".into()),
+            body: "pending".into(),
+            is_draft,
+            ..Default::default()
+        }],
+    };
+    let threads = || {
+        vec![
+            thread("stale-1", true, true),
+            thread("stale-2", true, true),
+            thread("current", false, true),
+            thread("published", true, false),
+        ]
+    };
+
+    // given — two drafts on a superseded patch set, under the default view
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    deliver_matching_pr_threads_event(&mut app, Ok(threads()), Ok(Vec::new()));
+    // when
+    app.poll_pr_threads_events();
+    // then — only the outdated drafts count
+    let msg = app.message.as_ref().expect("notice");
+    assert_eq!(msg.message_type, MessageType::Info);
+    assert_eq!(msg.content, "2 of your drafts are on an older patch set");
+
+    // given — `:comments all` already shows them
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.session.remote_comments_visibility = PrCommentsVisibility::All;
+    deliver_matching_pr_threads_event(&mut app, Ok(threads()), Ok(Vec::new()));
+    // when
+    app.poll_pr_threads_events();
+    // then
+    assert!(app.message.is_none(), "{:?}", app.message);
+}
+
+#[test]
+fn should_lock_comments_that_posted_before_the_submit_failed() {
+    // given two inline comments and a review-level one in flight
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let posted = line_comment(LineSide::New, Some(11), None);
+    let posted_id = posted.id.clone();
+    let unposted = line_comment(LineSide::New, Some(12), None);
+    let unposted_id = unposted.id.clone();
+    add_line_comment(&mut app, "src/lib.rs", 11, posted);
+    add_line_comment(&mut app, "src/lib.rs", 12, unposted);
+    let review_comment = Comment::new("body".to_string(), CommentType::from_id("note"), None);
+    let review_id = review_comment.id.clone();
+    app.session.review_comments.push(review_comment);
+    let mut in_flight = make_in_flight(
+        SubmitEvent::Comment,
+        &[posted_id.as_str(), unposted_id.as_str()],
+        "abcdef0123",
+        0,
+    );
+    in_flight.review_comment_ids = vec![review_id];
+    app.pr_submit_state = Some(in_flight);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_submit_rx = Some(rx);
+    // when the forge reports a failure after the body and first comment landed
+    tx.send(PrSubmitEvent::Done {
+        repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+        pr_number: 125,
+        head_sha: "abcdef0123".to_string(),
+        result: Err("HTTP 500".to_string()),
+        partial: crate::forge::traits::SubmitReceipts {
+            body_posted: true,
+            comment_ids: vec![posted_id],
+        },
+    })
+    .unwrap();
+    drop(tx);
+    app.poll_pr_submit_events();
+    // then the posted ones are locked, the rest stay editable drafts
+    let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+    assert_eq!(
+        review.line_comments[&11][0].lifecycle_state,
+        CommentLifecycleState::Submitted
+    );
+    assert_eq!(
+        review.line_comments[&12][0].lifecycle_state,
+        CommentLifecycleState::LocalDraft
+    );
+    assert!(app.session.review_comments[0].is_locked());
+    assert_eq!(
+        app.message.as_ref().expect("error").message_type,
+        MessageType::Error
+    );
+}
+
+#[test]
+fn should_not_resubmit_locked_review_level_comments() {
+    // given only an already-submitted review-level comment
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let mut locked = Comment::new("body".to_string(), CommentType::from_id("note"), None);
+    locked.lifecycle_state = CommentLifecycleState::Submitted;
+    app.session.review_comments.push(locked);
+    // when
+    app.start_submit(SubmitEvent::Comment);
+    // then there is nothing to submit
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.submit_state.is_none());
+}
+
+fn locked(mut comment: Comment) -> Comment {
+    comment.lifecycle_state = CommentLifecycleState::Submitted;
+    comment
+}
+
+fn assert_nothing_to_submit(app: &App) {
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.submit_state.is_none());
+}
+
+#[test]
+fn should_not_resubmit_locked_file_comments() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let review = app
+        .session
+        .get_file_mut(&PathBuf::from("src/lib.rs"))
+        .unwrap();
+    review.file_comments.push(locked(Comment::new(
+        "f".to_string(),
+        CommentType::from_id("note"),
+        None,
+    )));
+    app.start_submit(SubmitEvent::Comment);
+    assert_nothing_to_submit(&app);
+}
+
+#[test]
+fn should_not_resubmit_locked_line_comments() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let comment = locked(line_comment(LineSide::New, Some(11), None));
+    add_line_comment(&mut app, "src/lib.rs", 11, comment);
+    app.start_submit(SubmitEvent::Comment);
+    assert_nothing_to_submit(&app);
+}
+
+#[test]
+fn should_not_resubmit_locked_commit_message_comments() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    register_commit_message_file(&mut app, "abcdef0");
+    app.pr_commits = vec![crate::forge::traits::PullRequestCommit {
+        oid: "abcdef0123".to_string(),
+        short_oid: "abcdef0".to_string(),
+        summary: "C".to_string(),
+        body: None,
+        author: "me".to_string(),
+        timestamp: None,
+    }];
+    let path = DiffFile::commit_message_path("abcdef0");
+    let review = app.session.get_file_mut(&path).unwrap();
+    review.file_comments.push(locked(Comment::new(
+        "m".to_string(),
+        CommentType::from_id("note"),
+        None,
+    )));
+    app.start_submit(SubmitEvent::Comment);
+    assert_nothing_to_submit(&app);
+}
+
+fn set_forge(app: &mut App, repository: ForgeRepository) {
+    let DiffSource::PullRequest(pr) = &mut app.diff_source else {
+        panic!("expected PR mode");
+    };
+    pr.key.repository = repository;
+}
+
+#[test]
+fn should_let_request_changes_retry_bare_on_forges_that_vote_separately() {
+    // given a partial submit locked every comment and only the vote is left
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    set_forge(&mut app, ForgeRepository::gitlab("gitlab.com", "o", "r"));
+    app.session.review_comments.push(locked(Comment::new(
+        "b".to_string(),
+        CommentType::from_id("note"),
+        None,
+    )));
+    // when
+    app.start_submit(SubmitEvent::RequestChanges);
+    // then the retry reaches the confirmation modal
+    assert_eq!(app.input_mode, InputMode::SubmitConfirm);
+}
+
+#[test]
+fn should_not_allow_bare_request_changes_on_github() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.session.review_comments.push(locked(Comment::new(
+        "b".to_string(),
+        CommentType::from_id("note"),
+        None,
+    )));
+    app.start_submit(SubmitEvent::RequestChanges);
+    assert_nothing_to_submit(&app);
+}
+
+#[test]
+fn should_not_allow_bare_comment_on_forges_that_vote_separately() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    set_forge(&mut app, ForgeRepository::gitlab("gitlab.com", "o", "r"));
+    app.start_submit(SubmitEvent::Comment);
+    assert_nothing_to_submit(&app);
+}
+
+#[test]
+fn should_only_send_unlocked_review_comments_on_submit() {
+    // given one locked and one live review-level comment
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let old = locked(Comment::new(
+        "old".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
+    let live = Comment::new("new".to_string(), CommentType::from_id("note"), None);
+    let live_id = live.id.clone();
+    app.session.review_comments.push(old);
+    app.session.review_comments.push(live);
+    app.start_submit(SubmitEvent::Comment);
+    // when
+    app.confirm_submit();
+    // then only the live one is in flight
+    let in_flight = app.pr_submit_state.as_ref().expect("in flight");
+    assert_eq!(in_flight.review_comment_ids, vec![live_id]);
+}
+
+fn fail_submit_with(app: &mut App, in_flight: SubmitInFlightState, partial: SubmitReceipts) {
+    app.pr_submit_state = Some(in_flight);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_submit_rx = Some(rx);
+    tx.send(PrSubmitEvent::Done {
+        repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+        pr_number: 125,
+        head_sha: "abcdef0123".to_string(),
+        result: Err("HTTP 500".to_string()),
+        partial,
+    })
+    .unwrap();
+    drop(tx);
+    app.poll_pr_submit_events();
+}
+
+#[test]
+fn should_lock_body_comments_when_only_the_body_posted() {
+    // given a body (review + moved-to-summary comments) and one unposted inline comment
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let review = Comment::new("r".to_string(), CommentType::from_id("note"), None);
+    let moved = Comment::new("m".to_string(), CommentType::from_id("note"), None);
+    let (review_id, moved_id) = (review.id.clone(), moved.id.clone());
+    app.session.review_comments.push(review);
+    app.session.review_comments.push(moved);
+    let mut in_flight = make_in_flight(SubmitEvent::Comment, &["c1"], "abcdef0123", 1);
+    in_flight.review_comment_ids = vec![review_id];
+    in_flight.summary_comment_ids = vec![moved_id];
+    // when the body landed but no inline comment did
+    fail_submit_with(
+        &mut app,
+        in_flight,
+        SubmitReceipts {
+            body_posted: true,
+            comment_ids: Vec::new(),
+        },
+    );
+    // then both body-borne comments are locked
+    assert!(app.session.review_comments.iter().all(|c| c.is_locked()));
+}
+
+#[test]
+fn should_keep_body_comments_editable_when_only_inline_comments_posted() {
+    // given a review-level comment that was never posted
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let review = Comment::new("r".to_string(), CommentType::from_id("note"), None);
+    let review_id = review.id.clone();
+    app.session.review_comments.push(review);
+    let posted = line_comment(LineSide::New, Some(11), None);
+    let posted_id = posted.id.clone();
+    add_line_comment(&mut app, "src/lib.rs", 11, posted);
+    let mut in_flight =
+        make_in_flight(SubmitEvent::Comment, &[posted_id.as_str()], "abcdef0123", 0);
+    in_flight.review_comment_ids = vec![review_id];
+    // when an inline comment landed but the body did not
+    fail_submit_with(
+        &mut app,
+        in_flight,
+        SubmitReceipts {
+            body_posted: false,
+            comment_ids: vec![posted_id],
+        },
+    );
+    // then the review-level comment stays a local draft
+    assert!(!app.session.review_comments[0].is_locked());
+}
+
+#[test]
+fn should_leave_everything_editable_when_nothing_posted_before_the_failure() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let review = Comment::new("r".to_string(), CommentType::from_id("note"), None);
+    let review_id = review.id.clone();
+    app.session.review_comments.push(review);
+    let mut in_flight = make_in_flight(SubmitEvent::Comment, &[], "abcdef0123", 0);
+    in_flight.review_comment_ids = vec![review_id];
+    fail_submit_with(&mut app, in_flight, SubmitReceipts::default());
+    assert!(!app.session.review_comments[0].is_locked());
+}
+
+#[test]
+fn should_persist_late_partial_receipts_to_their_own_session_when_another_pr_is_open() {
+    // given PR 125 @ OLD_HEAD saved with two drafts, and another head on screen
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let posted = line_comment(LineSide::New, Some(11), None);
+    let posted_id = posted.id.clone();
+    let unposted = line_comment(LineSide::New, Some(12), None);
+    let unposted_id = unposted.id.clone();
+    add_line_comment(&mut app, "src/lib.rs", 11, posted);
+    add_line_comment(&mut app, "src/lib.rs", 12, unposted);
+    let mut origin = app.session.clone();
+    origin.pr_session_key = Some(PrSessionKey::new(
+        ForgeRepository::github("github.com", "agavra", "tuicr"),
+        125,
+        "OLD_HEAD".to_string(),
+    ));
+    crate::persistence::storage::save_session(&origin).unwrap();
+    let mut in_flight = make_in_flight(
+        SubmitEvent::Comment,
+        &[posted_id.as_str(), unposted_id.as_str()],
+        "OLD_HEAD",
+        0,
+    );
+    in_flight.pr_head_sha = "OLD_HEAD".to_string();
+
+    // when a failure arrives after only the first comment posted
+    fail_submit_with(
+        &mut app,
+        in_flight.clone(),
+        SubmitReceipts {
+            body_posted: false,
+            comment_ids: vec![posted_id],
+        },
+    );
+
+    // then the open session is untouched
+    let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+    assert_eq!(
+        review.line_comments[&11][0].lifecycle_state,
+        CommentLifecycleState::LocalDraft
+    );
+    // and the origin session locks the posted one only
+    let key = PrSessionKey::new(in_flight.repository.clone(), 125, "OLD_HEAD".to_string());
+    let (_, saved) = crate::persistence::storage::load_pr_session(&key)
+        .unwrap()
+        .expect("origin session");
+    let lines = &saved.files[&PathBuf::from("src/lib.rs")].line_comments;
+    assert!(lines[&11][0].is_locked());
+    assert_eq!(
+        lines[&12][0].lifecycle_state,
+        CommentLifecycleState::LocalDraft
+    );
+}
+
+#[test]
+fn should_hand_partial_receipts_from_the_error_to_the_result() {
+    // given a partial-submit error
+    let receipts = SubmitReceipts {
+        body_posted: true,
+        comment_ids: vec!["c1".to_string()],
+    };
+    let err = receipts
+        .clone()
+        .into_error(crate::error::TuicrError::Forge("boom".to_string()));
+    // when split for the UI
+    let (message, got) = crate::app::submit::split_partial_submit(err);
+    // then both survive
+    assert_eq!(message, "boom");
+    assert_eq!(got, receipts);
+    // and a plain error carries no receipts
+    let (message, got) =
+        crate::app::submit::split_partial_submit(crate::error::TuicrError::Forge("x".to_string()));
+    assert_eq!(message, "x");
+    assert_eq!(got, SubmitReceipts::default());
+}
+
+#[test]
+fn should_leave_locked_review_comments_out_of_the_body() {
+    // given one locked and one live review-level comment
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.session.review_comments.push(locked(Comment::new(
+        "ALREADY-POSTED".to_string(),
+        CommentType::from_id("note"),
+        None,
+    )));
+    let live = Comment::new(
+        "STILL-LOCAL".to_string(),
+        CommentType::from_id("note"),
+        None,
+    );
+    let live_id = live.id.clone();
+    app.session.review_comments.push(live);
+    // when the body is built
+    let (body, ids) = app.build_submit_body(&[]);
+    // then only the live one is in it
+    assert!(body.contains("STILL-LOCAL"), "{body}");
+    assert!(!body.contains("ALREADY-POSTED"), "{body}");
+    assert_eq!(ids, vec![live_id]);
+}
+
+#[test]
+fn should_let_request_changes_retry_bare_on_bitbucket_and_azure() {
+    for repository in [
+        ForgeRepository::bitbucket("bitbucket.org", "w", "r"),
+        ForgeRepository::azure("dev.azure.com", "org/proj", "r"),
+    ] {
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let kind = repository.kind;
+        set_forge(&mut app, repository);
+        app.session.review_comments.push(locked(Comment::new(
+            "b".to_string(),
+            CommentType::from_id("note"),
+            None,
+        )));
+        app.start_submit(SubmitEvent::RequestChanges);
+        assert_eq!(app.input_mode, InputMode::SubmitConfirm, "{kind:?}");
+    }
 }

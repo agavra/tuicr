@@ -12,6 +12,7 @@ use crate::forge::remote_comments::{RemoteCommentSide, RemoteReviewComment, Remo
 use crate::forge::traits::{
     ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
 };
+use crate::vcs::split_commit_message;
 
 /// Azure DevOps list envelope: `{ "count": N, "value": [ ... ] }`.
 ///
@@ -135,6 +136,7 @@ impl AzPullRequest {
             head_ref_name: strip_ref(&self.source_ref_name),
             base_ref_name: strip_ref(&self.target_ref_name),
             updated_at: self.creation_date,
+            last_commit_at: None,
             url,
             state: normalize_state(&self.status),
             is_draft: self.is_draft,
@@ -190,6 +192,8 @@ pub struct AzGitCommitRef {
     pub commit_id: String,
     #[serde(default)]
     pub comment: String,
+    #[serde(default, rename = "commentTruncated")]
+    pub comment_truncated: bool,
     #[serde(default)]
     pub author: Option<AzGitUserDate>,
 }
@@ -205,7 +209,8 @@ pub struct AzGitUserDate {
 impl AzGitCommitRef {
     pub fn into_pull_request_commit(self) -> PullRequestCommit {
         let short_oid = self.commit_id.chars().take(8).collect();
-        let summary = self.comment.lines().next().unwrap_or_default().to_string();
+        let (subject, body) = split_commit_message(&self.comment);
+        let summary = subject.to_string();
         let (author, timestamp) = match self.author {
             Some(a) => (a.name, a.date),
             None => (String::new(), None),
@@ -214,6 +219,7 @@ impl AzGitCommitRef {
             oid: self.commit_id,
             short_oid,
             summary,
+            body: if self.comment_truncated { None } else { body },
             author,
             timestamp,
         }
@@ -313,7 +319,7 @@ impl AzThread {
                 body: c.content,
                 created_at: c.published_date,
                 in_reply_to: (c.parent_comment_id != 0).then(|| c.parent_comment_id.to_string()),
-                url: String::new(),
+                ..Default::default()
             })
             .collect();
         if comments.is_empty() {
@@ -554,7 +560,24 @@ mod tests {
         assert_eq!(prc.oid, "abcdef1234567890");
         assert_eq!(prc.short_oid, "abcdef12");
         assert_eq!(prc.summary, "First line");
+        assert_eq!(prc.body.as_deref(), Some("body"));
         assert_eq!(prc.author, "Bob");
         assert!(prc.timestamp.is_some());
+    }
+
+    #[test]
+    fn should_omit_body_when_the_commit_comment_is_truncated() {
+        // given
+        let json = r#"{
+            "commitId": "abcdef1234567890",
+            "comment": "First line\n\nPartial body",
+            "commentTruncated": true
+        }"#;
+        let commit: AzGitCommitRef = serde_json::from_str(json).unwrap();
+        // when
+        let converted = commit.into_pull_request_commit();
+        // then
+        assert_eq!(converted.summary, "First line");
+        assert_eq!(converted.body, None);
     }
 }

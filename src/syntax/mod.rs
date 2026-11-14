@@ -2,6 +2,7 @@ mod cmark;
 
 use ratatui::style::{Color, Modifier, Style};
 use std::path::Path;
+use std::sync::OnceLock;
 use two_face::theme::EmbeddedThemeName;
 
 use crate::model::diff_types::{DiffFile, DiffHunk, LineOrigin};
@@ -18,10 +19,9 @@ pub(crate) type HighlightedLines = Vec<Option<HighlightedSpans>>;
 ///
 /// Sublime-syntax grammars start in a `main` context entered at the top of the
 /// file. For Vue, syntect stays in `text.html.vue`'s outer scope until it
-/// sees `<template>`, `<script>`, or `<style>`. Same shape for Svelte / Astro
-/// / MDX (fenced code blocks) / PHP / ERB-family templates: anything inside a
-/// nested block in a hunk that doesn't include the opening tag will fall back
-/// to the theme's default foreground.
+/// sees `<template>`, `<script>`, or `<style>`. Same shape for Svelte / PHP / ERB
+/// templates: anything inside a nested block in a hunk that doesn't include
+/// the opening tag will fall back to the theme's default foreground.
 ///
 /// Container extensions kept narrow. `html` and `md` are intentionally
 /// omitted: the vast majority of changes in those files are outside any
@@ -29,18 +29,16 @@ pub(crate) type HighlightedLines = Vec<Option<HighlightedSpans>>;
 /// be a net regression. Add only when an extension is overwhelmingly used as
 /// a container (i.e. most hunks live inside a nested grammar).
 pub(crate) fn needs_full_file_highlight(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    // `get_syntax` matches extensions case-insensitively, so this must too.
     matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some(
-            "vue"     // text.html.vue: HTML + JS/TS + CSS blocks
-            | "svelte" // source.svelte: HTML + JS/TS + CSS blocks
-            | "astro"  // source.astro: frontmatter + HTML + JS
-            | "mdx"    // text.html.markdown with JSX inside
-            | "php"    // text.html.php: outer HTML, switches at <?php
-            | "erb"    // text.html.erb: outer HTML, switches at <% %>
-            | "eex"    // text.html.elixir: same shape as erb
-            | "heex" // text.html.heex: Phoenix component templates
-        )
+        ext.to_ascii_lowercase().as_str(),
+        "vue"       // text.html.vue: HTML + JS/TS + CSS blocks
+        | "svelte"  // source.svelte: HTML + JS/TS + CSS blocks
+        | "php"     // text.html.php: outer HTML, switches at <?php
+        | "erb" // text.html.erb: outer HTML, switches at <% %>
     )
 }
 
@@ -63,6 +61,122 @@ fn cap_oniguruma_retry_limit() {
             onig_set_retry_limit_in_match(ONIGURUMA_RETRY_LIMIT);
         }
     });
+}
+
+/// The embedded grammars plus any loaded by [`load_user_syntaxes`].
+static USER_SYNTAX_SET: OnceLock<syntect::parsing::SyntaxSet> = OnceLock::new();
+
+/// Add every `*.sublime-syntax` file in `dir` to the grammars highlighters use,
+/// for languages the embedded set lacks. Call once at startup, before the first
+/// highlighter is built. Returns a warning per file that fails to parse.
+pub fn load_user_syntaxes(dir: &Path) -> Vec<String> {
+    let (set, warnings) = build_syntax_set_with(dir);
+    if let Some(set) = set {
+        let _ = USER_SYNTAX_SET.set(set);
+    }
+    warnings
+}
+
+/// The embedded set plus `dir`'s grammars, or `None` when `dir` holds none:
+/// relinking the embedded set costs ~200ms, so an absent or empty `dir` skips it.
+fn build_syntax_set_with(dir: &Path) -> (Option<syntect::parsing::SyntaxSet>, Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (None, Vec::new());
+    };
+    let mut paths: Vec<_> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "sublime-syntax"))
+        .collect();
+    if paths.is_empty() {
+        return (None, Vec::new());
+    }
+    paths.sort();
+
+    let mut warnings = Vec::new();
+    let mut builder = two_face::syntax::extra_newlines().into_builder();
+    for path in paths {
+        let parsed = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                reject_panicking_grammar(&text)?;
+                let stem = path.file_stem().and_then(|stem| stem.to_str());
+                syntect::parsing::SyntaxDefinition::load_from_str(&text, true, stem)
+                    .map_err(|e| e.to_string())
+            })
+            .and_then(|definition| {
+                // syntect validates `match` regexes on load but compiles
+                // `first_line_match` lazily, panicking on every unknown-extension file.
+                match definition
+                    .first_line_match
+                    .as_deref()
+                    .and_then(syntect::parsing::Regex::try_compile)
+                {
+                    Some(e) => Err(format!("invalid first_line_match: {e}")),
+                    None => Ok(definition),
+                }
+            });
+        match parsed {
+            Ok(definition) => builder.add(definition),
+            Err(e) => warnings.push(format!("Failed to load syntax {}: {e}", path.display())),
+        }
+    }
+    (Some(builder.build()), warnings)
+}
+
+/// Reject the grammar shapes that make syntect panic while parsing.
+///
+/// `catch_unwind` cannot recover: the panic happens under syntect's global scope
+/// repository lock and poisons it, so every later highlight would panic too.
+/// The shapes are an empty context list nested in a `push`/`set` list
+/// (`push: [[]]`) and a non-string `escape`.
+fn reject_panicking_grammar(text: &str) -> Result<(), String> {
+    use yaml_rust::{Yaml, YamlLoader};
+
+    fn check(node: &Yaml) -> Result<(), String> {
+        match node {
+            Yaml::Hash(map) => {
+                for (key, value) in map {
+                    match key.as_str() {
+                        Some("push" | "set")
+                            if value
+                                .as_vec()
+                                .and_then(|list| list.first())
+                                .and_then(Yaml::as_vec)
+                                .is_some_and(|inner| inner.is_empty()) =>
+                        {
+                            return Err("empty context list in `push`/`set`".to_string());
+                        }
+                        // Only a rule (a map with a string `match`) has an `escape`
+                        // key; elsewhere it is a context name, whose body is a list.
+                        Some("escape")
+                            if map.keys().any(|k| k.as_str() == Some("match"))
+                                && value.as_str().is_none() =>
+                        {
+                            return Err("`escape` must be a string".to_string());
+                        }
+                        _ => {}
+                    }
+                    check(value)?;
+                }
+                Ok(())
+            }
+            Yaml::Array(items) => items.iter().try_for_each(check),
+            _ => Ok(()),
+        }
+    }
+
+    // Malformed YAML is left to syntect, which reports it as an error.
+    match YamlLoader::load_from_str(text) {
+        Ok(docs) => docs.iter().try_for_each(check),
+        Err(_) => Ok(()),
+    }
+}
+
+fn syntax_set() -> syntect::parsing::SyntaxSet {
+    USER_SYNTAX_SET
+        .get()
+        .cloned()
+        .unwrap_or_else(two_face::syntax::extra_newlines)
 }
 
 /// Helper to highlight lines of code from a diff
@@ -106,7 +220,7 @@ impl SyntaxHighlighter {
     /// Create a new syntax highlighter with a preloaded syntect theme.
     pub fn with_theme(theme: syntect::highlighting::Theme, add_bg: Color, del_bg: Color) -> Self {
         cap_oniguruma_retry_limit();
-        let syntax_set = two_face::syntax::extra_newlines();
+        let syntax_set = syntax_set();
         let markdown_palette = cmark::MarkdownPalette::resolve(&theme);
         Self {
             syntax_set,
@@ -474,8 +588,76 @@ impl SyntaxHighlighter {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn should_match_container_extensions_case_insensitively() {
+        use super::needs_full_file_highlight;
+        use std::path::Path;
+        assert!(needs_full_file_highlight(Path::new("App.VUE")));
+        assert!(needs_full_file_highlight(Path::new("a.vue")));
+        assert!(!needs_full_file_highlight(Path::new("a.heex")));
+        assert!(!needs_full_file_highlight(Path::new("a.mdx")));
+    }
+
     use super::*;
     use crate::model::diff_types::DiffLine;
+
+    #[test]
+    fn should_add_user_syntaxes_and_warn_about_broken_ones() {
+        // given a syntaxes dir with one valid grammar, one broken one, and a stray file
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Probe.sublime-syntax"),
+            "%YAML 1.2\n---\nname: Probe\nscope: source.probe\nfile_extensions: [tuicrprobe]\ncontexts:\n  main:\n    - match: probe\n      scope: keyword.probe\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("Broken.sublime-syntax"), "not: [a grammar").unwrap();
+        std::fs::write(
+            dir.path().join("BadFirstLine.sublime-syntax"),
+            "%YAML 1.2\n---\nname: BadFirstLine\nscope: source.bad\nfirst_line_match: '['\ncontexts:\n  main:\n    - match: bad\n      scope: keyword.bad\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "ignored").unwrap();
+
+        // when the set is built from it
+        let (set, warnings) = build_syntax_set_with(dir.path());
+
+        // then the valid grammar joins the embedded ones and only the broken files warn
+        let set = set.unwrap();
+        assert!(set.find_syntax_by_extension("tuicrprobe").is_some());
+        assert!(set.find_syntax_by_extension("rs").is_some());
+        assert!(set.find_syntax_by_name("BadFirstLine").is_none());
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].contains("BadFirstLine.sublime-syntax"));
+        assert!(warnings[1].contains("Broken.sublime-syntax"));
+        // and an unknown-extension file no longer hits the bad regex
+        assert!(set.find_syntax_by_first_line("anything").is_none());
+    }
+
+    #[test]
+    fn should_name_a_nameless_user_syntax_after_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Nameless.sublime-syntax"),
+            "%YAML 1.2\n---\nscope: source.nameless\nfile_extensions: [tuicrnameless]\ncontexts:\n  main:\n    - match: x\n      scope: keyword.x\n",
+        )
+        .unwrap();
+        let set = build_syntax_set_with(dir.path()).0.unwrap();
+        assert_eq!(
+            set.find_syntax_by_extension("tuicrnameless").unwrap().name,
+            "Nameless"
+        );
+    }
+
+    #[test]
+    fn should_skip_rebuilding_when_no_user_syntaxes_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(build_syntax_set_with(dir.path()).0.is_none());
+        assert!(
+            build_syntax_set_with(&dir.path().join("missing"))
+                .0
+                .is_none()
+        );
+    }
 
     #[test]
     fn should_apply_oniguruma_retry_limit_once() {
@@ -798,6 +980,7 @@ mod tests {
                 content: "let x = 1;".to_string(),
                 old_lineno: None,
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             }],
             old_start: 1,
@@ -841,6 +1024,7 @@ mod tests {
                 content: "<script>let x = 1;</script>".to_string(),
                 old_lineno: None,
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             }],
             old_start: 1,
@@ -877,6 +1061,7 @@ mod tests {
                         content: "let a = 1;".to_string(),
                         old_lineno: None,
                         new_lineno: Some(1),
+                        raw_content: None,
                         highlighted_spans: None,
                     }],
                     old_start: 1,
@@ -891,6 +1076,7 @@ mod tests {
                         content: "let b = 2;".to_string(),
                         old_lineno: Some(10),
                         new_lineno: None,
+                        raw_content: None,
                         highlighted_spans: None,
                     }],
                     old_start: 10,

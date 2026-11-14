@@ -1,0 +1,8 @@
+diff --git a/src/other.rs b/src/other.rs
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/src/other.rs
+@@ -0,0 +1,2 @@
++pub fn other() {}
++// only in PR two

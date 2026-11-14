@@ -37,7 +37,10 @@ command (`tuicr review add --help`).
 These apply to the TUI and can be given on the bare command, on `tui`, or on
 `pr` / `mr`. When the same option appears at more than one level, string values
 take the last one given and boolean flags stay on once set, so
-`tuicr --stdout tui pr 125 --theme nord-dark` is valid.
+`tuicr --stdout tui pr 125 --theme nord-dark` is valid. Conflicts between
+options (`--file` / `--all-files` against `-r`, `-w`, `-p`) are checked on the
+merged set, so they also fail when split across levels. `pr` rejects the
+local-review flags `-r`, `-w`, `-p`, `--file` and `-A`.
 
 | Flag | Short | Value | Description |
 |---|---|---|---|
@@ -136,11 +139,15 @@ out to.
 | `XDG_CONFIG_HOME`, `HOME`, `APPDATA` | Locate the config directory. See [CONFIG.md](CONFIG.md) |
 | `TUICR_PROFILE` | Write a startup/render profile log. See below |
 | `TUICR_PROFILE_FILE` | Path for that log, overriding the default location |
+| `AZURE_DEVOPS_SERVER_URL` | Hostname of a self-hosted Azure DevOps Server / TFS so its remotes are recognized as Azure DevOps. Requires a PAT. See [AZURE.md](AZURE.md) |
 | `AZURE_DEVOPS_EXT_PAT`, `AZURE_DEVOPS_PAT` | Azure DevOps PAT. Checked in that order; without one tuicr falls back to `az rest`. See [AZURE.md](AZURE.md) |
 | `GERRIT_URL` | Gerrit server root; also identifies Gerrit remotes on otherwise neutral hostnames. See [GERRIT.md](GERRIT.md) |
 | `GERRIT_USERNAME`, `GERRIT_PASSWORD` | Gerrit REST API credentials. `GERRIT_PASSWORD` must be an HTTP password, not the account password |
+| `GITLAB_SUBFOLDER` | Subfolder a self-hosted GitLab is installed under (`gitlab` for `https://example.com/gitlab/`). Read by `glab` and by tuicr, and overrides `glab`'s per-host `subfolder` setting. See [GITLAB.md](GITLAB.md) |
 | `TUICR_GLAB_DEBUG` | Log `glab` invocations for debugging. See [GITLAB.md](GITLAB.md) |
 | `TMUX`, `ZELLIJ`, `SSH_TTY` | Detected to choose a clipboard path — OSC 52 over SSH, `tmux load-buffer` inside tmux |
+| `REX_SESSION` | Prefer OSC 52 clipboard writes to reach the Rex client's clipboard |
+| `TERM_PROGRAM` | When set to `rex`, prefer OSC 52 clipboard writes |
 | `XDG_SESSION_TYPE` | Picks `wl-copy` on Wayland or `xclip` on X11 |
 
 Set `TUICR_PROFILE` to `1`, `true`, `on`, or `yes` to log to
@@ -162,7 +169,9 @@ tuicr-summary: reviewed 3/3 files, 2 comments added
 `tuicr-session:` is printed once at startup, before the alternate screen is
 entered, and names the session slug. Pass it straight to
 `tuicr review comments --session <slug>` to read comments while the TUI is
-still open, or after it exits. `tuicr-summary:` is printed on exit, always —
+still open, or after it exits. A PR session on a forge's default host is
+`gh:owner/repo/pr/N`; on any other host (and always for Gerrit) the slug ends
+in `@<host>`, e.g. `gh:owner/repo/pr/N@ghe.example.com`. `tuicr-summary:` is printed on exit, always —
 including with zero comments, so a watcher can tell "reviewed everything, found
 nothing" apart from "quit without looking".
 

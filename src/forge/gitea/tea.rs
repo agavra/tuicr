@@ -19,7 +19,6 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -32,6 +31,9 @@ use crate::forge::remote_comments::{
     RemoteCommentSide, RemoteReviewComment, RemoteReviewState, RemoteReviewSummary,
     RemoteReviewThread,
 };
+use crate::forge::remote_url::{
+    parse_scp_like_remote, read_ssh_hostname, strip_port, strip_scheme, trim_url_suffix,
+};
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
     CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
@@ -40,10 +42,11 @@ use crate::forge::traits::{
     PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord,
     PullRequestReviewStatus, PullRequestSummary, PullRequestTarget,
 };
-use crate::model::{DiffLine, FilePatch, FileStatus};
+use crate::forge::{local_range_diff, percent_encode_component, percent_encode_path};
+use crate::model::{FilePatch, FileStatus};
 use crate::process::{CommandOutputErrorKind, run_command_output, run_command_streams};
-use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch, run_git_diff};
-use crate::vcs::slice_context_lines;
+use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch};
+use crate::vcs::split_commit_message;
 
 use super::models::{
     GiteaChangedFile, GiteaCombinedStatus, GiteaCommit, GiteaIssue, GiteaIssueComment,
@@ -312,23 +315,21 @@ pub fn is_gitea_host(host: &str) -> bool {
 /// Parse a git remote URL into a Gitea repository, or `None` when the host is
 /// not a Gitea instance.
 pub fn parse_gitea_remote_url(remote_url: &str) -> Option<ForgeRepository> {
+    parse_gitea_remote_url_with(remote_url, read_ssh_hostname)
+}
+
+fn parse_gitea_remote_url_with(
+    remote_url: &str,
+    resolve: impl Fn(&str) -> String,
+) -> Option<ForgeRepository> {
     let trimmed = trim_url_suffix(remote_url.trim());
     if trimmed.is_empty() {
         return None;
     }
 
     if let Some((host, path)) = parse_scp_like_remote(trimmed) {
-        // Check the literal host before resolving the SSH alias: a config that
-        // maps a recognizable name onto an opaque bastion would otherwise stop
-        // looking like Gitea. Mirrors the GitLab backend's ordering.
-        let resolved = resolve_ssh_hostname(host);
-        let gitea_host = if is_gitea_host(host) {
-            host
-        } else if is_gitea_host(&resolved) {
-            &resolved
-        } else {
-            return None;
-        };
+        let resolved = resolve(host);
+        let gitea_host = scp_gitea_host(host, &resolved)?;
         return gitea_repository_from_path(gitea_host, path);
     }
 
@@ -343,6 +344,20 @@ pub fn parse_gitea_remote_url(remote_url: &str) -> Option<ForgeRepository> {
         return None;
     }
     gitea_repository_from_path(host, path)
+}
+
+/// Pick the host for an SCP-style remote. The resolved `HostName` wins when it
+/// is a Gitea host, so `tea` logins and URL matching see the real endpoint
+/// rather than the alias. A recognizable literal host still counts when the
+/// resolved one is opaque (a config mapping a Gitea name onto a bastion).
+fn scp_gitea_host<'a>(host: &'a str, resolved: &'a str) -> Option<&'a str> {
+    if is_gitea_host(resolved) {
+        Some(resolved)
+    } else if is_gitea_host(host) {
+        Some(host)
+    } else {
+        None
+    }
 }
 
 /// Gitea repositories are always exactly `<owner>/<repo>` — no nested groups,
@@ -553,6 +568,17 @@ where
         repo: &ForgeRepository,
         endpoint: &str,
     ) -> Result<Vec<T>> {
+        self.get_pages_until(repo, endpoint, usize::MAX)
+    }
+
+    /// Like [`Self::get_all_pages`], but stops once at least `want` rows have
+    /// been collected, so a picker window does not drain the whole collection.
+    fn get_pages_until<T: DeserializeOwned>(
+        &self,
+        repo: &ForgeRepository,
+        endpoint: &str,
+        want: usize,
+    ) -> Result<Vec<T>> {
         let separator = if endpoint.contains('?') { '&' } else { '?' };
         let mut collected: Vec<T> = Vec::new();
         let mut page_size: Option<usize> = None;
@@ -564,7 +590,7 @@ where
             let received = rows.len();
             collected.extend(rows);
 
-            if received == 0 {
+            if received == 0 || collected.len() >= want {
                 break;
             }
             if let Some(total) = response.total_count
@@ -577,6 +603,13 @@ where
             let effective = *page_size.get_or_insert(received);
             if received < effective {
                 break;
+            }
+            if page == MAX_PAGES {
+                // No stop condition fired: more rows may remain, so a prefix
+                // must not pass for the whole collection (or a look-ahead).
+                return Err(TuicrError::ForgeLimit(format!(
+                    "Gitea collection exceeds {MAX_PAGES} pages; refusing to use a partial list"
+                )));
             }
         }
 
@@ -596,13 +629,18 @@ where
         number: u64,
     ) -> Result<PullRequestDetails> {
         let pr: GiteaPullRequest = self.get_json(repo, &Self::pulls_endpoint(repo, number, ""))?;
+        Self::require_commit_shas(&pr, number)?;
+        Ok(into_details(pr, repo))
+    }
+
+    fn require_commit_shas(pr: &GiteaPullRequest, number: u64) -> Result<()> {
         if pr.head.sha.is_empty() || pr.base.sha.is_empty() {
             return Err(TuicrError::Forge(format!(
                 "Gitea pull request #{number} did not report head and base commit SHAs; \
                  tuicr cannot anchor a review session without them."
             )));
         }
-        Ok(into_details(pr, repo))
+        Ok(())
     }
 
     /// File metadata for the PR, in the same order as the `.diff` body.
@@ -644,6 +682,15 @@ where
         )
     }
 
+    /// Keep an optional fetch best-effort, except that hitting the page bound
+    /// is surfaced: a partial list must not pass as a complete one.
+    fn best_effort<T: Default>(result: Result<T>) -> Result<T> {
+        match result {
+            Err(e @ TuicrError::ForgeLimit(_)) => Err(e),
+            other => Ok(other.unwrap_or_default()),
+        }
+    }
+
     fn reviews(&self, pr: &PullRequestDetails) -> Result<Vec<GiteaPullReview>> {
         self.get_all_pages(
             &pr.repository,
@@ -662,25 +709,21 @@ where
     fn list_open_pull_requests(&self, query: &PullRequestListQuery) -> Result<PagedPullRequests> {
         let page_size = query.page_size.max(1);
         let repo = &query.repository;
-        // `already_loaded` only ever advances by whole pages, so it maps
-        // cleanly onto Gitea's 1-based page numbers.
-        let page = query.already_loaded / page_size + 1;
-        let endpoint = format!(
-            "/repos/{}/{}/pulls?state=open&page={}&limit={}",
-            repo.owner, repo.name, page, page_size
-        );
-        let response = self.api(repo, "GET", &endpoint, None)?;
-        let rows: Vec<GiteaPullRequest> = serde_json::from_str(&response.body)?;
-        let received = rows.len();
+        // Gitea clamps `limit` to the instance's MaxResponseItems, so the
+        // server page size is unknown and `already_loaded / page_size` is not
+        // a page number. Collect from page 1 up to one row past the requested
+        // window (which also answers `has_more`), then slice locally.
+        let endpoint = format!("/repos/{}/{}/pulls?state=open", repo.owner, repo.name);
+        let rows: Vec<GiteaPullRequest> =
+            self.get_pages_until(repo, &endpoint, query.already_loaded + page_size + 1)?;
+        let has_more = rows.len() > query.already_loaded + page_size;
         let pull_requests = rows
             .into_iter()
+            .skip(query.already_loaded)
+            .take(page_size)
             .map(|row| into_summary(row, repo))
             .collect::<Vec<_>>();
         let total_loaded = query.already_loaded + pull_requests.len();
-        let has_more = match response.total_count {
-            Some(total) => total_loaded < total,
-            None => received == page_size,
-        };
         Ok(PagedPullRequests {
             pull_requests,
             has_more,
@@ -737,7 +780,10 @@ where
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests> {
         match query.scope {
             PullRequestListScope::Open => self.list_open_pull_requests(&query),
-            PullRequestListScope::ReviewRequested => self.list_review_requested(&query),
+            // `PersonallyRequested` is not in Gitea's scope cycle.
+            PullRequestListScope::ReviewRequested | PullRequestListScope::PersonallyRequested => {
+                self.list_review_requested(&query)
+            }
         }
     }
 
@@ -748,14 +794,14 @@ where
 
     fn get_pull_request_info(&self, target: PullRequestTarget) -> Result<PullRequestInfo> {
         let repository = self.resolve_repository(&target)?;
-        let details = self.fetch_pull_request(&repository, target.number)?;
-
-        let raw: GiteaPullRequest = self.get_json(
+        let mut raw: GiteaPullRequest = self.get_json(
             &repository,
             &Self::pulls_endpoint(&repository, target.number, ""),
         )?;
+        Self::require_commit_shas(&raw, target.number)?;
         let requested_reviewers = raw
             .requested_reviewers
+            .take()
             .unwrap_or_default()
             .into_iter()
             .filter_map(|user| GiteaUser::login(Some(user)))
@@ -763,18 +809,25 @@ where
         let mergeable = raw
             .mergeable
             .map(|ok| if ok { "MERGEABLE" } else { "CONFLICTING" }.to_string());
+        let details = into_details(raw, &repository);
 
-        // Latest response per reviewer, newest wins. Pending reviews are the
-        // viewer's own unsubmitted drafts and review-requests are not
-        // responses, so neither belongs in the summary row.
+        // Effective response per reviewer. A newer decisive review replaces an
+        // older one, but a COMMENT never revokes a vote (as in Gitea), and a
+        // dismissed vote no longer counts. Pending reviews are the viewer's
+        // own unsubmitted drafts and review-requests are not responses, so
+        // neither belongs in the summary row.
         let mut latest: BTreeMap<String, PullRequestReviewStatus> = BTreeMap::new();
-        for review in self.reviews(&details).unwrap_or_default() {
+        for review in Self::best_effort(self.reviews(&details))? {
             let state = match review.state.to_ascii_uppercase().as_str() {
                 "APPROVED" => "APPROVED",
                 "REQUEST_CHANGES" => "CHANGES_REQUESTED",
                 "COMMENT" => "COMMENTED",
                 _ => continue,
             };
+            let decisive = state != "COMMENTED";
+            if decisive && review.dismissed {
+                continue;
+            }
             let Some(author) = GiteaUser::login(review.user) else {
                 continue;
             };
@@ -786,7 +839,13 @@ where
             latest
                 .entry(author)
                 .and_modify(|existing| {
-                    if candidate.submitted_at >= existing.submitted_at {
+                    let existing_decisive = existing.state != "COMMENTED";
+                    let replaces = if decisive == existing_decisive {
+                        candidate.submitted_at >= existing.submitted_at
+                    } else {
+                        decisive
+                    };
+                    if replaces {
                         *existing = candidate.clone();
                     }
                 })
@@ -838,14 +897,13 @@ where
         };
 
         let issue_comments = if self.show_comments {
-            self.get_all_pages::<GiteaIssueComment>(
+            Self::best_effort(self.get_all_pages::<GiteaIssueComment>(
                 &repository,
                 &format!(
                     "/repos/{}/{}/issues/{}/comments",
                     repository.owner, repository.name, details.number
                 ),
-            )
-            .unwrap_or_default()
+            ))?
             .into_iter()
             .map(|comment| PullRequestIssueComment {
                 author: GiteaUser::login(comment.user),
@@ -941,16 +999,21 @@ where
             return Ok(diff);
         }
 
-        // Gitea's compare endpoint returns only commit metadata as JSON, but
-        // `output=diff` switches it to a raw unified diff. There is no
-        // matching structured file list, so metadata is recovered from the
-        // diff text itself.
-        let endpoint = format!(
-            "/repos/{}/{}/compare/{}...{}?output=diff",
-            pr.repository.owner, pr.repository.name, start_sha, end_sha
-        );
-        let patch = self.api(&pr.repository, "GET", &endpoint, None)?.body;
-        parse_unified_diff(&patch)
+        // Gitea's compare endpoint returns only an unstructured patch, and
+        // patch headers are never authoritative for paths. Fetch the PR head
+        // (FETCH_HEAD only) so Git can produce the paths itself.
+        let root = self
+            .local_checkout
+            .as_deref()
+            .ok_or_else(missing_checkout)?;
+        fetch_pull_head(root, pr);
+        local_range_diff(root, start_sha, end_sha).ok_or_else(|| {
+            TuicrError::Forge(format!(
+                "Commits {start_sha}..{end_sha} are not in the local clone, even after fetching \
+                 refs/pull/{}/head. Fetch them and retry.",
+                pr.number
+            ))
+        })
     }
 
     fn list_review_threads(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>> {
@@ -973,7 +1036,6 @@ where
             // Bare approvals carry no prose; the review-summary area only
             // renders bodies.
             .filter(|review| !review.body.trim().is_empty())
-            .filter(|review| !review.state.eq_ignore_ascii_case("PENDING"))
             .map(|review| RemoteReviewSummary {
                 id: review.id.to_string(),
                 author: GiteaUser::login(review.user),
@@ -983,15 +1045,6 @@ where
                 url: review.html_url,
             })
             .collect())
-    }
-
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
-        if request.start_line == 0 || request.start_line > request.end_line {
-            return Ok(Vec::new());
-        }
-        let (start_line, end_line) = (request.start_line, request.end_line);
-        let content = self.fetch_file_content(request)?;
-        Ok(slice_context_lines(&content, start_line, end_line))
     }
 
     /// Local blob when the checkout has the PR's SHA, the raw endpoint
@@ -1080,6 +1133,7 @@ fn into_summary(pr: GiteaPullRequest, repository: &ForgeRepository) -> PullReque
         head_ref_name: display_ref(&pr.head.ref_name),
         base_ref_name: display_ref(&pr.base.ref_name),
         updated_at: pr.updated_at,
+        last_commit_at: None,
         url: pr.html_url,
         state: pr.state,
         is_draft: pr.draft,
@@ -1129,7 +1183,6 @@ fn issue_into_summary(issue: GiteaIssue, repository: &ForgeRepository) -> PullRe
         .pull_request
         .unwrap_or(super::models::GiteaPullRequestMeta {
             draft: false,
-            merged: false,
             html_url: None,
         });
     PullRequestSummary {
@@ -1141,6 +1194,7 @@ fn issue_into_summary(issue: GiteaIssue, repository: &ForgeRepository) -> PullRe
         head_ref_name: String::new(),
         base_ref_name: String::new(),
         updated_at: issue.updated_at,
+        last_commit_at: None,
         url: meta.html_url.unwrap_or(issue.html_url),
         state: issue.state,
         is_draft: meta.draft,
@@ -1197,12 +1251,8 @@ fn into_pull_request_commit(commit: GiteaCommit) -> PullRequestCommit {
         message: String::new(),
         author: None,
     });
-    let summary = payload
-        .message
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_string();
+    let (subject, body) = split_commit_message(&payload.message);
+    let summary = subject.to_string();
     let author = GiteaUser::login(commit.author)
         .or_else(|| payload.author.map(|author| author.name))
         .unwrap_or_default();
@@ -1211,6 +1261,7 @@ fn into_pull_request_commit(commit: GiteaCommit) -> PullRequestCommit {
         oid: commit.sha,
         short_oid,
         summary,
+        body,
         author,
         timestamp: commit.created,
     }
@@ -1300,8 +1351,8 @@ fn group_comments_into_threads(comments: Vec<GiteaPullReviewComment>) -> Vec<Rem
             author: GiteaUser::login(comment.user),
             body: comment.body,
             created_at: comment.created_at,
-            in_reply_to: None,
             url: comment.html_url,
+            ..Default::default()
         };
 
         let key = (
@@ -1352,248 +1403,76 @@ fn group_comments_into_threads(comments: Vec<GiteaPullReviewComment>) -> Vec<Rem
     threads
 }
 
-// ----- Raw diff parsing -----
-
-/// Recover `FilePatch`es from unified diff text alone.
-///
-/// The cumulative PR diff gets authoritative metadata from `/pulls/{n}/files`,
-/// but Gitea's compare endpoint has no structured counterpart, so commit-range
-/// diffs have to read status and paths out of the git headers.
-fn parse_unified_diff(patch: &str) -> Result<Vec<FilePatch>> {
-    let blocks = crate::vcs::git::raw::split_patch_blocks(patch.as_bytes());
-    let mut metadata = Vec::with_capacity(blocks.len());
-    for block in &blocks {
-        metadata.push(metadata_from_patch_block(&String::from_utf8_lossy(block))?);
-    }
-    crate::vcs::git::raw::pair_metadata_with_patch(metadata, patch.as_bytes())
-}
-
-fn metadata_from_patch_block(block: &str) -> Result<FileMetadata> {
-    let mut status = FileStatus::Modified;
-    let mut rename_from = None;
-    let mut rename_to = None;
-    let mut minus_path = None;
-    let mut plus_path = None;
-
-    for line in block.lines() {
-        if let Some(rest) = line.strip_prefix("rename from ") {
-            status = FileStatus::Renamed;
-            rename_from = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("rename to ") {
-            status = FileStatus::Renamed;
-            rename_to = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("copy from ") {
-            status = FileStatus::Copied;
-            rename_from = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("copy to ") {
-            status = FileStatus::Copied;
-            rename_to = Some(rest.to_string());
-        } else if line.starts_with("new file mode ") {
-            status = FileStatus::Added;
-        } else if line.starts_with("deleted file mode ") {
-            status = FileStatus::Deleted;
-        } else if let Some(rest) = line.strip_prefix("--- ") {
-            minus_path = strip_diff_prefix(rest);
-        } else if let Some(rest) = line.strip_prefix("+++ ") {
-            plus_path = strip_diff_prefix(rest);
-        } else if line.starts_with("@@") {
-            break;
-        }
-    }
-
-    let header = block.lines().next().unwrap_or_default();
-    let (header_old, header_new) = parse_diff_git_line(header).unzip();
-
-    let old_path = rename_from.or(minus_path).or(header_old).map(PathBuf::from);
-    let new_path = rename_to.or(plus_path).or(header_new).map(PathBuf::from);
-
-    let (old_path, new_path) = match status {
-        FileStatus::Added => (None, new_path.or_else(|| old_path.clone())),
-        FileStatus::Deleted => (old_path.or_else(|| new_path.clone()), None),
-        _ => (old_path, new_path),
-    };
-
-    if old_path.is_none() && new_path.is_none() {
-        return Err(TuicrError::Forge(format!(
-            "could not read a file path from a Gitea diff header: {header}. \
-             Run tuicr from a local clone of the repository so the range diff \
-             can be computed locally."
-        )));
-    }
-
-    Ok(FileMetadata {
-        old_path,
-        new_path,
-        status,
-    })
-}
-
-/// `--- a/path` / `+++ b/path`, minus the side prefix and any trailing tab
-/// metadata. `/dev/null` means the file does not exist on that side.
-fn strip_diff_prefix(value: &str) -> Option<String> {
-    let value = value.split('\t').next().unwrap_or(value).trim_end();
-    if value == "/dev/null" {
-        return None;
-    }
-    let stripped = value
-        .strip_prefix("a/")
-        .or_else(|| value.strip_prefix("b/"))
-        .unwrap_or(value);
-    (!stripped.is_empty()).then(|| stripped.to_string())
-}
-
-/// Split `diff --git a/<old> b/<new>` into its two paths.
-///
-/// Paths are unprefixed but unquoted, and either may contain spaces, so the
-/// split point is found by testing each ` b/` for one that leaves a valid
-/// `a/`-prefixed left half. Git quotes paths containing control characters or
-/// non-ASCII bytes; those are left to the `---`/`+++` fallback.
-fn parse_diff_git_line(line: &str) -> Option<(String, String)> {
-    let rest = line.strip_prefix("diff --git ")?;
-    if rest.starts_with('"') {
-        return None;
-    }
-    let mut search_from = 0;
-    while let Some(offset) = rest[search_from..].find(" b/") {
-        let split_at = search_from + offset;
-        let left = &rest[..split_at];
-        let right = &rest[split_at + 1..];
-        if let Some(old) = left.strip_prefix("a/")
-            && let Some(new) = right.strip_prefix("b/")
-            && !old.is_empty()
-            && !new.is_empty()
-        {
-            return Some((old.to_string(), new.to_string()));
-        }
-        search_from = split_at + 1;
-    }
-    None
-}
-
 // ----- Local checkout helpers -----
 
-/// `Some(diff)` when both SHAs are present locally.
-fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<Vec<FilePatch>> {
-    for sha in [start_sha, end_sha] {
-        run_command_output(
-            "git",
-            Some(repo_root),
-            ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
-        )
-        .ok()?;
-    }
-    run_git_diff(repo_root, &[format!("{start_sha}..{end_sha}").as_str()]).ok()
+fn missing_checkout() -> TuicrError {
+    TuicrError::Forge(
+        "Reviewing a commit range of a Gitea pull request needs a local clone of the \
+         repository (Gitea's compare endpoint cannot supply authoritative file paths). \
+         Run tuicr from inside a clone."
+            .to_string(),
+    )
+}
+
+/// Best-effort `git fetch` of `refs/pull/<n>/head` from the remote matching the
+/// PR's repository. A bare fetch writes FETCH_HEAD only: no branch is created
+/// and no local ref moves. `pr.number` is a `u64`, so the refspec is
+/// digits-only.
+fn fetch_pull_head(root: &Path, pr: &PullRequestDetails) {
+    // `remotes` falls back to the Git CLI for repositories libgit2 cannot open
+    // (reftable, SHA-256), so the fetch works there too.
+    let Some((remote, _)) = crate::forge::remotes(root).into_iter().find(|(_, url)| {
+        crate::forge::parse_any_remote_url(url).is_some_and(|parsed| parsed == pr.repository)
+    }) else {
+        return;
+    };
+    let refspec = format!("refs/pull/{}/head", pr.number);
+    // `--refmap=` stops `remote.<name>.fetch` mappings from also updating
+    // tracking refs: the result must live in FETCH_HEAD only.
+    let _ = run_command_output(
+        "git",
+        Some(root),
+        [
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--refmap=",
+            remote.as_str(),
+            refspec.as_str(),
+        ],
+    );
 }
 
 // ----- URL helpers -----
-
-/// Percent-encode one path segment's worth of text, keeping `/` intact so a
-/// repository-relative path stays a path.
-fn percent_encode_path(value: &str) -> String {
-    value
-        .split('/')
-        .map(percent_encode_component)
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-fn percent_encode_component(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char);
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
-}
-
-fn strip_scheme(value: &str) -> Option<&str> {
-    value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-        .or_else(|| value.strip_prefix("ssh://"))
-}
-
-fn trim_url_suffix(value: &str) -> &str {
-    value
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(value)
-        .trim_end_matches('/')
-}
-
-/// Strip a trailing `:<port>`. Self-hosted instances commonly use a non-default
-/// SSH port, which is meaningless for the HTTPS API host.
-fn strip_port(host: &str) -> &str {
-    match host.rsplit_once(':') {
-        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
-        _ => host,
-    }
-}
 
 fn strip_git_suffix(value: &str) -> &str {
     value.strip_suffix(".git").unwrap_or(value)
 }
 
-fn parse_scp_like_remote(remote_url: &str) -> Option<(&str, &str)> {
-    if remote_url.contains("://") {
-        return None;
-    }
-    let (host_part, path) = remote_url.split_once(':')?;
-    if host_part.contains('/') || path.is_empty() {
-        return None;
-    }
-    let host = host_part
-        .rsplit_once('@')
-        .map(|(_, host)| host)
-        .unwrap_or(host_part);
-    Some((host, path))
-}
-
-/// Resolve an SSH host alias through `~/.ssh/config`, so a remote written
-/// against an alias still identifies its real instance.
-fn resolve_ssh_hostname(alias: &str) -> String {
-    let Ok(home) = std::env::var("HOME") else {
-        return alias.to_string();
-    };
-    let Ok(content) = fs::read_to_string(PathBuf::from(home).join(".ssh/config")) else {
-        return alias.to_string();
-    };
-    resolve_ssh_hostname_from_config(alias, &content)
-}
-
-/// Only exact `Host` patterns are matched; wildcards, negation, `Match`, and
-/// `Include` fall through to the alias unchanged.
-fn resolve_ssh_hostname_from_config(alias: &str, config: &str) -> String {
-    let mut in_block = false;
-    for raw in config.lines() {
-        let line = raw.split_once('#').map_or(raw, |(before, _)| before).trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (key, value) = line
-            .split_once(|c: char| c.is_whitespace() || c == '=')
-            .unwrap_or((line, ""));
-        let value = value
-            .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
-            .trim();
-
-        if key.eq_ignore_ascii_case("Host") {
-            in_block = value.split_whitespace().any(|pattern| pattern == alias);
-        } else if key.eq_ignore_ascii_case("Match") {
-            in_block = false;
-        } else if in_block && key.eq_ignore_ascii_case("HostName") {
-            return value.to_string();
-        }
-    }
-    alias.to_string()
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::forge::remote_url::resolve_ssh_hostname_from_config;
+    #[test]
+    fn scp_host_prefers_resolved_gitea_host_over_alias() {
+        assert_eq!(
+            super::scp_gitea_host("gitea-work", "code.gitea.example.com"),
+            Some("code.gitea.example.com")
+        );
+        assert_eq!(
+            super::scp_gitea_host("gitea-work", "bastion.example.com"),
+            Some("gitea-work")
+        );
+    }
+
+    #[test]
+    fn scp_remote_prefers_resolved_gitea_host_over_alias() {
+        let repo = super::parse_gitea_remote_url_with("git@gitea-work:o/r.git", |_| {
+            "code.gitea.example.com".to_string()
+        })
+        .unwrap();
+        assert_eq!(repo.host, "code.gitea.example.com");
+    }
+
     use super::*;
     use crate::forge::submit::InlineComment;
     use std::cell::RefCell;
@@ -1924,8 +1803,9 @@ mod tests {
 
     #[test]
     fn should_list_open_pull_requests_with_paging_from_total_count() {
+        // The window plus a look-ahead row needs two one-row pages.
         let runner = FakeTeaRunner::default().route_counted(
-            "/pulls?state=open&page=1",
+            "/pulls?state=open&page=",
             &format!("[{PR_JSON}]"),
             5,
         );
@@ -1939,6 +1819,88 @@ mod tests {
         assert_eq!(page.total_loaded, 1);
         assert!(page.has_more, "5 total with 1 loaded means more remain");
         assert!(backend.runner.endpoints()[0].contains("state=open"));
+    }
+
+    #[test]
+    fn should_load_more_open_pull_requests_when_the_server_caps_the_page() {
+        // Server cap of 1 row/page while the picker asks for 2: the second
+        // window must start at row 2, not refetch page 1.
+        let pr = |n: u64| PR_JSON.replace("\"number\": 42", &format!("\"number\": {n}"));
+        let runner = FakeTeaRunner::default()
+            .route("page=1&", &format!("[{}]", pr(1)))
+            .route("page=2&", &format!("[{}]", pr(2)))
+            .route("page=3&", &format!("[{}]", pr(3)))
+            .route("page=4&", "[]");
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let mut query = PullRequestListQuery::first_page(repo(), 2);
+        query.already_loaded = 2;
+        let page = backend.list_pull_requests(query).expect("page");
+
+        let numbers: Vec<u64> = page.pull_requests.iter().map(|p| p.number).collect();
+        assert_eq!(numbers, vec![3]);
+        assert_eq!(page.total_loaded, 3);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn should_not_report_more_when_the_window_ends_exactly_at_the_last_row() {
+        let pr = |n: u64| PR_JSON.replace("\"number\": 42", &format!("\"number\": {n}"));
+        let runner = FakeTeaRunner::default()
+            .route("page=1&", &format!("[{}]", pr(1)))
+            .route("page=2&", &format!("[{}]", pr(2)))
+            .route("page=3&", "[]");
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let page = backend
+            .list_pull_requests(PullRequestListQuery::first_page(repo(), 2))
+            .expect("page");
+
+        assert_eq!(page.pull_requests.len(), 2);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn should_report_more_and_stop_fetching_once_the_window_and_lookahead_are_read() {
+        let pr = |n: u64| PR_JSON.replace("\"number\": 42", &format!("\"number\": {n}"));
+        let runner = FakeTeaRunner::default()
+            .route("page=1&", &format!("[{}]", pr(1)))
+            .route("page=2&", &format!("[{}]", pr(2)))
+            .route("page=3&", &format!("[{}]", pr(3)))
+            .route("page=4&", &format!("[{}]", pr(4)));
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let page = backend
+            .list_pull_requests(PullRequestListQuery::first_page(repo(), 2))
+            .expect("page");
+
+        let numbers: Vec<u64> = page.pull_requests.iter().map(|p| p.number).collect();
+        assert_eq!(numbers, vec![1, 2]);
+        assert!(page.has_more, "row 3 exists");
+        assert_eq!(
+            backend.runner.endpoints().len(),
+            3,
+            "window + one look-ahead"
+        );
+    }
+
+    #[test]
+    fn should_error_instead_of_dropping_the_lookahead_row_at_the_page_bound() {
+        // 1 row/page, window ends at row 200, look-ahead row 201 is beyond
+        // MAX_PAGES: has_more must not silently become false.
+        for header in [true, false] {
+            let body = format!("[{PR_JSON}]");
+            let runner = if header {
+                FakeTeaRunner::default().route_counted("/pulls?state=open", &body, 201)
+            } else {
+                FakeTeaRunner::default().route("/pulls?state=open", &body)
+            };
+            let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+            let mut query = PullRequestListQuery::first_page(repo(), 2);
+            query.already_loaded = 198;
+            let result = backend.list_pull_requests(query);
+            assert!(
+                matches!(result, Err(TuicrError::ForgeLimit(_))),
+                "header={header}: {result:?}"
+            );
+        }
     }
 
     #[test]
@@ -2025,81 +1987,272 @@ mod tests {
     }
 
     #[test]
-    fn should_fetch_a_commit_range_diff_from_the_compare_endpoint() {
+    fn should_refuse_a_commit_range_without_a_local_clone() {
         let runner = FakeTeaRunner::default().route("/compare/", PR_DIFF);
         let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
-        let patches = backend
+        let error = backend
             .get_pull_request_commit_range_diff(&details(), "start", "end")
-            .expect("range diff");
+            .unwrap_err();
 
-        assert_eq!(patches.len(), 1);
-        assert_eq!(
-            patches[0].new_path.as_deref(),
-            Some(Path::new("src/lib.rs"))
-        );
-        assert!(
-            backend.runner.endpoints().iter().any(
-                |endpoint| endpoint.contains("start...end") && endpoint.contains("output=diff")
-            )
-        );
-    }
-
-    // ----- raw diff metadata recovery -----
-
-    #[test]
-    fn should_recover_metadata_from_raw_diff_headers() {
-        let added = metadata_from_patch_block(
-            "diff --git a/new.rs b/new.rs\nnew file mode 100644\n--- /dev/null\n+++ b/new.rs\n@@\n",
-        )
-        .expect("added");
-        assert_eq!(added.status, FileStatus::Added);
-        assert_eq!(added.old_path, None);
-        assert_eq!(added.new_path.as_deref(), Some(Path::new("new.rs")));
-
-        let deleted = metadata_from_patch_block(
-            "diff --git a/gone.rs b/gone.rs\ndeleted file mode 100644\n--- a/gone.rs\n+++ /dev/null\n@@\n",
-        )
-        .expect("deleted");
-        assert_eq!(deleted.status, FileStatus::Deleted);
-        assert_eq!(deleted.old_path.as_deref(), Some(Path::new("gone.rs")));
-        assert_eq!(deleted.new_path, None);
-
-        let renamed = metadata_from_patch_block(
-            "diff --git a/old.rs b/new.rs\nsimilarity index 98%\nrename from old.rs\nrename to new.rs\n",
-        )
-        .expect("renamed");
-        assert_eq!(renamed.status, FileStatus::Renamed);
-        assert_eq!(renamed.old_path.as_deref(), Some(Path::new("old.rs")));
-        assert_eq!(renamed.new_path.as_deref(), Some(Path::new("new.rs")));
-    }
-
-    #[test]
-    fn should_recover_metadata_for_a_mode_only_change() {
-        // No `---`/`+++` lines at all; the `diff --git` line is the only source.
-        let metadata = metadata_from_patch_block(
-            "diff --git a/script.sh b/script.sh\nold mode 100644\nnew mode 100755\n",
-        )
-        .expect("mode change");
-        assert_eq!(metadata.status, FileStatus::Modified);
-        assert_eq!(metadata.new_path.as_deref(), Some(Path::new("script.sh")));
-    }
-
-    #[test]
-    fn should_split_a_diff_git_line_whose_paths_contain_spaces() {
-        assert_eq!(
-            parse_diff_git_line("diff --git a/my dir/file b.rs b/my dir/file b.rs"),
-            Some((
-                "my dir/file b.rs".to_string(),
-                "my dir/file b.rs".to_string()
-            ))
-        );
-    }
-
-    #[test]
-    fn should_report_an_actionable_error_for_an_unreadable_diff_header() {
-        let error =
-            metadata_from_patch_block("diff --git \"a/we\\.rd\" \"b/we\\.rd\"\n").unwrap_err();
         assert!(error.to_string().contains("local clone"), "{error}");
+        assert!(backend.runner.endpoints().is_empty());
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        run_command_output("git", Some(dir), args).expect("git")
+    }
+
+    /// Restores the process-global SSH transport variables on drop.
+    #[cfg(unix)]
+    struct SshEnv {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        saved: [(&'static str, Option<std::ffi::OsString>); 2],
+    }
+
+    #[cfg(unix)]
+    impl SshEnv {
+        fn set(stub: &Path) -> Self {
+            let lock = crate::forge::GIT_SSH_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let saved = ["GIT_SSH_COMMAND", "GIT_SSH_VARIANT"].map(|k| (k, std::env::var_os(k)));
+            unsafe {
+                std::env::set_var("GIT_SSH_COMMAND", stub);
+                std::env::set_var("GIT_SSH_VARIANT", "ssh");
+            }
+            Self { _lock: lock, saved }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for SshEnv {
+        fn drop(&mut self) {
+            self.restore();
+        }
+    }
+
+    #[cfg(unix)]
+    impl SshEnv {
+        fn restore(&self) {
+            for (key, value) in &self.saved {
+                unsafe {
+                    match value {
+                        Some(v) => std::env::set_var(key, v),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+
+    /// A "server" repo serving `refs/pull/42/head` over a stub SSH transport,
+    /// and a clone whose `origin` URL parses as the Gitea repo.
+    #[cfg(unix)]
+    struct RangeFixture {
+        server: tempfile::TempDir,
+        clone: tempfile::TempDir,
+        start: String,
+        end: String,
+        _env: SshEnv,
+    }
+
+    #[cfg(unix)]
+    impl RangeFixture {
+        fn new(clone_args: &[&str], origin_url: &str) -> Self {
+            let server = tempfile::tempdir().expect("server");
+            let clone = tempfile::tempdir().expect("clone");
+            git(server.path(), &["init", "--quiet"]);
+            git(clone.path(), &[&["init", "--quiet"], clone_args].concat());
+            for dir in [server.path(), clone.path()] {
+                git(dir, &["config", "user.email", "t@example.com"]);
+                git(dir, &["config", "user.name", "t"]);
+                git(dir, &["config", "core.quotepath", "true"]);
+            }
+            std::fs::write(server.path().join("x b"), "one\n").unwrap();
+            std::fs::write(server.path().join("f\u{e4}.rs"), "one\n").unwrap();
+            git(server.path(), &["add", "."]);
+            git(server.path(), &["commit", "--quiet", "-m", "base"]);
+            let start = git(server.path(), &["rev-parse", "HEAD"])
+                .trim()
+                .to_string();
+            git(server.path(), &["config", "core.fileMode", "false"]);
+            git(server.path(), &["update-index", "--chmod=+x", "x b"]);
+            std::fs::write(server.path().join("x b"), "one\ntwo\n").unwrap();
+            std::fs::write(server.path().join("f\u{e4}.rs"), "two\n").unwrap();
+            git(server.path(), &["add", "."]);
+            git(server.path(), &["commit", "--quiet", "-m", "head"]);
+            let end = git(server.path(), &["rev-parse", "HEAD"])
+                .trim()
+                .to_string();
+            git(server.path(), &["update-ref", "refs/pull/42/head", &end]);
+            git(server.path(), &["checkout", "--quiet", "--detach", &start]);
+
+            // (`url.<x>.insteadOf` is no use: libgit2 reports the rewritten URL.)
+            git(clone.path(), &["remote", "add", "origin", origin_url]);
+            let stub = server.path().join("stub-ssh.sh");
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\nfor last; do :; done\n\
+                     exec sh -c \"$(printf '%s' \"$last\" | sed \"s#/[^ ']*\\.git#{}/.git#\")\"\n",
+                    server.path().display()
+                ),
+            )
+            .unwrap();
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let env = SshEnv::set(&stub);
+            Self {
+                server,
+                clone,
+                start,
+                end,
+                _env: env,
+            }
+        }
+
+        fn standard() -> Self {
+            Self::new(&[], "ssh://git@gitea.example.com/team/service.git")
+        }
+
+        fn range(&self, requested_end: &str) -> Result<Vec<FilePatch>> {
+            GiteaTeaBackend::with_runner(Some(repo()), FakeTeaRunner::default())
+                .with_local_checkout(Some(self.clone.path().to_path_buf()))
+                .get_pull_request_commit_range_diff(&details(), &self.start, requested_end)
+        }
+    }
+
+    #[cfg(unix)]
+    fn sorted_new_paths(patches: &[FilePatch]) -> Vec<PathBuf> {
+        let mut paths: Vec<_> = patches
+            .iter()
+            .map(|p| p.new_path.clone().expect("new path"))
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_take_range_paths_from_git_after_fetching_the_pull_head() {
+        let fx = RangeFixture::standard();
+        let patches = fx.range(&fx.end).expect("range diff");
+        assert_eq!(
+            sorted_new_paths(&patches),
+            [PathBuf::from("f\u{e4}.rs"), PathBuf::from("x b")]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_restore_the_ssh_environment_after_a_fetch_test() {
+        let env = SshEnv::set(Path::new("/nonexistent/stub"));
+        assert_eq!(
+            std::env::var_os("GIT_SSH_COMMAND").as_deref(),
+            Some(std::ffi::OsStr::new("/nonexistent/stub"))
+        );
+        env.restore();
+        for (key, value) in &env.saved {
+            assert_eq!(&std::env::var_os(key), value, "{key} leaked");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_move_configured_tracking_refs_when_fetching_the_pull_head() {
+        let fx = RangeFixture::standard();
+        git(
+            fx.clone.path(),
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/pull/*/head:refs/remotes/origin/pr/*",
+            ],
+        );
+        git(
+            fx.clone.path(),
+            &["commit", "--quiet", "--allow-empty", "-m", "local"],
+        );
+        let local = git(fx.clone.path(), &["rev-parse", "HEAD"])
+            .trim()
+            .to_string();
+        git(
+            fx.clone.path(),
+            &["update-ref", "refs/remotes/origin/pr/42", &local],
+        );
+        fx.range(&fx.end).expect("range diff");
+        assert_eq!(
+            git(fx.clone.path(), &["rev-parse", "refs/remotes/origin/pr/42"]).trim(),
+            local
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_fail_when_the_requested_end_is_not_the_fetched_head() {
+        let fx = RangeFixture::standard();
+        // A force-pushed PR: the commit the caller asks about is on the
+        // server but not behind refs/pull/42/head.
+        std::fs::write(fx.server.path().join("x b"), "other\n").unwrap();
+        git(fx.server.path(), &["commit", "--quiet", "-am", "stale"]);
+        let stale = git(fx.server.path(), &["rev-parse", "HEAD"])
+            .trim()
+            .to_string();
+        let error = fx.range(&stale).unwrap_err();
+        assert!(
+            error.to_string().contains("not in the local clone"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_fetch_from_a_remote_for_a_different_repository() {
+        let fx = RangeFixture::new(&[], "ssh://git@gitea.example.com/team/other.git");
+        let error = fx.range(&fx.end).unwrap_err();
+        assert!(
+            error.to_string().contains("not in the local clone"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_fetch_tags_even_when_the_remote_is_configured_for_them() {
+        let fx = RangeFixture::standard();
+        git(fx.server.path(), &["tag", "unrequested", &fx.end]);
+        git(
+            fx.clone.path(),
+            &["config", "remote.origin.tagOpt", "--tags"],
+        );
+        fx.range(&fx.end).expect("range diff");
+        assert_eq!(git(fx.clone.path(), &["tag"]).trim(), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_fetch_the_pull_head_into_a_reftable_clone() {
+        let version = git(Path::new("."), &["--version"]);
+        let supports = version
+            .split_whitespace()
+            .nth(2)
+            .and_then(|v| {
+                let mut it = v.split('.').map(|n| n.parse::<u32>().ok());
+                Some((it.next()??, it.next()??))
+            })
+            .is_some_and(|v| v >= (2, 45));
+        if !supports {
+            return;
+        }
+        let fx = RangeFixture::new(
+            &["--ref-format=reftable"],
+            "ssh://git@gitea.example.com/team/service.git",
+        );
+        assert!(git2::Repository::discover(fx.clone.path()).is_err());
+        let patches = fx.range(&fx.end).expect("range diff");
+        assert_eq!(patches.len(), 2);
     }
 
     // ----- review threads -----
@@ -2120,10 +2273,8 @@ mod tests {
             resolver: resolved.then(|| GiteaUser {
                 login: "resolver".to_string(),
             }),
-            pull_request_review_id: 1,
             created_at: None,
             path: path.to_string(),
-            commit_id: String::new(),
             html_url: format!("https://gitea.example.com/c/{id}"),
             position: new_line,
             original_position: old_line,
@@ -2167,6 +2318,49 @@ mod tests {
         assert!(!threads[0].is_outdated);
     }
 
+    const ONE_REVIEW: &str = r#"[{"id":1,"state":"APPROVED","body":"","user":{"login":"a"},"comments_count":0,"commit_id":"","html_url":"u"}]"#;
+    const ONE_ISSUE_COMMENT: &str = r#"[{"id":1,"body":"hi","user":{"login":"a"},"html_url":"u","created_at":"2026-08-20T10:00:00Z"}]"#;
+
+    #[test]
+    fn should_surface_the_page_bound_from_reviews_in_pull_request_info() {
+        // 1 row/page and a total past MAX_PAGES: the reviews list is partial.
+        let runner = FakeTeaRunner::default()
+            .route("/pulls/42", PR_JSON)
+            .route_counted("/pulls/42/reviews", ONE_REVIEW, 201)
+            .route("/issues/42/comments", "[]");
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let result = backend.get_pull_request_info(PullRequestTarget::number(42, "42"));
+        assert!(
+            matches!(result, Err(TuicrError::ForgeLimit(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn should_surface_the_page_bound_from_issue_comments_in_pull_request_info() {
+        let runner = FakeTeaRunner::default()
+            .route("/pulls/42", PR_JSON)
+            .route("/pulls/42/reviews", "[]")
+            .route_counted("/issues/42/comments", ONE_ISSUE_COMMENT, 201);
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let result = backend.get_pull_request_info(PullRequestTarget::number(42, "42"));
+        assert!(
+            matches!(result, Err(TuicrError::ForgeLimit(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn should_keep_pull_request_info_best_effort_for_other_fetch_errors() {
+        // No reviews/comments routes: 404s degrade to empty lists.
+        let runner = FakeTeaRunner::default().route("/pulls/42", PR_JSON);
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let info = backend
+            .get_pull_request_info(PullRequestTarget::number(42, "42"))
+            .expect("info");
+        assert!(info.issue_comments.is_empty());
+    }
+
     #[test]
     fn should_keep_review_summaries_with_prose_and_drop_bare_approvals() {
         let reviews = format!(
@@ -2185,6 +2379,24 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].body, "please fix");
         assert_eq!(summaries[0].state, RemoteReviewState::ChangesRequested);
+    }
+
+    #[test]
+    fn should_read_back_a_pending_draft_review_summary() {
+        // `:submit draft` leaves a PENDING review with a body; if it is not
+        // read back, the post-submit prune deletes the only local copy.
+        let reviews = r#"[{"id":9,"state":"PENDING","body":"draft body","user":{"login":"me"},"comments_count":0,"commit_id":"h","html_url":"u9"}]"#;
+        let runner = FakeTeaRunner::default()
+            .route("/pulls/42", PR_JSON)
+            .route_counted("/pulls/42/reviews", reviews, 1);
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let summaries = backend
+            .list_review_summaries(&details())
+            .expect("summaries");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].body, "draft body");
+        assert_eq!(summaries[0].state, RemoteReviewState::Pending);
     }
 
     #[test]
@@ -2231,6 +2443,7 @@ mod tests {
                 CreateReviewRequest {
                     event,
                     commit_id: "headsha",
+                    base_commit_id: None,
                     body,
                     comments,
                 },
@@ -2330,6 +2543,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::RequestChanges,
                     commit_id: "headsha",
+                    base_commit_id: None,
                     body: "   ",
                     comments: &[],
                 },
@@ -2348,6 +2562,7 @@ mod tests {
                 CreateReviewRequest {
                     event: SubmitEvent::Comment,
                     commit_id: "headsha",
+                    base_commit_id: None,
                     body: "",
                     comments: &[],
                 },
@@ -2356,24 +2571,119 @@ mod tests {
         assert!(error.to_string().contains("at least one inline comment"));
     }
 
+    // ----- PR info -----
+
+    fn review_json(id: u64, state: &str, at: &str, extra: &str) -> String {
+        format!(
+            r#"{{"id":{id},"state":"{state}","body":"","user":{{"login":"a"}},"submitted_at":"{at}","comments_count":0,"commit_id":"","html_url":"u"{extra}}}"#
+        )
+    }
+
+    fn info_for(reviews: &[String]) -> (PullRequestInfo, usize) {
+        let runner = FakeTeaRunner::default()
+            .route("/pulls/42", PR_JSON)
+            .route_counted(
+                "/pulls/42/reviews",
+                &format!("[{}]", reviews.join(",")),
+                reviews.len(),
+            );
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let info = backend
+            .get_pull_request_info(PullRequestTarget::number(42, "42"))
+            .expect("info");
+        let detail_gets = backend
+            .runner
+            .endpoints()
+            .iter()
+            .filter(|e| e.ends_with("/pulls/42"))
+            .count();
+        (info, detail_gets)
+    }
+
+    #[test]
+    fn should_fetch_pull_request_details_once_for_the_info_panel() {
+        let (_, detail_gets) = info_for(&[]);
+        assert_eq!(detail_gets, 1);
+    }
+
+    #[test]
+    fn should_keep_a_decisive_vote_after_a_later_comment_in_either_order() {
+        for decisive in ["APPROVED", "REQUEST_CHANGES"] {
+            let want = if decisive == "APPROVED" {
+                "APPROVED"
+            } else {
+                "CHANGES_REQUESTED"
+            };
+            let vote = review_json(1, decisive, "2026-08-20T10:00:00Z", "");
+            let comment = review_json(2, "COMMENT", "2026-08-20T11:00:00Z", "");
+            for reviews in [
+                [vote.clone(), comment.clone()],
+                [comment.clone(), vote.clone()],
+            ] {
+                let (info, _) = info_for(&reviews);
+                assert_eq!(info.review_decision.as_deref(), Some(want));
+                assert_eq!(info.latest_reviews.len(), 1);
+                assert_eq!(info.latest_reviews[0].state, want);
+            }
+        }
+    }
+
+    #[test]
+    fn should_let_a_newer_decisive_review_replace_an_older_one() {
+        let approve = review_json(1, "APPROVED", "2026-08-20T10:00:00Z", "");
+        let reject = review_json(2, "REQUEST_CHANGES", "2026-08-20T11:00:00Z", "");
+        for reviews in [
+            [approve.clone(), reject.clone()],
+            [reject.clone(), approve.clone()],
+        ] {
+            let (info, _) = info_for(&reviews);
+            assert_eq!(info.review_decision.as_deref(), Some("CHANGES_REQUESTED"));
+        }
+    }
+
+    #[test]
+    fn should_ignore_a_dismissed_vote() {
+        let vote = review_json(
+            1,
+            "APPROVED",
+            "2026-08-20T10:00:00Z",
+            r#","dismissed":true"#,
+        );
+        let (info, _) = info_for(&[vote]);
+        assert_eq!(info.review_decision, None);
+        assert!(info.latest_reviews.is_empty());
+    }
+
+    #[test]
+    fn should_reject_info_for_a_pull_request_without_commit_shas() {
+        let json = PR_JSON.replace("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "");
+        let runner = FakeTeaRunner::default().route("/pulls/42", &json);
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let error = backend
+            .get_pull_request_info(PullRequestTarget::number(42, "42"))
+            .unwrap_err();
+        assert!(error.to_string().contains("head and base"), "{error}");
+    }
+
     // ----- commits -----
 
     #[test]
     fn should_convert_commits_using_the_first_message_line_as_the_summary() {
-        let commit = into_pull_request_commit(GiteaCommit {
-            sha: "abcdef1234567890".to_string(),
-            commit: Some(super::super::models::GiteaCommitPayload {
-                message: "fix: the thing\n\nlonger body".to_string(),
-                author: Some(super::super::models::GiteaCommitAuthor {
-                    name: "Fallback Name".to_string(),
-                }),
-            }),
-            author: Some(GiteaUser {
-                login: "handle".to_string(),
-            }),
-            created: None,
-        });
+        // given
+        let json = r#"{
+            "sha": "abcdef1234567890",
+            "commit": {
+                "message": "fix: the thing\n\nlonger body\n",
+                "author": { "name": "Fallback Name" }
+            },
+            "author": { "login": "handle" }
+        }"#;
+        let payload: GiteaCommit = serde_json::from_str(json).unwrap();
+        // when
+        let commit = into_pull_request_commit(payload);
+        // then
         assert_eq!(commit.summary, "fix: the thing");
+        assert_eq!(commit.body.as_deref(), Some("longer body"));
         assert_eq!(commit.short_oid, "abcdef1");
         assert_eq!(commit.author, "handle");
     }

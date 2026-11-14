@@ -101,14 +101,26 @@ impl App {
         });
     }
 
+    /// Line range and side of the selection, or `None` when it spans files.
     pub fn visual_selection_line_range(&self) -> Option<(LineRange, LineSide)> {
+        self.visual_selection_target()
+            .map(|(_, range, side)| (range, side))
+    }
+
+    /// File, line range and side of the selection. Each file's annotations
+    /// are contiguous, so equal endpoint files mean one file throughout.
+    fn visual_selection_target(&self) -> Option<(usize, LineRange, LineSide)> {
         let sel = self.get_visual_selection()?;
         let (start, end) = sel.ordered();
+        let file_idx = annotation_file_idx(self.line_annotations.get(start.annotation_idx)?)?;
+        if annotation_file_idx(self.line_annotations.get(end.annotation_idx)?)? != file_idx {
+            return None;
+        }
         let start_line = self.annotation_line_for_side(start.annotation_idx, start.side);
         let end_line = self.annotation_line_for_side(end.annotation_idx, end.side);
         let start_ln = start_line?;
         let end_ln = end_line?;
-        Some((LineRange::new(start_ln, end_ln), start.side))
+        Some((file_idx, LineRange::new(start_ln, end_ln), start.side))
     }
 
     fn annotation_line_for_side(&self, idx: usize, side: LineSide) -> Option<u32> {
@@ -130,8 +142,77 @@ impl App {
         }
     }
 
+    pub fn enter_suggestion_from_visual(&mut self) {
+        let Some(sel) = self.get_visual_selection().copied() else {
+            return;
+        };
+        let (start, end) = sel.ordered();
+        // Suggestions replace whole lines, even for a partial mouse selection.
+        if start.side != LineSide::New || end.side != LineSide::New {
+            self.set_warning("Suggestions can only replace lines on the new side of the diff");
+            return;
+        }
+        let Some((range, _)) = self.visual_selection_line_range() else {
+            self.set_warning("Invalid visual selection");
+            return;
+        };
+        let info = if self.forge_kind() == Some(crate::forge::traits::ForgeKind::GitLab) {
+            let above = range.end - range.start;
+            if above > 100 {
+                self.set_warning("GitLab suggestions can cover at most 100 lines above the anchor");
+                return;
+            }
+            format!("suggestion:-{above}+0")
+        } else {
+            "suggestion".to_string()
+        };
+        // Require one hunk with a new-side source line on every selected code row.
+        let mut selected_hunk = None;
+        for idx in start.annotation_idx..=end.annotation_idx {
+            let hunk = match self.line_annotations.get(idx) {
+                Some(
+                    AnnotatedLine::LineComment { .. } | AnnotatedLine::RemoteThreadLine { .. },
+                ) => {
+                    continue;
+                }
+                Some(AnnotatedLine::DiffLine {
+                    file_idx, hunk_idx, ..
+                })
+                | Some(AnnotatedLine::SideBySideLine {
+                    file_idx, hunk_idx, ..
+                }) => Some((*file_idx, *hunk_idx)),
+                _ => None,
+            };
+            if hunk.is_none()
+                || selected_hunk.is_some_and(|selected| Some(selected) != hunk)
+                || self.annotation_line_for_side(idx, LineSide::New).is_none()
+            {
+                self.set_warning(
+                    "Suggestions must stay within one diff hunk, without gaps or expanded context",
+                );
+                return;
+            }
+            selected_hunk = hunk;
+        }
+        let code = (start.annotation_idx..=end.annotation_idx)
+            .filter_map(|idx| self.diff_line_for_side(idx, start.side))
+            .map(|line| line.raw_content.as_deref().unwrap_or(&line.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let fence_len = code.split(|c| c != '`').map(str::len).max().unwrap_or(0) + 1;
+        let fence = "`".repeat(fence_len.max(3));
+
+        self.enter_comment_from_visual();
+        if self.input_mode == InputMode::Comment {
+            self.comment_buffer = format!("\n{fence}{info}\n{code}\n{fence}");
+            self.comment_cursor = 0;
+        }
+    }
+
     pub fn enter_comment_from_visual(&mut self) {
-        if let Some((range, side)) = self.visual_selection_line_range() {
+        if let Some((file_idx, range, side)) = self.visual_selection_target() {
+            // Paging in visual mode can move the current file off the selection.
+            self.diff_state.current_file_idx = file_idx;
             self.comment_line_range = Some((range, side));
             self.comment_line = Some((range.end, side));
             self.input_mode = InputMode::Comment;

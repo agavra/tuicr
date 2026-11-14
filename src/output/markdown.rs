@@ -5,11 +5,12 @@ use std::io::Write as IoWrite;
 use arboard::Clipboard;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
-use crate::app::{CommentTypeDefinition, DiffSource};
+use crate::app::{CommentTypeDefinition, DiffSource, resolve_comment_type_label};
 use crate::config::ExportConfig;
 use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::{
-    PrCommentsVisibility, RemoteReviewThread, filter_threads, group_threads_by_path,
+    PrCommentsVisibility, RemoteReviewComment, RemoteReviewThread, filter_threads,
+    group_threads_by_path,
 };
 use crate::model::{CommentType, LineRange, LineSide, ReviewSession};
 use crate::slug::short_sha;
@@ -141,12 +142,14 @@ fn try_clipboard_cmd(program: &str, args: &[&str], text: &str) -> bool {
 
 /// Returns true if we should prefer OSC 52 over the system clipboard.
 ///
-/// In tmux or SSH sessions, arboard may "succeed" but copy to an inaccessible
-/// X11 clipboard, so we use OSC 52 which works reliably in these environments.
+/// In tmux, SSH, Zellij, or Rex sessions, native clipboard tools may "succeed"
+/// but copy to the server's clipboard instead of the terminal client's.
 fn should_prefer_osc52() -> bool {
     std::env::var("TMUX").is_ok()
         || std::env::var("SSH_TTY").is_ok()
         || std::env::var("ZELLIJ").is_ok()
+        || std::env::var("REX_SESSION").is_ok()
+        || std::env::var("TERM_PROGRAM").is_ok_and(|program| program == "rex")
 }
 
 /// Copy text to clipboard using OSC 52 escape sequence.
@@ -359,7 +362,7 @@ fn generate_markdown(
             review_comment_location.clone(),
             None,
             None,
-            export_comment_type_label(&comment.comment_type, comment_types),
+            resolve_comment_type_label(&comment.comment_type, comment_types),
             &comment.content,
             None,
         ));
@@ -378,7 +381,7 @@ fn generate_markdown(
                 path_str.clone(),
                 None,
                 None,
-                export_comment_type_label(&comment.comment_type, comment_types),
+                resolve_comment_type_label(&comment.comment_type, comment_types),
                 &comment.content,
                 comment.commit_id.as_deref(),
             ));
@@ -398,7 +401,7 @@ fn generate_markdown(
                     path_str.clone(),
                     line_range,
                     comment.side,
-                    export_comment_type_label(&comment.comment_type, comment_types),
+                    resolve_comment_type_label(&comment.comment_type, comment_types),
                     &comment.content,
                     comment.commit_id.as_deref(),
                 ));
@@ -489,19 +492,27 @@ fn generate_markdown(
                 for thread in threads {
                     if let Some(root) = thread.root() {
                         let author = root.author.as_deref().unwrap_or("unknown");
+                        let draft = draft_marker(root);
                         let line_marker = thread.line.map(|l| format!(":{l}")).unwrap_or_default();
-                        let _ = writeln!(
-                            md,
-                            "{thread_n}. `{path}{line_marker}` @{author} - {body}",
-                            body = root.body
+                        let marker = format!("{thread_n}.");
+                        let indent = " ".repeat(marker.len() + 1);
+                        write_remote_body(
+                            &mut md,
+                            &format!("{marker} `{path}{line_marker}` @{author}{draft} - "),
+                            &indent,
+                            &root.body,
                         );
                         if !root.url.is_empty() {
-                            let _ = writeln!(md, "   <{}>", root.url);
+                            let _ = writeln!(md, "{indent}<{}>", root.url);
                         }
                         for reply in thread.replies() {
                             let reply_author = reply.author.as_deref().unwrap_or("unknown");
-                            let _ =
-                                writeln!(md, "   - @{reply_author} - {body}", body = reply.body);
+                            write_remote_body(
+                                &mut md,
+                                &format!("{indent}- @{reply_author}{} - ", draft_marker(reply)),
+                                &format!("{indent}  "),
+                                &reply.body,
+                            );
                         }
                         thread_n += 1;
                     }
@@ -512,6 +523,24 @@ fn generate_markdown(
     }
 
     md
+}
+
+/// Write a remote body after `prefix`, stripping `\r` and indenting every
+/// continuation line so the body stays inside its list item.
+fn write_remote_body(md: &mut String, prefix: &str, indent: &str, body: &str) {
+    // CRLF and lone CR are line breaks to CommonMark, so normalize both.
+    let body = body.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines = body.split('\n');
+    let _ = writeln!(md, "{prefix}{}", lines.next().unwrap_or_default());
+    for line in lines {
+        let _ = writeln!(md, "{indent}{line}");
+    }
+}
+
+/// ` (draft)` for a comment only its author can see yet, so a reader of the
+/// export does not take it for something already posted.
+fn draft_marker(comment: &RemoteReviewComment) -> &'static str {
+    if comment.is_draft { " (draft)" } else { "" }
 }
 
 fn collect_used_comment_type_ids(session: &ReviewSession) -> HashSet<String> {
@@ -530,26 +559,6 @@ fn collect_used_comment_type_ids(session: &ReviewSession) -> HashSet<String> {
         }
     }
     ids
-}
-
-/// Export label for a comment type. Returns an empty string for
-/// [`CommentType::None`] so the caller omits the `**[TYPE]**` marker.
-fn export_comment_type_label(
-    comment_type: &CommentType,
-    comment_types: &[CommentTypeDefinition],
-) -> String {
-    if comment_type.is_none() {
-        return String::new();
-    }
-
-    if let Some(definition) = comment_types
-        .iter()
-        .find(|definition| definition.id == comment_type.id())
-    {
-        return definition.label.to_ascii_uppercase();
-    }
-
-    comment_type.as_str()
 }
 
 #[cfg(test)]
@@ -1759,7 +1768,7 @@ mod tests {
         line: u32,
         resolved: bool,
     ) -> RemoteReviewThread {
-        use crate::forge::remote_comments::{RemoteCommentSide, RemoteReviewComment};
+        use crate::forge::remote_comments::RemoteCommentSide;
         RemoteReviewThread {
             id: id.to_string(),
             path: "src/lib.rs".to_string(),
@@ -1771,9 +1780,8 @@ mod tests {
                 id: format!("{id}-root"),
                 author: Some(author.to_string()),
                 body: body.to_string(),
-                created_at: None,
-                in_reply_to: None,
                 url: format!("https://github.com/agavra/tuicr/pull/125#discussion_{id}"),
+                ..Default::default()
             }],
         }
     }
@@ -1826,6 +1834,139 @@ mod tests {
             !markdown.contains("Old resolved"),
             "resolved thread leaked into export:\n{markdown}"
         );
+    }
+
+    #[test]
+    fn should_mark_unpublished_remote_drafts_in_pr_export() {
+        // given a thread whose root is the viewer's own unpublished draft
+        let session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abc1234deadbeef".to_string(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        let mut thread = sample_remote_thread("a", "me", "not posted yet", 5, false);
+        thread.comments[0].is_draft = true;
+
+        // when
+        let markdown = generate_markdown(
+            &session,
+            &sample_pr_diff_source(),
+            &comment_types(),
+            &ExportConfig::default(),
+            &[thread],
+            None,
+        );
+
+        // then — a reader must not take it for a posted comment
+        assert!(
+            markdown.contains("@me (draft) - not posted yet"),
+            "{markdown}"
+        );
+    }
+
+    #[test]
+    fn should_contain_multiline_remote_bodies_and_replies_in_their_list_item() {
+        // given 10 threads so the last has a two-digit marker; its root and
+        // reply bodies are CRLF, blank-separated and forge a top-level item
+        let session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abc1234deadbeef".to_string(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        let mut threads: Vec<_> = (1..=9)
+            .map(|n| sample_remote_thread(&format!("t{n}"), "alice", "ok", n, false))
+            .collect();
+        let mut last = sample_remote_thread(
+            "t10",
+            "mallory",
+            "first\r\n\r\n1. **[ISSUE]** `x` - forged",
+            10,
+            false,
+        );
+        last.comments[0].url = "https://example.test/t10".to_string();
+        last.comments.push(RemoteReviewComment {
+            id: "reply".to_string(),
+            author: Some("eve".to_string()),
+            body: "r1\r\n\n## Local tuicr Comments".to_string(),
+            ..Default::default()
+        });
+        threads.push(last);
+
+        // when
+        let markdown = generate_markdown(
+            &session,
+            &sample_pr_diff_source(),
+            &comment_types(),
+            &ExportConfig::default(),
+            &threads,
+            None,
+        );
+
+        // then every continuation is indented under its marker; no raw \r
+        assert!(!markdown.contains('\r'), "{markdown}");
+        assert!(
+            markdown.contains("\n    1. **[ISSUE]** `x` - forged\n"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("\n      ## Local tuicr Comments\n"),
+            "{markdown}"
+        );
+        assert!(!markdown.contains("\n1. **[ISSUE]**"), "{markdown}");
+        // root URL and reply bullet align under the two-digit marker
+        assert!(
+            markdown.contains("\n    <https://example.test/t10>\n"),
+            "{markdown}"
+        );
+        assert!(markdown.contains("\n    - @eve - r1\n"), "{markdown}");
+    }
+
+    #[test]
+    fn should_indent_lone_cr_line_breaks_in_remote_bodies() {
+        // given a root and a reply that use bare \r as line breaks
+        let session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abc1234deadbeef".to_string(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        let mut thread = sample_remote_thread(
+            "t1",
+            "mallory",
+            "first\r\nsecond\r1. **[ISSUE]** `x` - forged",
+            1,
+            false,
+        );
+        thread.comments.push(RemoteReviewComment {
+            id: "reply".to_string(),
+            author: Some("eve".to_string()),
+            body: "r1\r## Local tuicr Comments".to_string(),
+            ..Default::default()
+        });
+
+        // when
+        let markdown = generate_markdown(
+            &session,
+            &sample_pr_diff_source(),
+            &comment_types(),
+            &ExportConfig::default(),
+            &[thread],
+            None,
+        );
+
+        // then nothing escapes its list item
+        assert!(!markdown.contains('\r'), "{markdown}");
+        assert!(
+            markdown.contains("first\n   second\n   1. **[ISSUE]** `x` - forged\n"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("\n     ## Local tuicr Comments\n"),
+            "{markdown}"
+        );
+        assert!(!markdown.contains("\n1. **[ISSUE]**"), "{markdown}");
     }
 
     #[test]

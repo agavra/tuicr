@@ -16,6 +16,8 @@ Run a single test by name:
 cargo test test_name_fragment   # matches any test whose name contains the fragment
 ```
 
+End-to-end tests (real binary in tmux, fake forges): `TUICR_BIN=target/release/tuicr e2e/run.sh` after `cargo build --release`. Every user-visible bug fix or behaviour change adds or updates `e2e/scenarios/<area>/<behaviour>.py` (fails on the parent, passes with the change) and `e2e/COVERAGE.md`; never use a real forge. See `e2e/README.md`.
+
 ## Architecture
 
 ### Central state: `App` (`src/app.rs`)
@@ -78,7 +80,8 @@ Do **not** pass `--patch`. That flag produces per-commit mbox patches with dupli
 |---|---|
 | `README.md` | Keybindings, `:*` commands, CLI flags, features, installation |
 | `src/ui/help_popup.rs` | Keybindings or commands (update `help_text` vec) |
-| `AGENTS.md` | Module structure, key types, data flow, forge invariants/gotchas |
+| `AGENTS.md` | Key types, invariants, behavior notes, general gotchas |
+| `docs/FORGES.md` | Forge/PR-mode contracts and gotchas (F*, G*) |
 
 ### Dogfooding
 

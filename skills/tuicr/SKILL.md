@@ -1,6 +1,6 @@
 ---
 name: tuicr
-description: Use tuicr's review CLI to read and add comments in active TUI review sessions, and launch tuicr in cmux, tmux, Zellij, or Herdr when a user needs an interactive review pane.
+description: Use tuicr's review CLI to read and add comments in active TUI review sessions, and launch tuicr in cmux, Rex, tmux, Zellij, or Herdr when a user needs an interactive review pane.
 ---
 
 # tuicr Review Workflow
@@ -77,6 +77,7 @@ When the user needs an interactive tuicr pane and no active session exists:
 | Environment | Action |
 |-------------|--------|
 | `$CMUX_WORKSPACE_ID` is set | Run `tuicr-wrapper-cmux.sh /path/to/repo -- <scope>` |
+| `$REX_SESSION` is set | Run `tuicr-wrapper-rex.sh /path/to/repo -- <scope>` |
 | `$TMUX` is set | Run `tuicr-wrapper.sh /path/to/repo -- <scope>` |
 | `$ZELLIJ` is set | Run `tuicr-wrapper-zellij.sh /path/to/repo -- <scope>` |
 | `$HERDR_ENV` is `1` | Run `tuicr-wrapper-herdr.sh /path/to/repo -- <scope>` |
@@ -99,13 +100,15 @@ Wrapper paths are relative to this skill directory:
 
 ```bash
 <skill-directory>/tuicr-wrapper-cmux.sh /path/to/repo -- -w
+<skill-directory>/tuicr-wrapper-rex.sh /path/to/repo -- -w
 <skill-directory>/tuicr-wrapper.sh /path/to/repo -- -w
 <skill-directory>/tuicr-wrapper-zellij.sh /path/to/repo -- -w
 <skill-directory>/tuicr-wrapper-herdr.sh /path/to/repo -- -w
 ```
 
 The Herdr wrapper requires `jq` to read pane IDs and completion results from
-Herdr's JSON responses.
+Herdr's JSON responses. The Rex wrapper requires `jq` to read the new block ref
+from `rex split --json`.
 
 Every wrapper accepts pass-through tuicr arguments after `--`, which is how
 you scope the review instead of leaving the scope selector for the user to
@@ -115,9 +118,18 @@ launching a review pane.
 
 If your tool supports command timeouts, use a long timeout, such as 10 minutes,
 because the tmux, Zellij, and Herdr wrappers wait for the TUI to exit. The cmux
-wrapper is the exception: it returns as soon as the pane is running and prints
-the new surface ref between `=== TUICR SURFACE ===` markers. Capture that ref —
-it is how you close the pane later with `cmux close-surface --surface <ref>`.
+and Rex wrappers are the exception: they return as soon as the pane is running.
+When another tuicr is already open where the new pane would go (the caller's
+tmux window; the same repository under Zellij), the tmux and Zellij wrappers
+wait for it to close before opening a new pane, for up to `TUICR_WAIT_TIMEOUT` seconds (default 300). If it is still open
+after that, they exit 75 without opening anything: rerun the command, and don't
+treat it as an empty review. A tuicr in another tmux window, such as another
+agent session's, doesn't make the tmux wrapper wait.
+The cmux wrapper prints the new surface ref between `=== TUICR SURFACE ===`
+markers; capture it to close the pane later with
+`cmux close-surface --surface <ref>`. The Rex wrapper prints the new block ref
+between `=== TUICR BLOCK ===` markers; capture it to close the block later with
+`rex block close <ref>`.
 Once the TUI creates its active session, use
 `tuicr review list --repo /path/to/repo` to capture the slug. If your
 environment cannot run another command while a blocking wrapper is waiting,
@@ -265,21 +277,27 @@ comments are unavailable.
 cmux:
 
 - Switch panes: click the pane, or `cmux focus-pane --pane <ref>`
-- Close tuicr: press `q`; the pane closes itself. Force it with `cmux close-surface --surface <ref>`
+- Close tuicr: type `:q`; the pane closes itself. Force it with `cmux close-surface --surface <ref>`
 - List panes: `cmux list-panes`
 - Read a pane without focusing it: `cmux read-screen --surface <ref>`
+
+Rex:
+
+- Close tuicr: type `:q`; the block closes itself. Force it with `rex block close <ref>`
+- List blocks: `rex block list`
+- Read a block without focusing it: `rex capture --block <ref>`
 
 tmux:
 
 - Switch panes: `Ctrl-b` then arrow keys
-- Close tuicr: press `q`
+- Close tuicr: type `:q`
 - Resize panes: `Ctrl-b` then `Ctrl-arrow`
 - Zoom pane: `Ctrl-b` then `z`
 
 zellij:
 
 - Switch panes: `Alt` + arrow keys
-- Close tuicr: press `q`
+- Close tuicr: type `:q`
 - Resize panes: `Ctrl-n`, then arrow keys
 - Toggle fullscreen: `Alt-f`
 - Cycle stacked panes: `Alt` + `[` / `]`
@@ -287,16 +305,17 @@ zellij:
 Herdr:
 
 - Select a pane: click it in the Herdr UI
-- Close tuicr: press `q`; the wrapper then closes the review pane
+- Close tuicr: type `:q`; the wrapper then closes the review pane
 
 ## Error Handling
 
 | Situation | Action |
 |-----------|--------|
 | Multiple plausible active sessions | Ask which session slug to use |
-| No active session, cmux/tmux/Zellij/Herdr available | Start a new tuicr pane with the matching wrapper |
+| No active session, cmux/Rex/tmux/Zellij/Herdr available | Start a new tuicr pane with the matching wrapper |
 | No active session, no multiplexer | Tell the user you are waiting for them to start `tuicr` |
 | cmux wrapper printed no surface ref | Run `cmux list-panes` to find the pane, or ask the user to start `tuicr` themselves |
+| Rex wrapper printed no block ref | Run `rex block list` to find the block, or ask the user to start `tuicr` themselves |
 | `tuicr` not installed | Tell the user to install tuicr |
 | Not a repository | Ask for the correct repo directory |
 | Comments are empty, but `reviewed_count` == `file_count` | Treat as a completed review with nothing to flag — don't ask |

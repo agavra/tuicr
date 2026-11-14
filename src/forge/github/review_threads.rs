@@ -228,6 +228,7 @@ fn convert_comment(raw: GhReviewComment) -> RemoteReviewComment {
         created_at: raw.created_at,
         in_reply_to: raw.reply_to.map(|r| r.id),
         url: raw.url.unwrap_or_default(),
+        ..Default::default()
     }
 }
 

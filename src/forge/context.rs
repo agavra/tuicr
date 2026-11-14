@@ -103,6 +103,59 @@ pub struct ForgeContextProvider<'a> {
 }
 
 impl<'a> ForgeContextProvider<'a> {
+    /// Line counts for many files with one batched backend read, in input
+    /// order. A file with no path on its side counts as 0, as in
+    /// [`ContextProvider::file_line_count`].
+    pub fn file_line_counts(
+        &self,
+        files: &[(Option<&PathBuf>, Option<&PathBuf>, FileStatus)],
+    ) -> Vec<Option<u32>> {
+        let requests: Vec<Option<ForgeFileLinesRequest>> = files
+            .iter()
+            .map(|&(old_path, new_path, status)| {
+                self.whole_file_request(old_path, new_path, status)
+            })
+            .collect();
+        let mut counts = self
+            .forge
+            .file_line_counts(requests.iter().flatten().cloned().collect())
+            .into_iter();
+        requests
+            .iter()
+            .map(|request| match request {
+                Some(_) => counts.next().flatten(),
+                None => Some(0),
+            })
+            .collect()
+    }
+
+    fn whole_file_request(
+        &self,
+        old_path: Option<&PathBuf>,
+        new_path: Option<&PathBuf>,
+        file_status: FileStatus,
+    ) -> Option<ForgeFileLinesRequest> {
+        self.request_for(old_path, new_path, file_status, (0, 0))
+    }
+
+    fn request_for(
+        &self,
+        old_path: Option<&PathBuf>,
+        new_path: Option<&PathBuf>,
+        file_status: FileStatus,
+        line_range: (u32, u32),
+    ) -> Option<ForgeFileLinesRequest> {
+        ForgeFileLinesRequest::for_file(
+            self.repository.clone(),
+            self.base_sha.clone(),
+            self.head_sha.clone(),
+            file_status,
+            old_path,
+            new_path,
+            line_range,
+        )
+    }
+
     pub fn for_pr(
         forge: &'a dyn ForgeBackend,
         key: &PrSessionKey,
@@ -126,19 +179,10 @@ impl ContextProvider for ForgeContextProvider<'_> {
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<DiffLine>> {
-        let side = ForgeFileLinesRequest::side_for_status(file_status);
-        let Some(path) = ForgeFileLinesRequest::path_for_side(side, old_path, new_path) else {
+        let Some(request) =
+            self.request_for(old_path, new_path, file_status, (start_line, end_line))
+        else {
             return Ok(Vec::new());
-        };
-        let request = ForgeFileLinesRequest {
-            repository: self.repository.clone(),
-            base_sha: self.base_sha.clone(),
-            head_sha: self.head_sha.clone(),
-            path,
-            status: file_status,
-            side,
-            start_line,
-            end_line,
         };
         self.forge.fetch_file_lines(request)
     }
@@ -149,21 +193,10 @@ impl ContextProvider for ForgeContextProvider<'_> {
         new_path: Option<&PathBuf>,
         file_status: FileStatus,
     ) -> Result<u32> {
-        let side = ForgeFileLinesRequest::side_for_status(file_status);
-        let Some(path) = ForgeFileLinesRequest::path_for_side(side, old_path, new_path) else {
-            return Ok(0);
-        };
-        let request = ForgeFileLinesRequest {
-            repository: self.repository.clone(),
-            base_sha: self.base_sha.clone(),
-            head_sha: self.head_sha.clone(),
-            path,
-            status: file_status,
-            side,
-            start_line: 0,
-            end_line: 0,
-        };
-        self.forge.file_line_count(request)
+        match self.whole_file_request(old_path, new_path, file_status) {
+            Some(request) => self.forge.file_line_count(request),
+            None => Ok(0),
+        }
     }
 }
 
@@ -198,6 +231,12 @@ mod tests {
         fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
             self.seen.borrow_mut().push(request);
             Ok(self.response.clone())
+        }
+        /// Counts the path's characters, so tests can tell files apart.
+        fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
+            let count = request.path.as_os_str().len() as u32;
+            self.seen.borrow_mut().push(request);
+            Ok(count)
         }
         fn list_review_threads(
             &self,
@@ -242,8 +281,32 @@ mod tests {
             content: text.to_string(),
             old_lineno: Some(1),
             new_lineno: Some(1),
+            raw_content: None,
             highlighted_spans: None,
         }
+    }
+
+    #[test]
+    fn should_return_line_counts_in_file_order_with_pathless_files_as_zero() {
+        // given — a modified file, one with no path on its side, a deleted file
+        let forge = CapturingForge {
+            seen: RefCell::new(Vec::new()),
+            response: Vec::new(),
+        };
+        let provider = ForgeContextProvider::for_pr(&forge, &key(), "basesha");
+        let modified = PathBuf::from("a.rs");
+        let deleted = PathBuf::from("gone.rs");
+        // when
+        let counts = provider.file_line_counts(&[
+            (None, Some(&modified), FileStatus::Modified),
+            (None, None, FileStatus::Modified),
+            (Some(&deleted), None, FileStatus::Deleted),
+        ]);
+        // then — the pathless file never reaches the forge
+        assert_eq!(counts, vec![Some(4), Some(0), Some(7)]);
+        let seen = forge.seen.borrow();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1].side, ForgeFileSide::Base);
     }
 
     #[test]

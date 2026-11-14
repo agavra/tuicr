@@ -30,7 +30,7 @@ pub const SESSIONS_DIRNAME: &str = "sessions";
 /// of the same repo are both under review (same slug, different canonical
 /// paths). PR slugs always have at most one entry — the current head's
 /// session. Lookups disambiguate by canonical path (local) or kind (PR).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     pub version: String,
     pub entries: HashMap<String, Vec<ManifestEntry>>,
@@ -54,7 +54,14 @@ pub struct ManifestEntry {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ManifestKind {
     Local,
-    Pr { number: u64, head_sha: String },
+    Pr {
+        number: u64,
+        head_sha: String,
+        /// Normalized forge host of a host-aware (new) session. Legacy
+        /// entries carry none and are never replaced by a host-aware write.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -65,6 +72,12 @@ pub struct DisplayMetadata {
     /// Slug anchor segment as it appears in the slug (branch name or short
     /// SHA). Cached so listings don't need to re-parse the slug.
     pub anchor: String,
+}
+
+impl Default for Manifest {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Manifest {
@@ -83,23 +96,47 @@ impl Manifest {
         })
     }
 
-    /// Find the PR entry for `slug` (PR entries are singletons per slug).
-    pub fn get_pr(&self, slug: &str) -> Option<&ManifestEntry> {
-        self.entries
-            .get(slug)?
+    /// Find the PR entry of `host` in `bucket`: the entry whose host equals
+    /// `host` first, a legacy hostless (`None`) entry only as the fallback.
+    /// `host` must already be normalized.
+    pub fn get_pr_for(&self, bucket: &str, host: Option<&str>) -> Option<&ManifestEntry> {
+        self.pr_candidates(&[bucket], host).into_iter().next()
+    }
+
+    /// PR entries of `buckets` that may belong to `host`, best first: explicit
+    /// host entries, then legacy `None` entries (callers must still check the
+    /// session file's own host before trusting those).
+    pub fn pr_candidates(&self, buckets: &[&str], host: Option<&str>) -> Vec<&ManifestEntry> {
+        let all: Vec<&ManifestEntry> = buckets
             .iter()
-            .find(|e| matches!(e.kind, ManifestKind::Pr { .. }))
+            .flat_map(|bucket| self.entries.get(*bucket).into_iter().flatten())
+            .filter(|e| matches!(e.kind, ManifestKind::Pr { .. }))
+            .collect();
+        let entry_host = |e: &ManifestEntry| match &e.kind {
+            ManifestKind::Pr { host, .. } => host.as_deref().map(crate::slug::normalized_host),
+            ManifestKind::Local => None,
+        };
+        let explicit = all
+            .iter()
+            .filter(|e| entry_host(e).is_some() && entry_host(e).as_deref() == host);
+        let legacy = all.iter().filter(|e| entry_host(e).is_none());
+        let mut out: Vec<&ManifestEntry> = explicit.chain(legacy).copied().collect();
+        out.dedup_by(|a, b| a.path == b.path);
+        out
     }
 
     /// Insert or replace an entry. For local entries the matching key is
-    /// `(slug, canonical_repo_path)`; for PR entries the slug alone suffices
-    /// because each PR slug holds at most one entry.
+    /// `(slug, canonical_repo_path)`; a PR entry replaces the one at the same
+    /// path or with the same host. A legacy hostless entry is never replaced
+    /// by a host-aware write (or vice versa): the two coexist in the bucket.
     pub fn upsert(&mut self, slug: String, entry: ManifestEntry) {
         let bucket = self.entries.entry(slug).or_default();
         let idx = bucket
             .iter()
             .position(|existing| match (&existing.kind, &entry.kind) {
-                (ManifestKind::Pr { .. }, ManifestKind::Pr { .. }) => true,
+                (ManifestKind::Pr { host: old, .. }, ManifestKind::Pr { host: new, .. }) => {
+                    existing.path == entry.path || old == new
+                }
                 (ManifestKind::Local, ManifestKind::Local) => {
                     existing.canonical_repo_path == entry.canonical_repo_path
                 }
@@ -179,6 +216,7 @@ pub fn entry_from_session(
         Some(key) => ManifestKind::Pr {
             number: key.number,
             head_sha: key.head_sha.clone(),
+            host: None,
         },
         None => ManifestKind::Local,
     };
@@ -220,11 +258,14 @@ where
     if !reviews_dir.exists() {
         return Ok(manifest);
     }
-    walk_json(reviews_dir, &mut |path| {
-        if let Some((slug, entry)) = extract(path) {
-            manifest.upsert(slug, entry);
-        }
-    })?;
+    let mut found = Vec::new();
+    walk_json(reviews_dir, &mut |path| found.extend(extract(path)))?;
+    // Directory order is arbitrary and upsert keeps the last entry, so apply
+    // oldest first: the newest of two files for one slot wins.
+    found.sort_by_key(|(_, entry)| entry.updated_at);
+    for (slug, entry) in found {
+        manifest.upsert(slug, entry);
+    }
     Ok(manifest)
 }
 
@@ -263,6 +304,7 @@ pub fn diff_source_label(diff_source: SessionDiffSource) -> &'static str {
         SessionDiffSource::Staged => "staged",
         SessionDiffSource::Unstaged => "unstaged",
         SessionDiffSource::StagedAndUnstaged => "staged-and-unstaged",
+        SessionDiffSource::File => "file",
         SessionDiffSource::CommitRange => "commits",
         SessionDiffSource::WorkingTreeAndCommits => "worktree-and-commits",
         SessionDiffSource::StagedUnstagedAndCommits => "staged-and-unstaged-and-commits",
@@ -298,6 +340,7 @@ mod tests {
             kind: ManifestKind::Pr {
                 number,
                 head_sha: head_sha.to_string(),
+                host: None,
             },
             updated_at,
             canonical_repo_path: None,
@@ -312,6 +355,21 @@ mod tests {
 
     fn repo(name: &str) -> PathBuf {
         PathBuf::from(format!("/Users/agavra/{name}"))
+    }
+
+    #[test]
+    fn should_match_entry_host_by_normalized_comparison() {
+        let mut manifest = Manifest::new();
+        let mut entry = pr_entry(Utc::now(), 1, "a");
+        if let ManifestKind::Pr { host, .. } = &mut entry.kind {
+            *host = Some("GHE.Internal".to_string());
+        }
+        manifest.upsert("gh:o/r/pr/1@ghe.internal".to_string(), entry);
+        assert!(
+            manifest
+                .get_pr_for("gh:o/r/pr/1@ghe.internal", Some("ghe.internal"))
+                .is_some()
+        );
     }
 
     #[test]
@@ -414,7 +472,7 @@ mod tests {
         );
 
         assert_eq!(manifest.len(), 1);
-        let entry = manifest.get_pr("gh:agavra/tuicr/pr/125").unwrap();
+        let entry = manifest.get_pr_for("gh:agavra/tuicr/pr/125", None).unwrap();
         match &entry.kind {
             ManifestKind::Pr { head_sha, .. } => assert_eq!(head_sha, "def67890"),
             _ => panic!("expected Pr"),
@@ -448,7 +506,7 @@ mod tests {
             loaded.get_local("agavra/tuicr@main/worktree", &repo("tuicr")),
             Some(&local),
         );
-        assert!(loaded.get_pr("gh:agavra/tuicr/pr/125").is_some());
+        assert!(loaded.get_pr_for("gh:agavra/tuicr/pr/125", None).is_some());
     }
 
     #[test]
@@ -579,12 +637,37 @@ mod tests {
         );
 
         match &entry.kind {
-            ManifestKind::Pr { number, head_sha } => {
+            ManifestKind::Pr {
+                number, head_sha, ..
+            } => {
                 assert_eq!(*number, 125);
                 assert_eq!(head_sha, "abcdef0123456789");
             }
             _ => panic!("expected Pr kind, got {:?}", entry.kind),
         }
         assert_eq!(entry.canonical_repo_path, None);
+    }
+
+    #[test]
+    fn should_rebuild_with_the_newest_file_winning_a_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Utc::now();
+        // Many files so an unsorted directory walk is all but certain to end
+        // on a file that is not the newest.
+        for n in 0..40 {
+            fs::write(dir.path().join(format!("f{n}.json")), n.to_string()).unwrap();
+        }
+        let manifest = rebuild_from_files(dir.path(), |path| {
+            let n: i64 = fs::read_to_string(path).ok()?.parse().ok()?;
+            // Newest is f17, not the last number.
+            let age = if n == 17 { 1000 } else { n };
+            let mut e = entry(base + chrono::Duration::seconds(age), "a");
+            e.path = path.to_path_buf();
+            Some(("slug".to_string(), e))
+        })
+        .unwrap();
+        let bucket = &manifest.entries["slug"];
+        assert_eq!(bucket.len(), 1);
+        assert!(bucket[0].path.ends_with("f17.json"), "{:?}", bucket[0].path);
     }
 }

@@ -3,7 +3,7 @@ use git2::{BranchType, Oid, Repository};
 use std::collections::HashMap;
 
 use crate::error::{Result, TuicrError};
-use crate::vcs::{ResolvedRevisionRange, RevisionDiffTarget};
+use crate::vcs::{ResolvedRevisionRange, RevisionDiffTarget, split_commit_message};
 
 use super::RevisionExpression;
 
@@ -18,22 +18,15 @@ pub struct CommitInfo {
     pub time: DateTime<Utc>,
 }
 
-/// Parse a full commit message into (summary, optional body).
-/// The summary is the first line; the body is everything after the first blank line, trimmed.
-fn parse_commit_message(message: &str) -> (String, Option<String>) {
-    let mut lines = message.lines();
-    let summary = lines.next().unwrap_or("(no message)").to_string();
-    // Skip blank separator line(s) between summary and body
-    let body_text: String = lines
-        .skip_while(|l| l.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let body = if body_text.trim().is_empty() {
-        None
-    } else {
-        Some(body_text)
-    };
-    (summary, body)
+/// Split a full commit message into (summary, optional body). Only a message
+/// with no first line at all gets the placeholder: a blank first line followed
+/// by a body stays an empty summary.
+pub(super) fn summary_and_body(message: &str) -> (String, Option<String>) {
+    if message.is_empty() {
+        return ("(no message)".to_string(), None);
+    }
+    let (subject, body) = split_commit_message(message);
+    (subject.to_string(), body)
 }
 
 fn get_branch_tip_names(repo: &Repository) -> HashMap<Oid, Vec<String>> {
@@ -92,7 +85,7 @@ pub fn get_recent_commits(
         let id = oid.to_string();
         let short_id = id[..7.min(id.len())].to_string();
         let full_message = commit.message().unwrap_or("(no message)");
-        let (summary, body) = parse_commit_message(full_message);
+        let (summary, body) = summary_and_body(full_message);
         let author = commit.author().name().unwrap_or("Unknown").to_string();
         let branch_name = branch_tip_names
             .get(&oid)
@@ -132,7 +125,7 @@ pub fn get_commits_info(repo: &Repository, ids: &[String]) -> Result<Vec<CommitI
         let id = oid.to_string();
         let short_id = id[..7.min(id.len())].to_string();
         let full_message = commit.message().unwrap_or("(no message)");
-        let (summary, body) = parse_commit_message(full_message);
+        let (summary, body) = summary_and_body(full_message);
         let author = commit.author().name().unwrap_or("Unknown").to_string();
         let branch_name = branch_tip_names
             .get(&oid)
@@ -237,10 +230,6 @@ fn revwalk_range(repo: &Repository, base: &str, head: &str) -> Result<Vec<String
         commit_ids.push(oid?.to_string());
     }
 
-    if commit_ids.is_empty() {
-        return Err(TuicrError::NoChanges);
-    }
-
     commit_ids.reverse();
     Ok(commit_ids)
 }
@@ -248,6 +237,17 @@ fn revwalk_range(repo: &Repository, base: &str, head: &str) -> Result<Vec<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_use_the_placeholder_only_when_there_is_no_first_line() {
+        // given / when / then
+        assert_eq!(summary_and_body(""), ("(no message)".to_string(), None));
+        assert_eq!(summary_and_body("  \n"), ("  ".to_string(), None));
+        assert_eq!(
+            summary_and_body("\nBody"),
+            (String::new(), Some("Body".to_string()))
+        );
+    }
 
     #[test]
     fn should_return_empty_recent_commits_for_unborn_head() {

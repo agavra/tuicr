@@ -36,6 +36,28 @@ impl ForgeKind {
             ForgeKind::Gerrit => "Gerrit",
         }
     }
+
+    /// PR list scopes this forge can query, in the order `r` steps through
+    /// them in the selector's Pull Requests tab. `Open` always comes first.
+    pub fn pr_list_scopes(self) -> &'static [PullRequestListScope] {
+        match self {
+            // Only GitHub tells a personal review request apart from one
+            // made through a team the user belongs to.
+            ForgeKind::GitHub => &[
+                PullRequestListScope::Open,
+                PullRequestListScope::ReviewRequested,
+                PullRequestListScope::PersonallyRequested,
+            ],
+            ForgeKind::GitLab
+            | ForgeKind::Gitea
+            | ForgeKind::Bitbucket
+            | ForgeKind::AzureDevOps
+            | ForgeKind::Gerrit => &[
+                PullRequestListScope::Open,
+                PullRequestListScope::ReviewRequested,
+            ],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,21 +230,31 @@ impl PullRequestTarget {
 pub enum PullRequestListScope {
     #[default]
     Open,
+    /// PRs requesting the user's review, directly or through a team.
     ReviewRequested,
+    /// PRs requesting the user's review by name, excluding team requests.
+    /// Only offered where `ForgeKind::pr_list_scopes` lists it.
+    PersonallyRequested,
 }
 
 impl PullRequestListScope {
-    pub fn toggled(self) -> Self {
-        match self {
-            Self::Open => Self::ReviewRequested,
-            Self::ReviewRequested => Self::Open,
-        }
+    /// The scope after this one in `forge`'s cycle, wrapping back to `Open`.
+    /// A scope the forge does not list also falls back to `Open`.
+    pub fn next_for(self, forge: ForgeKind) -> Self {
+        let scopes = forge.pr_list_scopes();
+        scopes
+            .iter()
+            .position(|scope| *scope == self)
+            .and_then(|idx| scopes.get(idx + 1))
+            .copied()
+            .unwrap_or(Self::Open)
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Open => "all",
             Self::ReviewRequested => "requested",
+            Self::PersonallyRequested => "requested (me)",
         }
     }
 }
@@ -263,6 +295,11 @@ pub struct PullRequestSummary {
     pub head_ref_name: String,
     pub base_ref_name: String,
     pub updated_at: Option<DateTime<Utc>>,
+    /// Committer date of the newest commit. Unlike `updated_at`, it moves
+    /// only when the code does (a rebase counts). Only GitHub fills it; the
+    /// row omits it when `None`.
+    #[serde(default)]
+    pub last_commit_at: Option<DateTime<Utc>>,
     pub url: String,
     pub state: String,
     pub is_draft: bool,
@@ -390,7 +427,8 @@ pub struct ForgeFileLinesRequest {
     pub path: PathBuf,
     /// File status, used to choose the appropriate side without forcing the
     /// caller to also compute it. Renames use `Renamed`; `path` should already
-    /// reflect the chosen side.
+    /// reflect the chosen side. Kept public for library callers; not read
+    /// internally.
     pub status: FileStatus,
     /// Which side to read from. The caller is responsible for picking the
     /// right side per the spec mapping rules.
@@ -401,6 +439,31 @@ pub struct ForgeFileLinesRequest {
 }
 
 impl ForgeFileLinesRequest {
+    /// Build a request for `status`'s side of a file, or `None` when the diff
+    /// carries no path for that side.
+    pub fn for_file(
+        repository: ForgeRepository,
+        base_sha: String,
+        head_sha: String,
+        status: FileStatus,
+        old_path: Option<&PathBuf>,
+        new_path: Option<&PathBuf>,
+        line_range: (u32, u32),
+    ) -> Option<Self> {
+        let side = Self::side_for_status(status);
+        let path = Self::path_for_side(side, old_path, new_path)?;
+        Some(Self {
+            repository,
+            base_sha,
+            head_sha,
+            path,
+            status,
+            side,
+            start_line: line_range.0,
+            end_line: line_range.1,
+        })
+    }
+
     /// Resolve the side and path for a given file based on its status.
     /// Helper for callers that have a `DiffFile` and want to fetch context.
     pub fn side_for_status(status: FileStatus) -> ForgeFileSide {
@@ -451,6 +514,31 @@ pub struct GhCreateReviewResponse {
     pub state: String,
 }
 
+/// What a multi-request submit had already posted when it failed. Forges
+/// without a single review object (GitLab, Bitbucket, Azure) post the summary
+/// and each inline comment separately, so a later failure leaves some of them
+/// live on the forge.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubmitReceipts {
+    /// The review body (summary + review-level comments) was posted.
+    pub body_posted: bool,
+    /// `InlineComment::comment_id`s that were posted.
+    pub comment_ids: Vec<String>,
+}
+
+impl SubmitReceipts {
+    /// Attach these receipts to `err`; with nothing posted, `err` is unchanged.
+    pub fn into_error(self, err: TuicrError) -> TuicrError {
+        if !self.body_posted && self.comment_ids.is_empty() {
+            return err;
+        }
+        TuicrError::PartialSubmit {
+            message: err.to_string(),
+            receipts: self,
+        }
+    }
+}
+
 /// Request to create a review against a PR. The payload is the forge-agnostic
 /// shape of the JSON body the backend will POST; downstream the GitHub
 /// backend reshapes it via `build_review_payload` and writes it on stdin.
@@ -458,6 +546,10 @@ pub struct GhCreateReviewResponse {
 pub struct CreateReviewRequest<'a> {
     pub event: SubmitEvent,
     pub commit_id: &'a str,
+    /// Revision of the displayed diff's old side when the inline commit
+    /// selector shows a strict subset (the parent of its oldest commit).
+    /// `None` for the cumulative PR diff, whose old side is the merge base.
+    pub base_commit_id: Option<&'a str>,
     pub body: &'a str,
     pub comments: &'a [crate::forge::submit::InlineComment],
 }
@@ -472,6 +564,10 @@ pub struct PullRequestCommit {
     pub oid: String,
     pub short_oid: String,
     pub summary: String,
+    /// The commit message after its subject line. `None` when the commit
+    /// has a subject only, or the backend could not supply the rest.
+    #[serde(default)]
+    pub body: Option<String>,
     pub author: String,
     pub timestamp: Option<DateTime<Utc>>,
 }
@@ -492,7 +588,10 @@ pub struct PullRequestReviewRecord {
     pub commit_oid: Option<String>,
 }
 
-/// A reviewer's latest response on a pull request.
+/// A reviewer's effective response on a pull request: normally the latest
+/// response, but a later comment-only review does not replace an earlier
+/// decisive vote (approval or change request), and dismissed votes are ignored
+/// (Gitea). `submitted_at` is the time of the effective row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestReviewStatus {
     pub author: Option<String>,
@@ -562,8 +661,18 @@ pub trait ForgeBackend {
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>>;
     /// Fetch the requested file lines from the forge for context expansion.
     /// Implementations may optimize by reading from a local checkout when
-    /// available; the trait does not require that path.
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>>;
+    /// available; the trait does not require that path. The default slices
+    /// [`Self::fetch_file_content`]; an empty or inverted range reads nothing.
+    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
+        if request.start_line == 0 || request.start_line > request.end_line {
+            return Ok(Vec::new());
+        }
+        let (start_line, end_line) = (request.start_line, request.end_line);
+        let content = self.fetch_file_content(request)?;
+        Ok(crate::vcs::slice_context_lines(
+            &content, start_line, end_line,
+        ))
+    }
     /// Return the whole file at the revision described by `request`, exactly as
     /// stored: unlike [`Self::fetch_file_lines`], tabs are not expanded, so the
     /// result is safe to write back out as a file. `start_line` and `end_line`
@@ -579,6 +688,16 @@ pub trait ForgeBackend {
     /// ignored. Default returns `Ok(0)`; real forge backends override this.
     fn file_line_count(&self, _request: ForgeFileLinesRequest) -> Result<u32> {
         Ok(0)
+    }
+    /// [`Self::file_line_count`] for many files of one repository at once, in
+    /// request order, with `None` where a file could not be read. PR open needs
+    /// every changed file's count, so backends that can batch the reads should
+    /// override the default, which asks one file at a time.
+    fn file_line_counts(&self, requests: Vec<ForgeFileLinesRequest>) -> Vec<Option<u32>> {
+        requests
+            .into_iter()
+            .map(|request| self.file_line_count(request).ok())
+            .collect()
     }
     /// Fetch existing review discussions for a PR, including their resolved
     /// and outdated state. Implementations should return all threads in
@@ -652,6 +771,32 @@ pub trait ForgeBackend {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn should_leave_error_unchanged_when_nothing_was_posted() {
+        let err = SubmitReceipts::default().into_error(TuicrError::Forge("x".to_string()));
+        assert!(matches!(err, TuicrError::Forge(_)), "{err:?}");
+    }
+
+    #[test]
+    fn should_wrap_error_when_only_the_body_was_posted() {
+        let receipts = SubmitReceipts {
+            body_posted: true,
+            comment_ids: Vec::new(),
+        };
+        let err = receipts.into_error(TuicrError::Forge("x".to_string()));
+        assert!(matches!(err, TuicrError::PartialSubmit { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn should_wrap_error_when_only_comments_were_posted() {
+        let receipts = SubmitReceipts {
+            body_posted: false,
+            comment_ids: vec!["c".to_string()],
+        };
+        let err = receipts.into_error(TuicrError::Forge("x".to_string()));
+        assert!(matches!(err, TuicrError::PartialSubmit { .. }), "{err:?}");
+    }
+
     use super::*;
 
     #[test]
@@ -714,6 +859,52 @@ mod tests {
         assert_eq!(
             ForgeFileLinesRequest::side_for_status(FileStatus::Deleted),
             ForgeFileSide::Base,
+        );
+    }
+
+    #[test]
+    fn should_cycle_github_scopes_through_personally_requested() {
+        // given
+        let forge = ForgeKind::GitHub;
+        // when
+        let first = PullRequestListScope::Open.next_for(forge);
+        let second = first.next_for(forge);
+        let third = second.next_for(forge);
+        // then
+        assert_eq!(first, PullRequestListScope::ReviewRequested);
+        assert_eq!(second, PullRequestListScope::PersonallyRequested);
+        assert_eq!(third, PullRequestListScope::Open);
+    }
+
+    #[test]
+    fn should_skip_personally_requested_on_forges_without_it() {
+        for forge in [
+            ForgeKind::GitLab,
+            ForgeKind::Gitea,
+            ForgeKind::Bitbucket,
+            ForgeKind::AzureDevOps,
+            ForgeKind::Gerrit,
+        ] {
+            // when
+            let first = PullRequestListScope::Open.next_for(forge);
+            let second = first.next_for(forge);
+            // then
+            assert_eq!(first, PullRequestListScope::ReviewRequested, "{forge:?}");
+            assert_eq!(second, PullRequestListScope::Open, "{forge:?}");
+            assert!(
+                !forge
+                    .pr_list_scopes()
+                    .contains(&PullRequestListScope::PersonallyRequested),
+                "{forge:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_fall_back_to_open_for_a_scope_the_forge_does_not_list() {
+        assert_eq!(
+            PullRequestListScope::PersonallyRequested.next_for(ForgeKind::GitLab),
+            PullRequestListScope::Open
         );
     }
 }

@@ -1,3 +1,4 @@
+use crate::app::init::PrDisplayOptions;
 use crate::app::*;
 use crate::forge::selector::PullRequestsTab;
 use crate::forge::traits::{
@@ -360,6 +361,7 @@ struct FakeForgeBackend {
     commits: Vec<crate::forge::traits::PullRequestCommit>,
     review_metadata: PullRequestReviewMetadata,
     range_patch: Option<String>,
+    line_count_requests: std::sync::Arc<std::sync::Mutex<Vec<PathBuf>>>,
 }
 
 impl FakeForgeBackend {
@@ -370,6 +372,7 @@ impl FakeForgeBackend {
             commits: Vec::new(),
             review_metadata: PullRequestReviewMetadata::default(),
             range_patch: None,
+            line_count_requests: Default::default(),
         }
     }
 }
@@ -398,6 +401,10 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
         _request: crate::forge::traits::ForgeFileLinesRequest,
     ) -> Result<Vec<crate::model::DiffLine>> {
         Ok(Vec::new())
+    }
+    fn file_line_count(&self, request: crate::forge::traits::ForgeFileLinesRequest) -> Result<u32> {
+        self.line_count_requests.lock().unwrap().push(request.path);
+        Ok(0)
     }
     fn list_review_threads(
         &self,
@@ -445,6 +452,7 @@ fn sample_pr(number: u64, title: &str) -> PullRequestSummary {
         head_ref_name: "feat".to_string(),
         base_ref_name: "main".to_string(),
         updated_at: None,
+        last_commit_at: None,
         url: format!("https://github.com/agavra/tuicr/pull/{number}"),
         state: "OPEN".to_string(),
         is_draft: false,
@@ -630,9 +638,20 @@ fn sample_pr_commit(oid: &str, summary: &str) -> crate::forge::traits::PullReque
         oid: oid.to_string(),
         short_oid: oid.chars().take(7).collect(),
         summary: summary.to_string(),
+        body: None,
         author: "Alice".to_string(),
         timestamp: None,
     }
+}
+
+fn sample_pr_commit_with_body(
+    oid: &str,
+    summary: &str,
+    body: &str,
+) -> crate::forge::traits::PullRequestCommit {
+    let mut commit = sample_pr_commit(oid, summary);
+    commit.body = Some(body.to_string());
+    commit
 }
 
 fn review_record(author: &str, oid: &str, submitted_at: &str) -> PullRequestReviewRecord {
@@ -836,30 +855,371 @@ fn should_populate_inline_selector_when_pr_has_multiple_commits() {
     assert_eq!(app.review_commits.len(), 3);
     // and — default selection covers all commits.
     assert_eq!(app.commit_selection_range, Some((0, 2)));
+    assert!(!app.diff_files.iter().any(|file| file.is_commit_message));
 }
 
 #[test]
-fn should_hide_inline_selector_for_single_commit_pr() {
-    // given a PR with exactly one commit
+fn should_show_single_pr_commit_message_on_open_and_same_head_reload() {
+    // given a PR with exactly one commit and a multiline message
+    let _reviews = TestReviewsDir::new();
     let mut app = build_app();
-    app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
-    app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
-    app.pr_tab.start_initial_load();
-    let summary = sample_pr(42, "solo");
-    app.pr_tab
-        .apply_initial_load(Ok((vec![summary.clone()], false)));
-    let mut backend = FakeForgeBackend::open_pr_details(
-        test_pr_details(42, "solo"),
-        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    let details = test_pr_details(424310, "solo");
+    let patch = crate::forge::github::gh::tests_fixture::SIMPLE_PATCH;
+    let commit = sample_pr_commit_with_body(
+        &details.head_sha,
+        "only",
+        "first body line\nsecond body line",
     );
-    backend.commits = vec![sample_pr_commit("aaaaaaa1111", "only")];
-    // when
-    app.open_pr_with_backend(&summary, Box::new(backend), None)
-        .unwrap();
-    // then
+    let opened = crate::forge::pr_open::prepare_open_pr(
+        details.clone(),
+        structured_patch(patch),
+        vec![commit.clone()],
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details.clone()),
+        None,
+    )
+    .unwrap();
+
+    // when PR mode is entered without an inline selector
+    app.enter_pr_diff_mode(
+        Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            patch.to_string(),
+        )),
+        opened,
+    )
+    .unwrap();
+
+    // then the single commit's message is already at the top
     assert!(!app.show_commit_selector);
+    assert!(!app.has_inline_commit_selector());
+    assert!(!app.has_review_commits());
     assert!(app.commit_list.is_empty());
     assert_eq!(app.commit_selection_range, None);
+    assert_eq!(app.pr_range_sha_pair(), None);
+    let message_path = PathBuf::from(format!("Commit Message ({})", commit.short_oid));
+    assert!(app.diff_files[0].is_commit_message);
+    assert_eq!(app.diff_files[0].display_path(), &message_path);
+    assert_eq!(
+        app.diff_files
+            .iter()
+            .filter(|file| file.is_commit_message)
+            .count(),
+        1
+    );
+    assert_eq!(
+        app.diff_files[0].hunks[0]
+            .lines
+            .iter()
+            .map(|line| line.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["only", "", "first body line", "second body line"]
+    );
+    app.session
+        .get_file_mut(&message_path)
+        .unwrap()
+        .add_line_comment(
+            3,
+            Comment::new(
+                "message draft".to_string(),
+                CommentType::from_id("note"),
+                None,
+            ),
+        );
+    app.session.get_file_mut(&message_path).unwrap().reviewed = true;
+    let request = PrReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        started_at: Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    };
+
+    // when the same head is refreshed
+    app.finish_pr_reload(
+        details.clone(),
+        structured_patch(patch),
+        vec![commit],
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details),
+        &request,
+    )
+    .unwrap();
+
+    // then the message, its draft and its reviewed mark survive
+    assert!(app.diff_files[0].is_commit_message);
+    assert_eq!(app.diff_files[0].display_path(), &message_path);
+    assert_eq!(
+        app.diff_files
+            .iter()
+            .filter(|file| file.is_commit_message)
+            .count(),
+        1
+    );
+    assert_eq!(
+        app.diff_files[0].hunks[0]
+            .lines
+            .iter()
+            .map(|line| line.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["only", "", "first body line", "second body line"]
+    );
+    assert!(app.session.is_file_reviewed(&message_path));
+    assert_eq!(
+        app.session.files[&message_path].line_comments[&3][0].content,
+        "message draft"
+    );
+    assert_eq!(app.commit_selection_range, None);
+    assert!(!app.has_inline_commit_selector());
+}
+
+fn commit_message_lines(file: &DiffFile) -> Vec<&str> {
+    file.hunks[0]
+        .lines
+        .iter()
+        .map(|line| line.content.as_str())
+        .collect()
+}
+
+fn assert_one_commit_message_first(app: &App, short_oid: &str) {
+    assert!(app.diff_files[0].is_commit_message);
+    assert_eq!(
+        app.diff_files[0].display_path(),
+        &DiffFile::commit_message_path(short_oid)
+    );
+    assert_eq!(
+        app.diff_files
+            .iter()
+            .filter(|file| file.is_commit_message)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn should_keep_selected_pr_diff_on_same_head_reload_and_refresh_cumulative_cache() {
+    // given a multi-commit PR narrowed to its middle commit
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    let details = test_pr_details(424312, "same-head message range");
+    let selected = sample_pr_commit_with_body("middle22222", "middle subject", "middle body");
+    // Forge returns oldest-first; prepare_open_pr reverses this order.
+    let commits = vec![
+        sample_pr_commit("first111111", "first"),
+        selected.clone(),
+        sample_pr_commit("last3333333", "last"),
+    ];
+    let mut backend =
+        FakeForgeBackend::open_pr_details(details.clone(), two_hunk_patch().to_string());
+    backend.commits = commits.clone();
+    app.open_pr_with_backend(
+        &sample_pr(details.number, &details.title),
+        Box::new(backend),
+        None,
+    )
+    .unwrap();
+    let cumulative_file = app.diff_files[0].clone();
+    assert_eq!(cumulative_file.hunks.len(), 2);
+    app.commit_selection_range = Some((1, 1));
+    let range_request = PrRangeReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        start_sha: "first111111".to_string(),
+        end_sha: selected.oid.clone(),
+        range: (1, 1),
+        started_at: Instant::now(),
+        anchor: None,
+    };
+    app.finish_pr_range_reload(&range_request, structured_patch(first_hunk_patch()))
+        .unwrap();
+    let narrowed_file = app.diff_files[1].clone();
+    assert_eq!(narrowed_file.hunks.len(), 1);
+    // The selected message is first, registered, and takes a draft.
+    assert_one_commit_message_first(&app, &selected.short_oid);
+    assert_eq!(
+        commit_message_lines(&app.diff_files[0]),
+        vec!["middle subject", "", "middle body"]
+    );
+    let message_path = DiffFile::commit_message_path(&selected.short_oid);
+    app.session
+        .get_file_mut(&message_path)
+        .expect("message registered in the session")
+        .add_line_comment(
+            3,
+            Comment::new(
+                "message comment".to_string(),
+                CommentType::from_id("note"),
+                None,
+            ),
+        );
+    // The reload's cumulative patch differs from the open patch, so the
+    // cache refresh is observable.
+    let reload_patch = two_hunk_patch().replace("new two", "newer two");
+    let request = PrReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        started_at: Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    };
+
+    // when a same-head reload delivers the cumulative PR diff
+    app.finish_pr_reload(
+        details.clone(),
+        structured_patch(&reload_patch),
+        commits,
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details),
+        &request,
+    )
+    .unwrap();
+
+    // then the selection, selected message and narrowed diff remain on screen
+    assert_eq!(app.commit_selection_range, Some((1, 1)));
+    assert_eq!(app.diff_files.len(), 2);
+    assert!(app.diff_files[0].is_commit_message);
+    assert_eq!(
+        app.diff_files[0].display_path(),
+        &PathBuf::from(format!("Commit Message ({})", selected.short_oid))
+    );
+    assert!(!app.diff_files[1].is_commit_message);
+    assert_eq!(
+        app.diff_files[1].display_path(),
+        narrowed_file.display_path()
+    );
+    assert_eq!(app.diff_files[1].content_hash, narrowed_file.content_hash);
+    assert_eq!(app.diff_files[1].hunks.len(), 1);
+    let cached = app.range_diff_files.as_ref().unwrap();
+    assert_eq!(cached.len(), 1);
+    assert!(!cached[0].is_commit_message);
+    assert_eq!(cached[0].display_path(), cumulative_file.display_path());
+    assert_ne!(cached[0].content_hash, cumulative_file.content_hash);
+    assert_eq!(cached[0].hunks.len(), 2);
+    let refreshed_hash = cached[0].content_hash;
+
+    // when the selection widens to all commits
+    app.commit_selection_range = Some((0, 2));
+    app.reload_pr_inline_selection();
+
+    // then the refreshed cumulative cache replaces the message and narrowed diff
+    assert_eq!(app.diff_files.len(), 1);
+    assert!(!app.diff_files.iter().any(|file| file.is_commit_message));
+    assert_eq!(
+        app.diff_files[0].display_path(),
+        cumulative_file.display_path()
+    );
+    assert_eq!(app.diff_files[0].content_hash, refreshed_hash);
+    assert_eq!(app.diff_files[0].hunks.len(), 2);
+    assert!(app.pr_range_reload_state.is_none());
+    assert_eq!(
+        app.session.files[&message_path].line_comments[&3][0].content,
+        "message comment"
+    );
+}
+
+#[test]
+fn should_refresh_the_cumulative_cache_on_an_unchanged_identity_reload() {
+    // given a multi-commit PR with every commit selected, so the cumulative
+    // diff is the displayed one
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    let details = test_pr_details(424398, "fresh cache");
+    let commits = three_commits();
+    let mut backend =
+        FakeForgeBackend::open_pr_details(details.clone(), two_hunk_patch().to_string());
+    backend.commits = commits.clone();
+    app.open_pr_with_backend(
+        &sample_pr(details.number, &details.title),
+        Box::new(backend),
+        None,
+    )
+    .unwrap();
+    assert!(app.range_diff_files.is_some());
+    let old_hash = app.diff_files[0].content_hash;
+
+    // when a same-base, same-commits reload brings a changed patch
+    let reload_patch = two_hunk_patch().replace("new two", "newer two");
+    let request = PrReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        started_at: Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    };
+    app.finish_pr_reload(
+        details.clone(),
+        structured_patch(&reload_patch),
+        commits,
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details.clone()),
+        &request,
+    )
+    .unwrap();
+    let new_hash = app.diff_files[0].content_hash;
+    assert_ne!(new_hash, old_hash);
+
+    // and the user narrows, then widens back to every commit
+    app.commit_selection_range = Some((2, 2));
+    let range_request = PrRangeReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        start_sha: details.base_sha.clone(),
+        end_sha: "aaa1111111".to_string(),
+        range: (2, 2),
+        started_at: Instant::now(),
+        anchor: None,
+    };
+    app.finish_pr_range_reload(&range_request, structured_patch(first_hunk_patch()))
+        .unwrap();
+    app.commit_selection_range = Some((0, 2));
+    app.reload_pr_inline_selection();
+
+    // then the widened view is the refreshed diff, not the one from open
+    let file = app
+        .diff_files
+        .iter()
+        .find(|f| !f.is_commit_message)
+        .unwrap();
+    assert_eq!(file.content_hash, new_hash);
+}
+
+#[test]
+fn should_not_ask_the_forge_for_a_commit_message_line_count() {
+    // given a single-commit PR, whose diff opens with the commit's message
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    let details = test_pr_details(424314, "line counts");
+    let patch = crate::forge::github::gh::tests_fixture::SIMPLE_PATCH;
+    let backend = FakeForgeBackend::open_pr_details(details.clone(), patch.to_string());
+    let requests = backend.line_count_requests.clone();
+    let opened = crate::forge::pr_open::prepare_open_pr(
+        details.clone(),
+        structured_patch(patch),
+        vec![sample_pr_commit_with_body(
+            &details.head_sha,
+            "only",
+            "body",
+        )],
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details),
+        None,
+    )
+    .unwrap();
+
+    // when the diff is laid out
+    app.enter_pr_diff_mode(Box::new(backend), opened).unwrap();
+
+    // then line counts are looked up for the real files only
+    let message_path = app.diff_files[0].display_path().clone();
+    assert!(app.diff_files[0].is_commit_message);
+    let requests = requests.lock().unwrap();
+    assert!(!requests.is_empty());
+    assert!(!requests.contains(&message_path));
 }
 
 #[test]
@@ -1382,7 +1742,6 @@ fn should_reindex_recovered_pr_session() {
     // and a previously saved session file already exists for the new head
     let mut details_b = details_a.clone();
     details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
-    let highlighter = app.theme.syntax_highlighter();
     let opened_b = crate::forge::pr_open::prepare_open_pr(
         details_b.clone(),
         structured_patch(&two_file_patch("newer changed")),
@@ -1390,7 +1749,6 @@ fn should_reindex_recovered_pr_session() {
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details_b.clone()),
         None,
-        highlighter,
     )
     .unwrap();
     let mut persisted_b = opened_b.session.clone();
@@ -1440,8 +1798,6 @@ fn should_error_on_corrupt_exact_session_file_when_reopening_pr() {
     let _reviews = TestReviewsDir::new();
     let mut details = test_pr_details(424250, "corrupt");
     details.head_sha = "aaaaaaaaaaaaaaaa".to_string();
-    let theme = Theme::default();
-    let highlighter = theme.syntax_highlighter();
     let opened = crate::forge::pr_open::prepare_open_pr(
         details.clone(),
         structured_patch(&two_file_patch("new changed")),
@@ -1449,7 +1805,6 @@ fn should_error_on_corrupt_exact_session_file_when_reopening_pr() {
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details.clone()),
         None,
-        highlighter,
     )
     .unwrap();
     write_corrupt_session_file(&opened.session);
@@ -1494,7 +1849,6 @@ fn should_keep_old_head_session_when_new_head_session_file_is_corrupt() {
     // and the deterministic file for the new head is corrupt
     let mut details_b = details_a.clone();
     details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
-    let highlighter = app.theme.syntax_highlighter();
     let opened_b = crate::forge::pr_open::prepare_open_pr(
         details_b.clone(),
         structured_patch(&two_file_patch("newer changed")),
@@ -1502,7 +1856,6 @@ fn should_keep_old_head_session_when_new_head_session_file_is_corrupt() {
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details_b.clone()),
         None,
-        highlighter,
     )
     .unwrap();
     write_corrupt_session_file(&opened_b.session);
@@ -1575,8 +1928,6 @@ fn should_ignore_exact_session_file_when_pr_session_key_does_not_match() {
     let _reviews = TestReviewsDir::new();
     let mut details = test_pr_details(424249, "mismatch");
     details.head_sha = "aaaaaaaaaaaaaaaa".to_string();
-    let theme = Theme::default();
-    let highlighter = theme.syntax_highlighter();
     let opened = crate::forge::pr_open::prepare_open_pr(
         details.clone(),
         structured_patch(&two_file_patch("new changed")),
@@ -1584,7 +1935,6 @@ fn should_ignore_exact_session_file_when_pr_session_key_does_not_match() {
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details.clone()),
         None,
-        highlighter,
     )
     .unwrap();
     let stable_path = PathBuf::from("src/stable.rs");
@@ -1697,8 +2047,9 @@ fn should_leave_next_session_unchanged_when_carry_forward_has_no_matching_file()
 
     // when carry-forward has no matching previous file or diff file
     let carried_without_previous =
-        App::reviewed_state_carried_forward(&previous, next.clone(), &app.diff_files);
-    let carried_without_diff = App::reviewed_state_carried_forward(&previous, next.clone(), &[]);
+        App::reviewed_state_carried_forward(&previous, next.clone(), &app.diff_files, &[]);
+    let carried_without_diff =
+        App::reviewed_state_carried_forward(&previous, next.clone(), &[], &[]);
 
     // then it keeps the fresh next-session state untouched.
     assert!(carried_without_previous.is_file_reviewed(&stable_path));
@@ -1718,7 +2069,7 @@ fn should_leave_next_session_unchanged_when_carry_forward_has_no_matching_file()
     let mut fresh_next = next;
     fresh_next.get_file_mut(&stable_path).unwrap().reviewed = false;
     let carried_without_diff =
-        App::reviewed_state_carried_forward(&previous_with_reviewed_file, fresh_next, &[]);
+        App::reviewed_state_carried_forward(&previous_with_reviewed_file, fresh_next, &[], &[]);
     assert!(!carried_without_diff.is_file_reviewed(&stable_path));
 }
 
@@ -1891,7 +2242,6 @@ fn should_build_new_head_session_by_carrying_only_unchanged_reviewed_state() {
     // when a new-head session is built and only one file's diff changes
     let mut details_b = details_a.clone();
     details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
-    let highlighter = app.theme.syntax_highlighter();
     let pr_info_b = crate::forge::traits::PullRequestInfo::from_details(details_b.clone());
     let opened = crate::forge::pr_open::prepare_open_pr(
         details_b,
@@ -1900,11 +2250,14 @@ fn should_build_new_head_session_by_carrying_only_unchanged_reviewed_state() {
         PullRequestReviewMetadata::default(),
         pr_info_b,
         None,
-        highlighter,
     )
     .unwrap();
-    let next =
-        App::reviewed_state_carried_forward(&previous, opened.session.clone(), &opened.diff_files);
+    let next = App::reviewed_state_carried_forward(
+        &previous,
+        opened.session.clone(),
+        &opened.diff_files,
+        &[],
+    );
 
     // then unchanged files carry reviewed state and changed files reopen.
     assert!(next.is_file_reviewed(&stable_path));
@@ -1948,7 +2301,6 @@ fn should_carry_unchanged_hunk_marks_inside_changed_file_when_pr_head_advances()
     // when the PR head changes only the second hunk in that file
     let mut details_b = details_a.clone();
     details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
-    let highlighter = app.theme.syntax_highlighter();
     let pr_info_b = crate::forge::traits::PullRequestInfo::from_details(details_b.clone());
     let opened = crate::forge::pr_open::prepare_open_pr(
         details_b,
@@ -1957,13 +2309,16 @@ fn should_carry_unchanged_hunk_marks_inside_changed_file_when_pr_head_advances()
         PullRequestReviewMetadata::default(),
         pr_info_b,
         None,
-        highlighter,
     )
     .unwrap();
     let new_first_key = opened.diff_files[0].hunk_review_key(0).unwrap();
     let new_second_key = opened.diff_files[0].hunk_review_key(1).unwrap();
-    let next =
-        App::reviewed_state_carried_forward(&previous, opened.session.clone(), &opened.diff_files);
+    let next = App::reviewed_state_carried_forward(
+        &previous,
+        opened.session.clone(),
+        &opened.diff_files,
+        &[],
+    );
 
     // then only the unchanged hunk stays reviewed; the file and changed
     // hunk reopen.
@@ -2659,7 +3014,11 @@ struct ThreadAwareForgeBackend {
     details: crate::forge::traits::PullRequestDetails,
     patch: String,
     threads: Vec<RemoteReviewThread>,
-    calls: std::cell::Cell<u32>,
+    calls: std::sync::atomic::AtomicU32,
+    /// Fail `list_review_threads` with a pagination bound.
+    hit_page_limit: bool,
+    /// Fail `list_review_summaries` only (threads succeed).
+    fail_summaries: bool,
 }
 
 impl ThreadAwareForgeBackend {
@@ -2672,7 +3031,9 @@ impl ThreadAwareForgeBackend {
             details,
             patch,
             threads,
-            calls: std::cell::Cell::new(0),
+            calls: std::sync::atomic::AtomicU32::new(0),
+            hit_page_limit: false,
+            fail_summaries: false,
         }
     }
 }
@@ -2706,8 +3067,25 @@ impl crate::forge::traits::ForgeBackend for ThreadAwareForgeBackend {
         &self,
         _pr: &crate::forge::traits::PullRequestDetails,
     ) -> Result<Vec<RemoteReviewThread>> {
-        self.calls.set(self.calls.get() + 1);
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.hit_page_limit {
+            return Err(crate::error::TuicrError::ForgeLimit(
+                "too many pages".to_string(),
+            ));
+        }
         Ok(self.threads.clone())
+    }
+    fn list_review_summaries(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+    ) -> Result<Vec<crate::forge::remote_comments::RemoteReviewSummary>> {
+        if self.fail_summaries {
+            return Err(crate::error::TuicrError::ForgeLimit(
+                "summaries too big".to_string(),
+            ));
+        }
+        Ok(Vec::new())
     }
     fn list_pull_request_commits(
         &self,
@@ -2744,9 +3122,8 @@ fn sample_thread(line: u32, body: &str, resolved: bool, outdated: bool) -> Remot
             id: "C".to_string(),
             author: Some("alice".to_string()),
             body: body.to_string(),
-            created_at: None,
-            in_reply_to: None,
             url: "https://example.com/c".to_string(),
+            ..Default::default()
         }],
     }
 }
@@ -2771,6 +3148,77 @@ fn should_populate_remote_threads_when_opening_pr_through_test_seam() {
         app.session.remote_comments_visibility,
         PrCommentsVisibility::Unresolved
     );
+}
+
+#[test]
+fn should_keep_locked_comments_when_the_sync_thread_fetch_hits_the_page_limit() {
+    // given a persisted PR session holding a locked (submitted) comment
+    let _reviews = TestReviewsDir::new();
+    let summary = sample_pr(42, "answer");
+    let patch = crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string();
+    let backend = |limit: bool| {
+        let mut b =
+            ThreadAwareForgeBackend::new(test_pr_details(42, "answer"), patch.clone(), Vec::new());
+        b.hit_page_limit = limit;
+        Box::new(b)
+    };
+    let mut first = build_app();
+    first
+        .open_pr_with_backend(&summary, backend(false), None)
+        .unwrap();
+    let mut locked = Comment::new("posted".to_string(), CommentType::from_id("note"), None);
+    locked.lifecycle_state = crate::model::comment::CommentLifecycleState::Submitted;
+    first.session.review_comments.push(locked);
+    first.save_current_session_merging_external().unwrap();
+
+    // when the reopen's thread fetch fails with the page bound
+    let mut app = build_app();
+    app.open_pr_with_backend(&summary, backend(true), None)
+        .unwrap();
+
+    // then the locked comment is not pruned and the failure is shown
+    assert_eq!(app.session.review_comments.len(), 1);
+    assert!(app.forge_review_threads.is_empty());
+    let message = app.message.as_ref().expect("warning").content.clone();
+    assert!(message.contains("too many pages"), "{message}");
+
+    // and a successful fetch still prunes it
+    let mut ok = build_app();
+    ok.open_pr_with_backend(&summary, backend(false), None)
+        .unwrap();
+    assert!(ok.session.review_comments.is_empty());
+}
+
+#[test]
+fn should_keep_locked_comments_when_only_the_sync_summary_fetch_fails() {
+    // given a persisted PR session holding a locked (submitted) comment
+    let _reviews = TestReviewsDir::new();
+    let summary = sample_pr(42, "answer");
+    let patch = crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string();
+    let backend = |fail: bool| {
+        let mut b =
+            ThreadAwareForgeBackend::new(test_pr_details(42, "answer"), patch.clone(), Vec::new());
+        b.fail_summaries = fail;
+        Box::new(b)
+    };
+    let mut first = build_app();
+    first
+        .open_pr_with_backend(&summary, backend(false), None)
+        .unwrap();
+    let mut locked = Comment::new("posted".to_string(), CommentType::from_id("note"), None);
+    locked.lifecycle_state = crate::model::comment::CommentLifecycleState::Submitted;
+    first.session.review_comments.push(locked);
+    first.save_current_session_merging_external().unwrap();
+
+    // when the reopen's threads load but the summary fetch fails
+    let mut app = build_app();
+    app.open_pr_with_backend(&summary, backend(true), None)
+        .unwrap();
+
+    // then the locked comment is not pruned and the failure is shown
+    assert_eq!(app.session.review_comments.len(), 1);
+    let message = app.message.as_ref().expect("warning").content.clone();
+    assert!(message.contains("summaries too big"), "{message}");
 }
 
 #[test]
@@ -3048,4 +3496,1369 @@ fn pr_open_landing_mid_delete_prompt_drops_the_prompt() {
     assert!(matches!(&app.diff_source, DiffSource::PullRequest(_)));
     assert_eq!(app.input_mode, InputMode::Normal);
     assert_eq!(app.pending_confirm, None);
+}
+
+// ---- #848 follow-up: initial-open message policy (F8/F9) ----
+
+fn three_commits() -> Vec<crate::forge::traits::PullRequestCommit> {
+    // Forge order is oldest-first; `prepare_open_pr` reverses it.
+    vec![
+        sample_pr_commit("aaa1111111", "first"),
+        sample_pr_commit("bbb2222222", "middle"),
+        sample_pr_commit("ccc3333333", "last"),
+    ]
+}
+
+#[test]
+fn should_hold_the_commit_message_back_until_a_strict_initial_range_loads() {
+    let _reviews = TestReviewsDir::new();
+    for start in ["oldest", "saved", "since-review"] {
+        // given a three-commit PR whose initial selection is a strict range
+        let mut app = build_app();
+        let details = test_pr_details(424398, "initial policy");
+        let metadata = if start == "since-review" {
+            PullRequestReviewMetadata {
+                viewer_login: Some("alice".into()),
+                reviews: vec![review_record("alice", "bbb2222222", "2026-01-01T00:00:00Z")],
+            }
+        } else {
+            PullRequestReviewMetadata::default()
+        };
+        let mut opened = crate::forge::pr_open::prepare_open_pr(
+            details.clone(),
+            structured_patch(two_hunk_patch()),
+            three_commits(),
+            metadata,
+            crate::forge::traits::PullRequestInfo::from_details(details.clone()),
+            None,
+        )
+        .unwrap();
+        if start == "oldest" {
+            app.commit_selection_start = CommitSelectionStart::Oldest;
+        }
+        if start == "saved" {
+            opened.session.commit_selection_range = Some((1, 1));
+        }
+
+        // when the PR is entered
+        app.enter_pr_diff_mode(
+            Box::new(FakeForgeBackend::open_pr_details(
+                details.clone(),
+                two_hunk_patch().to_string(),
+            )),
+            opened,
+        )
+        .unwrap();
+
+        // then the range is loading and no message sits above the cumulative diff
+        let request = app.pr_range_reload_state.clone().expect(start);
+        assert!(
+            !app.diff_files.iter().any(|f| f.is_commit_message),
+            "{start}: loading"
+        );
+
+        // when the range fetch fails
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.pr_range_reload_rx = Some(rx);
+        tx.send(PrRangeReloadEvent::Done {
+            request: request.clone(),
+            result: Err("fixture".into()),
+        })
+        .unwrap();
+        app.poll_pr_range_reload_events();
+
+        // then there is still no message
+        assert!(
+            !app.diff_files.iter().any(|f| f.is_commit_message),
+            "{start}: failure"
+        );
+
+        // when the range loads
+        app.finish_pr_range_reload(&request, structured_patch(first_hunk_patch()))
+            .unwrap();
+
+        // then the selected commit's message is first and registered
+        assert!(app.diff_files[0].is_commit_message, "{start}: success");
+        assert!(
+            app.session
+                .files
+                .contains_key(app.diff_files[0].display_path())
+        );
+    }
+}
+
+#[test]
+fn should_hold_the_commit_message_back_in_cli_startup_with_a_strict_range() {
+    let _reviews = TestReviewsDir::new();
+    // given a three-commit PR opened from the CLI with the oldest commit chosen
+    let details = test_pr_details(424397, "cli strict");
+    let opened = crate::forge::pr_open::prepare_open_pr(
+        details.clone(),
+        structured_patch(two_hunk_patch()),
+        three_commits(),
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details.clone()),
+        None,
+    )
+    .unwrap();
+
+    // when the app is built around it
+    let app = App::from_opened_pr(
+        opened,
+        Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            two_hunk_patch().to_string(),
+        )),
+        details.repository.clone(),
+        Theme::dark(),
+        None,
+        true,
+        None,
+        PrDisplayOptions {
+            show_checks: false,
+            show_comments: true,
+            comments_visibility: None,
+        },
+        CommitSelectionStart::Oldest,
+        None,
+        VcsOpenOptions::default(),
+    )
+    .unwrap();
+
+    // then the range is loading and no message sits above the cumulative diff
+    assert!(app.pr_range_reload_state.is_some());
+    assert!(!app.diff_files.iter().any(|f| f.is_commit_message));
+}
+
+#[test]
+fn should_open_a_single_commit_pr_from_the_cli_with_its_message_first() {
+    let _reviews = TestReviewsDir::new();
+    // given a one-commit PR
+    let details = test_pr_details(424396, "cli single");
+    let patch = crate::forge::github::gh::tests_fixture::SIMPLE_PATCH;
+    let commit = sample_pr_commit_with_body(&details.head_sha, "only", "body");
+    let opened = crate::forge::pr_open::prepare_open_pr(
+        details.clone(),
+        structured_patch(patch),
+        vec![commit.clone()],
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details.clone()),
+        None,
+    )
+    .unwrap();
+
+    // when the CLI's post-open half builds the app
+    let app = App::from_opened_pr(
+        opened,
+        Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            patch.to_string(),
+        )),
+        details.repository.clone(),
+        Theme::dark(),
+        None,
+        true,
+        None,
+        PrDisplayOptions {
+            show_checks: false,
+            show_comments: true,
+            comments_visibility: None,
+        },
+        CommitSelectionStart::All,
+        None,
+        VcsOpenOptions::default(),
+    )
+    .unwrap();
+
+    // then the message is first and can take a comment
+    assert_one_commit_message_first(&app, &commit.short_oid);
+    assert_eq!(
+        commit_message_lines(&app.diff_files[0]),
+        vec!["only", "", "body"]
+    );
+    assert!(
+        app.session
+            .files
+            .contains_key(&DiffFile::commit_message_path(&commit.short_oid))
+    );
+}
+
+// ---- #848 follow-up: reload identity policy (F4) ----
+
+/// Open the three-commit PR and narrow it to the oldest commit, as a range
+/// load would.
+fn open_narrowed_pr() -> (
+    App,
+    crate::forge::traits::PullRequestDetails,
+    PrRangeReloadRequest,
+) {
+    let mut app = build_app();
+    let details = test_pr_details(424399, "retarget");
+    let mut backend =
+        FakeForgeBackend::open_pr_details(details.clone(), two_hunk_patch().to_string());
+    backend.commits = three_commits();
+    app.open_pr_with_backend(
+        &sample_pr(details.number, &details.title),
+        Box::new(backend),
+        None,
+    )
+    .unwrap();
+    app.commit_selection_range = Some((2, 2));
+    let request = PrRangeReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        start_sha: details.base_sha.clone(),
+        end_sha: "aaa1111111".to_string(),
+        range: (2, 2),
+        started_at: Instant::now(),
+        anchor: None,
+    };
+    app.finish_pr_range_reload(&request, structured_patch(first_hunk_patch()))
+        .unwrap();
+    (app, details, request)
+}
+
+fn same_head_reload(
+    app: &mut App,
+    mut details: crate::forge::traits::PullRequestDetails,
+    new_base: Option<&str>,
+    commits: Vec<crate::forge::traits::PullRequestCommit>,
+    metadata: PullRequestReviewMetadata,
+) {
+    if let Some(base) = new_base {
+        details.base_sha = base.to_string();
+    }
+    let request = PrReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        started_at: Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    };
+    app.finish_pr_reload(
+        details.clone(),
+        structured_patch(two_hunk_patch()),
+        commits,
+        metadata,
+        crate::forge::traits::PullRequestInfo::from_details(details),
+        &request,
+    )
+    .unwrap();
+}
+
+fn real_file_hunks(app: &App) -> usize {
+    app.diff_files
+        .iter()
+        .find(|f| !f.is_commit_message)
+        .unwrap()
+        .hunks
+        .len()
+}
+
+#[test]
+fn should_reset_to_the_full_diff_when_a_retarget_changes_the_commit_list() {
+    let _reviews = TestReviewsDir::new();
+    for config in ["oldest", "since-review"] {
+        // given a PR narrowed to its oldest commit
+        let (mut app, details, _) = open_narrowed_pr();
+        let mut metadata = PullRequestReviewMetadata::default();
+        if config == "oldest" {
+            app.commit_selection_start = CommitSelectionStart::Oldest;
+        } else {
+            metadata = PullRequestReviewMetadata {
+                viewer_login: Some("alice".into()),
+                reviews: vec![review_record("alice", "bbb2222222", "2026-01-01T00:00:00Z")],
+            };
+        }
+
+        // when a retarget drops the narrowed commit and moves the base
+        same_head_reload(
+            &mut app,
+            details,
+            Some("aaa1111111"),
+            vec![
+                sample_pr_commit("bbb2222222", "middle"),
+                sample_pr_commit("ccc3333333", "last"),
+            ],
+            metadata,
+        );
+
+        // then the full diff shows with every commit selected and fresh lists
+        assert_eq!(app.commit_selection_range, Some((0, 1)), "{config}");
+        assert_eq!(real_file_hunks(&app), 2, "{config}");
+        assert!(app.pr_range_reload_state.is_none(), "{config}");
+        let oids: Vec<_> = app.pr_commits.iter().map(|c| c.oid.as_str()).collect();
+        assert_eq!(oids, vec!["ccc3333333", "bbb2222222"], "{config}");
+        assert_eq!(app.commit_list.len(), 2);
+        assert_eq!(app.review_commits.len(), 2);
+        assert_eq!(app.session.commit_selection_range, None);
+    }
+}
+
+#[test]
+fn should_reset_when_only_the_commit_membership_changes() {
+    let _reviews = TestReviewsDir::new();
+    // given a PR narrowed to its oldest commit
+    let (mut app, details, _) = open_narrowed_pr();
+
+    // when a reload keeps the base but drops that commit
+    same_head_reload(
+        &mut app,
+        details,
+        None,
+        vec![
+            sample_pr_commit("bbb2222222", "middle"),
+            sample_pr_commit("ccc3333333", "last"),
+        ],
+        PullRequestReviewMetadata::default(),
+    );
+
+    // then the selection resets to the full diff
+    assert_eq!(app.commit_selection_range, Some((0, 1)));
+    assert_eq!(real_file_hunks(&app), 2);
+}
+
+#[test]
+fn should_ignore_a_late_range_result_for_the_old_base_after_a_reset() {
+    let _reviews = TestReviewsDir::new();
+    // given a range fetch in flight for the old base
+    let (mut app, details, old_request) = open_narrowed_pr();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_range_reload_state = Some(old_request.clone());
+    app.pr_range_reload_rx = Some(rx);
+
+    // when a retarget resets the selection
+    same_head_reload(
+        &mut app,
+        details,
+        Some("aaa1111111"),
+        vec![
+            sample_pr_commit("bbb2222222", "middle"),
+            sample_pr_commit("ccc3333333", "last"),
+        ],
+        PullRequestReviewMetadata::default(),
+    );
+    let fresh_hash = app.diff_files[0].content_hash;
+    assert!(
+        app.pr_range_reload_state.is_none(),
+        "reset must stop the range-loading state"
+    );
+    assert!(app.pr_range_reload_rx.is_none());
+
+    // then the stale result can neither be delivered nor applied
+    let delivered = tx.send(PrRangeReloadEvent::Done {
+        request: old_request,
+        result: Ok(structured_patch(first_hunk_patch())),
+    });
+    assert!(delivered.is_err());
+    app.poll_pr_range_reload_events();
+    assert_eq!(app.diff_files[0].content_hash, fresh_hash);
+    assert_eq!(app.commit_selection_range, Some((0, 1)));
+}
+
+#[test]
+fn should_keep_known_commits_when_a_base_change_arrives_with_an_unknown_list() {
+    let _reviews = TestReviewsDir::new();
+    // given a narrowed PR with cached state tied to the old selection
+    let (mut app, details, _) = open_narrowed_pr();
+    let old_oids: Vec<_> = app.pr_commits.iter().map(|c| c.oid.clone()).collect();
+    app.session.commit_selection_range = app.commit_selection_range;
+    app.saved_inline_selection = app.commit_selection_range;
+    app.commit_diff_cache.insert((2, 2), app.diff_files.clone());
+    let gap = GapId {
+        file_idx: 0,
+        hunk_idx: 0,
+    };
+    app.expanded_top.insert(gap.clone(), Vec::new());
+    app.expanded_bottom.insert(gap, Vec::new());
+
+    // when the base changes and the commit fetch degraded to an empty list
+    same_head_reload(
+        &mut app,
+        details,
+        Some("aaa1111111"),
+        Vec::new(),
+        PullRequestReviewMetadata::default(),
+    );
+
+    // then the known commits stay, the diff is cumulative, and all are selected
+    let oids: Vec<_> = app.pr_commits.iter().map(|c| c.oid.clone()).collect();
+    assert_eq!(oids, old_oids);
+    assert_eq!(app.commit_list.len(), 3);
+    assert_eq!(app.review_commits.len(), 3);
+    assert_eq!(app.commit_selection_range, Some((0, 2)));
+    assert_eq!(real_file_hunks(&app), 2);
+    assert!(app.commit_diff_cache.is_empty());
+    assert_eq!(app.saved_inline_selection, None);
+    assert_eq!(app.session.commit_selection_range, None);
+    assert!(app.expanded_top.is_empty() && app.expanded_bottom.is_empty());
+    assert!(app.has_inline_commit_selector());
+}
+
+#[test]
+fn should_keep_the_selection_when_the_diff_base_and_commits_are_unchanged() {
+    let _reviews = TestReviewsDir::new();
+    // given a narrowed PR
+    let (mut app, details, _) = open_narrowed_pr();
+
+    // when a same-head reload finds the same base and commit list
+    same_head_reload(
+        &mut app,
+        details.clone(),
+        None,
+        three_commits(),
+        PullRequestReviewMetadata::default(),
+    );
+
+    // then the strict selection and its narrowed diff stay
+    assert_eq!(app.commit_selection_range, Some((2, 2)));
+    assert_eq!(real_file_hunks(&app), 1);
+
+    // and a manually widened selection under Oldest stays widened
+    app.commit_selection_start = CommitSelectionStart::Oldest;
+    app.commit_selection_range = Some((0, 2));
+    app.reload_pr_inline_selection();
+    same_head_reload(
+        &mut app,
+        details,
+        None,
+        three_commits(),
+        PullRequestReviewMetadata::default(),
+    );
+    assert_eq!(app.commit_selection_range, Some((0, 2)));
+    assert!(!app.diff_files.iter().any(|f| f.is_commit_message));
+    assert_eq!(real_file_hunks(&app), 2);
+}
+
+#[test]
+fn should_select_the_single_remaining_commit_and_hide_comments_of_removed_commits() {
+    let _reviews = TestReviewsDir::new();
+    // given a narrowed PR with the selector focused
+    let (mut app, details, _) = open_narrowed_pr();
+    app.focused_panel = FocusedPanel::CommitSelector;
+    let mut removed = Comment::new("removed".into(), CommentType::None, None);
+    removed.commit_id = Some("aaa1111111".into());
+    let mut retained = removed.clone();
+    retained.commit_id = Some("ccc3333333".into());
+
+    // when a reload leaves one commit
+    same_head_reload(
+        &mut app,
+        details,
+        Some("aaa1111111"),
+        vec![sample_pr_commit("ccc3333333", "last")],
+        PullRequestReviewMetadata::default(),
+    );
+
+    // then it is explicitly selected, the selector is gone and focus moved
+    assert_eq!(app.pr_commits.len(), 1);
+    assert_eq!(app.commit_selection_range, Some((0, 0)));
+    assert!(!app.show_commit_selector);
+    assert!(!app.has_inline_commit_selector());
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+    assert!(app.diff_files[0].is_commit_message);
+    // and only the retained commit's comments are visible
+    assert!(!app.comment_visible(&removed));
+    assert!(app.comment_visible(&retained));
+}
+
+#[test]
+fn should_not_underflow_when_a_base_change_meets_an_empty_commit_list() {
+    let _reviews = TestReviewsDir::new();
+    // given a PR opened with no known commits
+    let mut app = build_app();
+    let details = test_pr_details(424395, "no commits");
+    let backend = FakeForgeBackend::open_pr_details(details.clone(), two_hunk_patch().to_string());
+    app.open_pr_with_backend(
+        &sample_pr(details.number, &details.title),
+        Box::new(backend),
+        None,
+    )
+    .unwrap();
+    assert!(app.pr_commits.is_empty());
+
+    // when the base changes and the list is still unknown
+    same_head_reload(
+        &mut app,
+        details,
+        Some("aaa1111111"),
+        Vec::new(),
+        PullRequestReviewMetadata::default(),
+    );
+
+    // then nothing is selected, no selector shows, and the diff is intact
+    assert_eq!(app.commit_selection_range, None);
+    assert!(!app.has_inline_commit_selector());
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+    assert_eq!(real_file_hunks(&app), 2);
+}
+
+#[test]
+fn should_not_restore_stale_persisted_indices_after_a_reset() {
+    let _reviews = TestReviewsDir::new();
+    // given a saved narrowed selection
+    let (mut app, details, _) = open_narrowed_pr();
+    app.persist_pr_commit_selection_range();
+    let path = crate::persistence::storage::session_path(&app.session).unwrap();
+    assert_eq!(
+        crate::persistence::storage::load_session(&path)
+            .unwrap()
+            .commit_selection_range,
+        Some((2, 2))
+    );
+
+    // when a reset happens
+    same_head_reload(
+        &mut app,
+        details.clone(),
+        Some("aaa1111111"),
+        Vec::new(),
+        PullRequestReviewMetadata::default(),
+    );
+
+    // then the cleared selection is on disk
+    assert_eq!(
+        crate::persistence::storage::load_session(&path)
+            .unwrap()
+            .commit_selection_range,
+        None
+    );
+
+    // and a reopen selects all commits without fetching a range
+    let mut new_details = details;
+    new_details.base_sha = "aaa1111111".to_string();
+    let mut backend =
+        FakeForgeBackend::open_pr_details(new_details.clone(), two_hunk_patch().to_string());
+    backend.commits = three_commits();
+    let mut reopened = build_app();
+    reopened
+        .open_pr_with_backend(
+            &sample_pr(new_details.number, &new_details.title),
+            Box::new(backend),
+            None,
+        )
+        .unwrap();
+    assert_eq!(reopened.commit_selection_range, Some((0, 2)));
+    assert!(reopened.pr_range_reload_state.is_none());
+}
+
+// ---- #848 follow-up: commit-message review carry-forward (F7) ----
+
+#[test]
+fn should_carry_a_retained_commit_message_review_to_a_new_head() {
+    for reopen in [false, true] {
+        let _reviews = TestReviewsDir::new();
+        // given a reviewed commit message with drafts and a locked comment
+        let mut app = build_app();
+        let mut details_a = test_pr_details(424390 + u64::from(reopen), "f7");
+        details_a.head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+        let commit_a = sample_pr_commit_with_body(&details_a.head_sha, "subject A", "body A");
+        let patch = crate::forge::github::gh::tests_fixture::SIMPLE_PATCH;
+        let mut backend_a = FakeForgeBackend::open_pr_details(details_a.clone(), patch.to_string());
+        backend_a.commits = vec![commit_a.clone()];
+        app.open_pr_with_backend(
+            &sample_pr(details_a.number, &details_a.title),
+            Box::new(backend_a),
+            None,
+        )
+        .unwrap();
+        let message_path = DiffFile::commit_message_path(&commit_a.short_oid);
+        let hunk = app.diff_files[0].hunk_review_key(0).unwrap();
+        let mut locked = Comment::new("locked".into(), CommentType::None, None);
+        locked.lifecycle_state = crate::model::comment::CommentLifecycleState::Submitted;
+        let review = app.session.get_file_mut(&message_path).unwrap();
+        review.reviewed = true;
+        review.reviewed_hunks.insert(hunk.clone());
+        review.add_line_comment(
+            3,
+            Comment::new("line draft".into(), CommentType::None, None),
+        );
+        review.add_file_comment(Comment::new("file draft".into(), CommentType::None, None));
+        review.add_file_comment(locked.clone());
+        review.add_line_comment(3, locked);
+        app.save_current_session_merging_external().unwrap();
+
+        // when the head moves and the commit stays in the PR
+        let mut details_b = details_a.clone();
+        details_b.head_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
+        let commit_b = sample_pr_commit(&details_b.head_sha, "subject B");
+        if reopen {
+            let mut next = build_app();
+            let mut backend_b =
+                FakeForgeBackend::open_pr_details(details_b.clone(), patch.to_string());
+            backend_b.commits = vec![commit_a.clone(), commit_b];
+            next.open_pr_with_backend(
+                &sample_pr(details_b.number, &details_b.title),
+                Box::new(backend_b),
+                None,
+            )
+            .unwrap();
+            app = next;
+        } else {
+            same_head_reload_new_head(&mut app, &details_a, &details_b, &commit_a, commit_b);
+        }
+        assert_eq!(
+            app.session.pr_session_key.as_ref().unwrap().head_sha,
+            details_b.head_sha
+        );
+
+        // and the retained commit is selected again
+        app.commit_selection_range = Some((1, 1));
+        let request = PrRangeReloadRequest {
+            repository: details_b.repository.clone(),
+            pr_number: details_b.number,
+            head_sha: details_b.head_sha.clone(),
+            start_sha: details_b.base_sha.clone(),
+            end_sha: commit_a.oid.clone(),
+            range: (1, 1),
+            started_at: Instant::now(),
+            anchor: None,
+        };
+        app.finish_pr_range_reload(&request, structured_patch(patch))
+            .unwrap();
+
+        // then its review state and unlocked drafts are there, locked ones are not
+        assert_one_commit_message_first(&app, &commit_a.short_oid);
+        let review = &app.session.files[&message_path];
+        assert!(review.reviewed, "reopen={reopen}");
+        assert!(review.reviewed_hunks.contains(&hunk), "reopen={reopen}");
+        assert_eq!(review.file_comments.len(), 1, "reopen={reopen}");
+        assert_eq!(review.file_comments[0].content, "file draft");
+        assert_eq!(review.line_comments[&3].len(), 1, "reopen={reopen}");
+        assert_eq!(review.line_comments[&3][0].content, "line draft");
+    }
+}
+
+fn same_head_reload_new_head(
+    app: &mut App,
+    old: &crate::forge::traits::PullRequestDetails,
+    new: &crate::forge::traits::PullRequestDetails,
+    commit_a: &crate::forge::traits::PullRequestCommit,
+    commit_b: crate::forge::traits::PullRequestCommit,
+) {
+    let request = PrReloadRequest {
+        repository: old.repository.clone(),
+        pr_number: old.number,
+        head_sha: old.head_sha.clone(),
+        started_at: Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    };
+    app.finish_pr_reload(
+        new.clone(),
+        structured_patch(crate::forge::github::gh::tests_fixture::SIMPLE_PATCH),
+        vec![commit_a.clone(), commit_b],
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(new.clone()),
+        &request,
+    )
+    .unwrap();
+}
+
+#[test]
+fn should_drop_removed_commit_message_reviews_and_lock_state_when_carrying_forward() {
+    // given a previous session with a kept and a removed commit's message
+    let key_session = |head: &str| {
+        let mut session = ReviewSession::new(
+            PathBuf::from("/tmp/pr"),
+            head.to_string(),
+            None,
+            SessionDiffSource::PullRequest,
+        );
+        session.pr_session_key = None;
+        session
+    };
+    let mut previous = key_session("old");
+    let kept = DiffFile::commit_message_path("kept111");
+    let gone = DiffFile::commit_message_path("gone222");
+    for path in [&kept, &gone] {
+        let mut review = FileReview::new(path.clone(), FileStatus::Added, 1);
+        review.reviewed = true;
+        review.add_file_comment(Comment::new("draft".into(), CommentType::None, None));
+        previous.files.insert(path.clone(), review);
+    }
+
+    // when carried to a session whose PR still has only the kept commit
+    let carried = App::reviewed_state_carried_forward(
+        &previous,
+        key_session("new"),
+        &[],
+        &[sample_pr_commit("kept1112222", "kept")],
+    );
+
+    // then only the kept message's review comes along
+    assert!(carried.files[&kept].reviewed);
+    assert_eq!(carried.files[&kept].file_comments.len(), 1);
+    assert!(!carried.files.contains_key(&gone));
+}
+
+#[test]
+fn should_prefer_the_exact_head_session_over_carried_commit_message_state() {
+    let _reviews = TestReviewsDir::new();
+    // given a head-B session saved with the message review cleared
+    let mut details_a = test_pr_details(424389, "f7 precedence");
+    details_a.head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
+    let commit_a = sample_pr_commit_with_body(&details_a.head_sha, "subject A", "body A");
+    let commit_b = sample_pr_commit(&details_b.head_sha, "subject B");
+    let patch = crate::forge::github::gh::tests_fixture::SIMPLE_PATCH;
+    let message_path = DiffFile::commit_message_path(&commit_a.short_oid);
+
+    let mut app = build_app();
+    let mut backend = FakeForgeBackend::open_pr_details(details_a.clone(), patch.to_string());
+    backend.commits = vec![commit_a.clone()];
+    app.open_pr_with_backend(
+        &sample_pr(details_a.number, &details_a.title),
+        Box::new(backend),
+        None,
+    )
+    .unwrap();
+    app.session.get_file_mut(&message_path).unwrap().reviewed = true;
+    app.save_current_session_merging_external().unwrap();
+
+    let open_b = |commit_a: &crate::forge::traits::PullRequestCommit| {
+        let mut next = build_app();
+        let mut backend_b = FakeForgeBackend::open_pr_details(details_b.clone(), patch.to_string());
+        backend_b.commits = vec![commit_a.clone(), commit_b.clone()];
+        next.open_pr_with_backend(
+            &sample_pr(details_b.number, &details_b.title),
+            Box::new(backend_b),
+            None,
+        )
+        .unwrap();
+        next
+    };
+    let mut at_b = open_b(&commit_a);
+    assert!(at_b.session.files[&message_path].reviewed, "carried");
+    at_b.session.get_file_mut(&message_path).unwrap().reviewed = false;
+    at_b.save_current_session_merging_external().unwrap();
+
+    // when head B is reopened
+    let again = open_b(&commit_a);
+
+    // then its own session wins over the carry from head A
+    assert!(!again.session.files[&message_path].reviewed);
+
+    // The live new-head reload must respect the same exact-head session.
+    same_head_reload_new_head(
+        &mut app,
+        &details_a,
+        &details_b,
+        &commit_a,
+        commit_b.clone(),
+    );
+    assert!(
+        !app.session.files[&message_path].reviewed,
+        "exact-head wins on live reload"
+    );
+}
+
+// ---- late async results must belong to the PR on screen ----
+
+fn open_two_commit_pr(app: &mut App, number: u64) {
+    let summary = sample_pr(number, "async identity");
+    let mut backend = FakeForgeBackend::open_pr_details(
+        test_pr_details(number, "async identity"),
+        two_hunk_patch().to_string(),
+    );
+    backend.commits = vec![
+        sample_pr_commit("aaa1111", "first"),
+        sample_pr_commit("bbb2222", "second"),
+    ];
+    app.open_pr_with_backend(&summary, Box::new(backend), None)
+        .unwrap();
+}
+
+fn late_reload_request(app: &App, pr_number: u64, head_sha: &str) -> PrReloadRequest {
+    let DiffSource::PullRequest(pr) = &app.diff_source else {
+        panic!("expected PR mode");
+    };
+    PrReloadRequest {
+        repository: pr.key.repository.clone(),
+        pr_number,
+        head_sha: head_sha.to_string(),
+        started_at: Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    }
+}
+
+fn late_range_request(
+    app: &App,
+    pr_number: u64,
+    head_sha: &str,
+    range: (usize, usize),
+) -> PrRangeReloadRequest {
+    let DiffSource::PullRequest(pr) = &app.diff_source else {
+        panic!("expected PR mode");
+    };
+    PrRangeReloadRequest {
+        repository: pr.key.repository.clone(),
+        pr_number,
+        head_sha: head_sha.to_string(),
+        start_sha: "aaa1111".to_string(),
+        end_sha: "bbb2222".to_string(),
+        range,
+        started_at: Instant::now(),
+        anchor: None,
+    }
+}
+
+fn live_head(app: &App) -> String {
+    let DiffSource::PullRequest(pr) = &app.diff_source else {
+        panic!("expected PR mode");
+    };
+    pr.key.head_sha.clone()
+}
+
+#[test]
+fn should_drop_late_reload_result_for_another_pr() {
+    // given PR 43 is open while a reload spawned for PR 42 is still in flight
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    open_two_commit_pr(&mut app, 43);
+    let request = late_reload_request(&app, 42, "stale-head");
+    app.pr_reload_state = Some(request.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_reload_rx = Some(rx);
+    tx.send(PrReloadEvent::Done {
+        request,
+        result: Err("boom".to_string()),
+    })
+    .unwrap();
+
+    // when the result lands
+    app.poll_pr_reload_events();
+
+    // then it is dropped without touching PR 43
+    assert!(app.message.is_none(), "got {:?}", app.message);
+}
+
+#[test]
+fn should_drop_late_reload_result_for_an_older_head_of_the_open_pr() {
+    // given a reload spawned at an older head of the open PR
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    open_two_commit_pr(&mut app, 43);
+    let request = late_reload_request(&app, 43, "older-head");
+    app.pr_reload_state = Some(request.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_reload_rx = Some(rx);
+    tx.send(PrReloadEvent::Done {
+        request,
+        result: Err("boom".to_string()),
+    })
+    .unwrap();
+
+    // when / then
+    app.poll_pr_reload_events();
+    assert!(app.message.is_none(), "got {:?}", app.message);
+}
+
+#[test]
+fn should_drop_late_range_result_for_another_pr() {
+    // given PR 43 open with a subset selected, and a range request from PR 42
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    open_two_commit_pr(&mut app, 43);
+    app.commit_selection_range = Some((0, 0));
+    let request = late_range_request(&app, 42, &live_head(&app), (0, 0));
+    app.pr_range_reload_state = Some(request.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_range_reload_rx = Some(rx);
+    tx.send(PrRangeReloadEvent::Done {
+        request,
+        result: Err("boom".to_string()),
+    })
+    .unwrap();
+
+    // when / then
+    app.poll_pr_range_reload_events();
+    assert!(app.message.is_none(), "got {:?}", app.message);
+}
+
+#[test]
+fn should_drop_late_range_result_when_selection_changed() {
+    // given a range request for (1, 1) while the live selection is (0, 0)
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    open_two_commit_pr(&mut app, 43);
+    app.commit_selection_range = Some((0, 0));
+    let request = late_range_request(&app, 43, &live_head(&app), (1, 1));
+    app.pr_range_reload_state = Some(request.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_range_reload_rx = Some(rx);
+    tx.send(PrRangeReloadEvent::Done {
+        request,
+        result: Err("boom".to_string()),
+    })
+    .unwrap();
+
+    // when / then
+    app.poll_pr_range_reload_events();
+    assert!(app.message.is_none(), "got {:?}", app.message);
+}
+
+#[test]
+fn should_cancel_range_reload_when_widening_to_all_commits() {
+    // given a subset range fetch in flight
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    open_two_commit_pr(&mut app, 43);
+    app.range_diff_files = Some(app.diff_files.clone());
+    app.commit_selection_range = Some((0, 1));
+    let request = late_range_request(&app, 43, &live_head(&app), (0, 0));
+    app.pr_range_reload_state = Some(request);
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.pr_range_reload_rx = Some(rx);
+
+    // when the selection widens to every commit
+    app.reload_pr_inline_selection();
+
+    // then the fetch is cancelled
+    assert!(app.pr_range_reload_state.is_none());
+    assert!(app.pr_range_reload_rx.is_none());
+}
+
+#[test]
+fn should_clear_in_flight_reloads_when_entering_another_pr() {
+    // given reload and range reload state left over from PR 42
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    open_two_commit_pr(&mut app, 42);
+    app.pr_reload_state = Some(late_reload_request(&app, 42, &live_head(&app)));
+    app.pr_range_reload_state = Some(late_range_request(&app, 42, &live_head(&app), (0, 0)));
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.pr_reload_rx = Some(rx);
+    let (_tx2, rx2) = std::sync::mpsc::channel();
+    app.pr_range_reload_rx = Some(rx2);
+
+    // when PR 43 is opened
+    open_two_commit_pr(&mut app, 43);
+
+    // then none of it survives
+    assert!(app.pr_reload_state.is_none() && app.pr_reload_rx.is_none());
+    assert!(app.pr_range_reload_state.is_none() && app.pr_range_reload_rx.is_none());
+}
+
+fn app_in_pr_mode_from_checkout() -> (App, tempfile::TempDir, TestReviewsDir) {
+    let reviews = TestReviewsDir::new();
+    let dir = tempfile::tempdir().expect("failed to create test repo dir");
+    let commits = vec![
+        CommitInfo {
+            id: "c2".to_string(),
+            short_id: "c2".to_string(),
+            branch_name: None,
+            summary: "second".to_string(),
+            body: None,
+            author: "a".to_string(),
+            time: chrono::Utc::now(),
+        },
+        CommitInfo {
+            id: "c1".to_string(),
+            short_id: "c1".to_string(),
+            branch_name: None,
+            summary: "first".to_string(),
+            body: None,
+            author: "a".to_string(),
+            time: chrono::Utc::now(),
+        },
+    ];
+    let mut app = build_app_rooted(dir.path().to_path_buf(), commits, None);
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "first"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    ));
+    app.open_pr_with_backend(&sample_pr(42, "first"), backend, None)
+        .unwrap();
+    (app, dir, reviews)
+}
+
+/// Entering PR mode swaps in `PrNoopVcs`, which has no commits or working
+/// tree, so the Local tab used to be empty for the rest of the run.
+#[test]
+fn should_list_local_commits_after_entering_pr_mode() {
+    // given a checkout app that has opened a PR
+    let (mut app, dir, _reviews) = app_in_pr_mode_from_checkout();
+    assert!(
+        app.vcs_info
+            .root_path
+            .to_string_lossy()
+            .starts_with("forge:")
+    );
+
+    // when the Local tab is opened
+    app.enter_target_selector(TargetTab::Local).unwrap();
+
+    // then the checkout's commits are listed
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+    assert_eq!(app.commit_list.len(), 2);
+    // and the PR stays active behind the selector
+    assert!(
+        app.vcs_info
+            .root_path
+            .to_string_lossy()
+            .starts_with("forge:")
+    );
+    assert!(matches!(app.diff_source, DiffSource::PullRequest(_)));
+    // and local sessions are scoped by the checkout, not the PR identity
+    // (the reload runs with the PR backend active, so it must not read its root)
+    app.enter_target_selector(TargetTab::Sessions).unwrap();
+    app.sessions_tab_toggle_show_empty();
+    assert_eq!(
+        app.sessions_tab.scope(),
+        dir.path().file_name().unwrap().to_string_lossy()
+    );
+}
+
+/// A local load that finds nothing leaves the PR on screen with its own
+/// backend; one that succeeds leaves PR mode with the checkout's backend.
+#[test]
+fn should_keep_the_pr_backend_when_a_local_load_finds_nothing() {
+    let (mut app, dir, _reviews) = app_in_pr_mode_from_checkout();
+
+    let loaded = app
+        .with_local_vcs(|app| app.load_working_tree_selection())
+        .unwrap();
+
+    assert!(!loaded);
+    assert!(matches!(app.diff_source, DiffSource::PullRequest(_)));
+    assert!(
+        app.vcs_info
+            .root_path
+            .to_string_lossy()
+            .starts_with("forge:")
+    );
+    // and the checkout is still reachable afterwards
+    app.enter_target_selector(TargetTab::Local).unwrap();
+    assert_eq!(app.commit_list.len(), 2);
+    drop(dir);
+}
+
+/// Leaving PR mode for a local review must drop the PR rows from the
+/// annotation cache, or row 0 stays a PR-description row with no `pr_info`.
+#[test]
+fn should_drop_pr_annotations_when_a_local_review_replaces_the_pr() {
+    // given a PR app whose annotations include PR rows
+    let (mut app, _dir, _reviews) = app_in_pr_mode_from_checkout();
+    app.rebuild_annotations();
+    let is_pr_row = |a: &AnnotatedLine| {
+        matches!(
+            a,
+            AnnotatedLine::PrInfoLine { .. } | AnnotatedLine::RemoteReviewSummaryLine { .. }
+        )
+    };
+    assert!(app.line_annotations.iter().any(is_pr_row));
+
+    // when a local action replaces the PR (as the local loaders do)
+    app.with_local_vcs(|app| {
+        app.diff_source = DiffSource::WorkingTree;
+        app.rebuild_annotations();
+        Ok(())
+    })
+    .unwrap();
+
+    // then no PR row survives
+    assert!(app.pr_info.is_none());
+    assert!(!app.line_annotations.iter().any(is_pr_row));
+}
+
+/// `tuicr pr` from a checkout subdirectory records the checkout root, and
+/// from outside any checkout records nothing.
+#[test]
+fn should_record_the_checkout_root_for_cli_pr_launch_dirs() {
+    use crate::app::init::checkout_root_for_launch_dir;
+    let options = VcsOpenOptions::default();
+
+    // given a checkout with a subdirectory
+    let repo = tempfile::tempdir().unwrap();
+    crate::forge::local_git::test_support::init_repo_with_commit(repo.path(), &["one"]);
+    let sub = repo.path().join("src");
+    std::fs::create_dir(&sub).unwrap();
+
+    // then the subdirectory resolves to the root
+    let root = checkout_root_for_launch_dir(&sub, &options).unwrap();
+    assert_eq!(
+        root.canonicalize().unwrap(),
+        repo.path().canonicalize().unwrap()
+    );
+
+    // and a directory outside any checkout resolves to nothing
+    let plain = tempfile::tempdir().unwrap();
+    assert_eq!(checkout_root_for_launch_dir(plain.path(), &options), None);
+}
+
+fn app_in_pr_mode_with_commits(n: usize) -> (App, tempfile::TempDir, TestReviewsDir) {
+    let reviews = TestReviewsDir::new();
+    let dir = tempfile::tempdir().expect("failed to create test repo dir");
+    let commits = (0..n)
+        .map(|i| CommitInfo {
+            id: format!("c{i}"),
+            short_id: format!("c{i}"),
+            branch_name: None,
+            summary: format!("commit {i}"),
+            body: None,
+            author: "a".to_string(),
+            time: chrono::Utc::now(),
+        })
+        .collect();
+    let mut app = build_app_rooted(dir.path().to_path_buf(), commits, None);
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "first"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    ));
+    app.open_pr_with_backend(&sample_pr(42, "first"), backend, None)
+        .unwrap();
+    (app, dir, reviews)
+}
+
+/// "Show more" pages through the checkout's history, not the PR's no-op
+/// backend (which answers with nothing and used to end pagination at 10).
+#[test]
+fn should_page_local_history_after_entering_pr_mode() {
+    // given a PR opened from a checkout with 25 commits
+    let (mut app, _dir, _reviews) = app_in_pr_mode_with_commits(25);
+    app.enter_target_selector(TargetTab::Local).unwrap();
+    assert_eq!(app.commit_list.len(), VISIBLE_COMMIT_COUNT);
+    assert!(app.has_more_commit);
+
+    // when the list is expanded past the first page
+    app.visible_commit_count = app.commit_list.len();
+    app.expand_commit().unwrap();
+
+    // then older commits were fetched and the PR backend is back in place
+    assert!(app.commit_list.len() > VISIBLE_COMMIT_COUNT);
+    assert_eq!(app.commit_list[VISIBLE_COMMIT_COUNT].id, "c10");
+    assert!(
+        app.vcs_info
+            .root_path
+            .to_string_lossy()
+            .starts_with("forge:")
+    );
+}
+
+/// A lazily reopened backend follows the recorded checkout, not wherever the
+/// process currently is.
+#[test]
+fn should_reopen_the_recorded_checkout_not_the_cwd() {
+    // given a PR app with no parked backend and a real recorded checkout
+    let (mut app, _dir, _reviews) = app_in_pr_mode_from_checkout();
+    let repo = tempfile::tempdir().unwrap();
+    crate::forge::local_git::test_support::init_repo_with_commit(repo.path(), &["one"]);
+    app.parked_vcs = None;
+    app.local_repo_root = Some(repo.path().to_path_buf());
+    assert_ne!(
+        std::env::current_dir().unwrap().canonicalize().unwrap(),
+        repo.path().canonicalize().unwrap()
+    );
+
+    // when a local action runs
+    let root = app
+        .with_local_vcs(|app| Ok(app.vcs_info.root_path.clone()))
+        .unwrap();
+
+    // then it ran against the recorded checkout
+    assert_eq!(
+        root.canonicalize().unwrap(),
+        repo.path().canonicalize().unwrap()
+    );
+}
+
+/// `tuicr pr` records the configured backend and whitespace mode so the
+/// reopened checkout backend matches a normal start.
+#[test]
+fn should_record_the_startup_vcs_options_for_cli_pr_startup() {
+    let _reviews = TestReviewsDir::new();
+    let details = test_pr_details(424398, "cli opts");
+    let patch = crate::forge::github::gh::tests_fixture::SIMPLE_PATCH;
+    let opened = crate::forge::pr_open::prepare_open_pr(
+        details.clone(),
+        structured_patch(patch),
+        vec![sample_pr_commit_with_body(
+            &details.head_sha,
+            "only",
+            "body",
+        )],
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details.clone()),
+        None,
+    )
+    .unwrap();
+    let configured = VcsOpenOptions {
+        git_backend_preference: GitBackendPreference::Cli,
+        diff_whitespace_mode: DiffWhitespaceMode::IgnoreAll,
+    };
+
+    let app = App::from_opened_pr(
+        opened,
+        Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            patch.to_string(),
+        )),
+        details.repository.clone(),
+        Theme::dark(),
+        None,
+        true,
+        None,
+        PrDisplayOptions {
+            show_checks: false,
+            show_comments: true,
+            comments_visibility: None,
+        },
+        CommitSelectionStart::All,
+        None,
+        configured.clone(),
+    )
+    .unwrap();
+
+    assert_eq!(app.vcs_open_options, configured);
+}
+
+#[test]
+fn should_keep_wrap_preference_when_opening_a_pr() {
+    let mut app = build_app();
+    app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+    app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+    app.pr_tab.start_initial_load();
+    let summary = sample_pr(42, "answer");
+    app.pr_tab
+        .apply_initial_load(Ok((vec![summary.clone()], false)));
+    app.target_tab = TargetTab::PullRequests;
+    app.diff_state.wrap_lines = true;
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "answer"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    ));
+
+    app.open_pr_with_backend(&summary, backend, None).unwrap();
+
+    assert!(matches!(app.diff_source, DiffSource::PullRequest(_)));
+    assert!(app.diff_state.wrap_lines, "PR open reset wrap");
+}
+
+/// A dirty app with no comments in memory whose session file was saved with
+/// `disk_comment` (as `tuicr review add` would), unknown to the app.
+fn app_with_external_comment_on_disk() -> App {
+    let mut app = build_app();
+    let path = PathBuf::from("src/main.rs");
+    app.session.add_file(path.clone(), FileStatus::Modified, 0);
+    app.save_current_session_merging_external().unwrap();
+    let mut external = app.session.clone();
+    external
+        .get_file_mut(&path)
+        .unwrap()
+        .add_file_comment(crate::model::Comment::new(
+            "agent note".to_string(),
+            crate::model::CommentType::from_id("note"),
+            None,
+        ));
+    crate::persistence::storage::save_session(&external).unwrap();
+    app.session.get_file_mut(&path).unwrap().reviewed = true;
+    app.dirty = true;
+    app
+}
+
+#[test]
+fn should_not_discard_agent_comment_on_colon_q_before_poll() {
+    let mut app = app_with_external_comment_on_disk();
+    app.command_buffer = "q".to_string();
+
+    crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+
+    assert!(!app.should_quit);
+    assert!(app.session_path.as_ref().unwrap().exists());
+    assert!(app.session.has_comments(), "agent comment merged into view");
+    assert!(matches!(
+        app.message.as_ref().map(|m| &m.message_type),
+        Some(MessageType::Error)
+    ));
+}
+
+#[test]
+fn should_not_discard_agent_comment_on_q_before_poll() {
+    let mut app = app_with_external_comment_on_disk();
+
+    crate::handler::handle_normal_action(&mut app, crate::input::Action::Quit);
+
+    assert!(!app.should_quit);
+    assert!(app.session_path.as_ref().unwrap().exists());
+    assert!(app.session.has_comments());
+}
+
+#[test]
+fn should_not_discard_saved_comment_deleted_in_memory_on_q() {
+    let mut app = build_app();
+    let path = PathBuf::from("src/main.rs");
+    app.session.add_file(path.clone(), FileStatus::Modified, 0);
+    app.session
+        .get_file_mut(&path)
+        .unwrap()
+        .add_file_comment(crate::model::Comment::new(
+            "saved".to_string(),
+            crate::model::CommentType::from_id("note"),
+            None,
+        ));
+    app.save_current_session_merging_external().unwrap();
+    app.session
+        .get_file_mut(&path)
+        .unwrap()
+        .file_comments
+        .clear();
+    app.dirty = true;
+
+    crate::handler::handle_normal_action(&mut app, crate::input::Action::Quit);
+
+    assert!(!app.should_quit);
+    assert!(app.session_path.as_ref().unwrap().exists());
+}
+
+#[test]
+fn should_delete_reviewed_only_session_file_on_q() {
+    let mut app = build_app();
+    let path = PathBuf::from("src/main.rs");
+    app.session.add_file(path.clone(), FileStatus::Modified, 0);
+    app.save_current_session_merging_external().unwrap();
+    app.session.get_file_mut(&path).unwrap().reviewed = true;
+    app.dirty = true;
+    let file = app.session_path.clone().unwrap();
+    assert!(file.exists());
+
+    crate::handler::handle_normal_action(&mut app, crate::input::Action::Quit);
+
+    assert!(app.should_quit);
+    assert!(!file.exists());
+}
+
+#[test]
+fn should_not_quit_on_zz_when_save_fails() {
+    let mut app = build_app();
+    app.session
+        .add_file(PathBuf::from("a.rs"), FileStatus::Modified, 0);
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("file");
+    std::fs::write(&blocker, "x").unwrap();
+    crate::persistence::storage::set_test_reviews_dir(Some(blocker.join("reviews")));
+
+    crate::handler::handle_write_and_quit(&mut app);
+    crate::persistence::storage::set_test_reviews_dir(None);
+
+    assert!(!app.should_quit);
+    assert!(matches!(
+        app.message.as_ref().map(|m| &m.message_type),
+        Some(MessageType::Error)
+    ));
+}
+
+#[test]
+fn should_quit_on_zz_when_save_succeeds() {
+    let mut app = build_app();
+    app.session
+        .add_file(PathBuf::from("a.rs"), FileStatus::Modified, 0);
+
+    crate::handler::handle_write_and_quit(&mut app);
+
+    assert!(app.should_quit);
 }

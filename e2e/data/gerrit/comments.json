@@ -1,0 +1,5 @@
+{"a.txt": [
+ {"id": "t1", "line": 1, "message": "FIRST-ROOT", "unresolved": true, "patch_set": 1, "updated": "2013-02-21 11:00:00.000000000"},
+ {"id": "t1r", "in_reply_to": "t1", "message": "FIRST-DONE", "unresolved": false, "patch_set": 1, "updated": "2013-02-21 12:00:00.000000000"},
+ {"id": "t2", "line": 2, "message": "SECOND-ROOT", "unresolved": false, "patch_set": 1, "updated": "2013-02-21 11:00:00.000000000"},
+ {"id": "t2r", "in_reply_to": "t2", "message": "SECOND-REOPEN", "unresolved": true, "patch_set": 1, "updated": "2013-02-21 12:00:00.000000000"}]}

@@ -6,6 +6,8 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::app::{App, TargetTab, sessions_tab};
 use crate::forge::selector::{PrTabStatus, PrTabView};
 use crate::forge::traits::PullRequestListScope;
@@ -190,7 +192,7 @@ fn pr_status_hint_span(app: &App, strip_bg: ratatui::style::Color) -> (Span<'sta
             (s, base)
         }
     };
-    let width = content.len();
+    let width = content.width();
     (Span::styled(content, style), width)
 }
 
@@ -198,6 +200,7 @@ fn pr_scope_prefix(scope: PullRequestListScope) -> &'static str {
     match scope {
         PullRequestListScope::Open => "",
         PullRequestListScope::ReviewRequested => "requested · ",
+        PullRequestListScope::PersonallyRequested => "requested (me) · ",
     }
 }
 
@@ -257,7 +260,7 @@ fn overflow_row<'a>(theme: &crate::theme::Theme, is_cursor: bool, label: &'a str
         "  ".to_string()
     };
     Line::from(vec![
-        Span::styled(pointer, style),
+        Span::styled(pointer, styles::selection_marker_style(theme, style)),
         Span::styled(format!("    \u{2026} {label}"), style),
     ])
 }
@@ -348,7 +351,10 @@ fn render_sessions_tab(frame: &mut Frame, app: &mut App, area: Rect) {
         let active = if row.active { " \u{00b7} open" } else { "" };
 
         lines.push(Line::from(vec![
-            Span::styled(pointer_str, pointer_style),
+            Span::styled(
+                pointer_str,
+                styles::selection_marker_style(theme, pointer_style),
+            ),
             Span::styled("  ", Style::default()),
             Span::styled(kind, styles::hash_style(theme)),
             Span::styled(" ", Style::default()),
@@ -367,6 +373,62 @@ fn render_sessions_tab(frame: &mut Frame, app: &mut App, area: Rect) {
         Paragraph::new(lines).style(styles::panel_style(theme)),
         area,
     );
+}
+
+/// Pointer, range-bar placeholder, `#number` and its trailing space.
+const PR_ROW_LEAD_WIDTH: usize = 2 + 2 + 6 + 1;
+const PR_TITLE_MIN_WIDTH: usize = 20;
+const PR_TITLE_MAX_WIDTH: usize = 60;
+const PR_AUTHOR_WIDTH: usize = 12;
+
+/// The `  author · updated · commit 2mo [draft]` tail of each PR row. The
+/// last-commit part appears only for forges that report it (GitHub); when
+/// any row has one, the updated times are padded so it lines up.
+fn pr_row_metadata(view: &PrTabView<'_>) -> Vec<String> {
+    let updated: Vec<String> = view
+        .rows
+        .iter()
+        .map(|row| {
+            row.summary
+                .updated_at
+                .as_ref()
+                .map(format_relative_short)
+                .unwrap_or_else(|| "\u{2014}".to_string())
+        })
+        .collect();
+    let has_last_commit = view
+        .rows
+        .iter()
+        .any(|row| row.summary.last_commit_at.is_some());
+    let updated_width = if has_last_commit {
+        updated.iter().map(|u| u.chars().count()).max().unwrap_or(0)
+    } else {
+        0
+    };
+
+    view.rows
+        .iter()
+        .zip(updated)
+        .map(|(row, updated)| {
+            let author = truncate_or_pad(
+                row.summary.author.as_deref().unwrap_or("?"),
+                PR_AUTHOR_WIDTH,
+            );
+            let last_commit = row
+                .summary
+                .last_commit_at
+                .as_ref()
+                .map(|at| format!(" \u{00b7} commit {}", format_relative_short(at)))
+                .unwrap_or_default();
+            let updated = if last_commit.is_empty() {
+                updated
+            } else {
+                format!("{updated:<updated_width$}")
+            };
+            let draft = if row.summary.is_draft { " [draft]" } else { "" };
+            format!("  {author} \u{00b7} {updated}{last_commit}{draft}")
+        })
+        .collect()
 }
 
 fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>) {
@@ -411,8 +473,30 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
         .as_ref()
         .map(|s| pr_open_spinner_glyph(s.started_at.elapsed()));
 
+    // Metadata trails the title, so a narrow terminal cuts it off first.
+    // When the page carries last-commit times, shrink the title column to
+    // keep both times visible; it stays the same width on every row so the
+    // metadata lands at the same x. Pages without them keep the fixed width.
+    let metadata: Vec<String> = pr_row_metadata(view);
+    let has_last_commit = view
+        .rows
+        .iter()
+        .any(|row| row.summary.last_commit_at.is_some());
+    let title_width = if has_last_commit {
+        let metadata_width = metadata
+            .iter()
+            .map(|m| m.chars().count())
+            .max()
+            .unwrap_or(0);
+        (area.width as usize)
+            .saturating_sub(PR_ROW_LEAD_WIDTH + metadata_width)
+            .clamp(PR_TITLE_MIN_WIDTH, PR_TITLE_MAX_WIDTH)
+    } else {
+        PR_TITLE_MAX_WIDTH
+    };
+
     let mut lines: Vec<Line> = Vec::new();
-    for (i, row) in view.rows.iter().enumerate() {
+    for (i, (row, metadata)) in view.rows.iter().zip(metadata).enumerate() {
         let is_cursor = i == view.cursor;
         let is_loading = matches!(
             (spinner, app.pr_open_state.as_ref()),
@@ -434,29 +518,20 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
 
         // PRs are single-select. Mirror the commit-row column layout for
         // visual consistency (leading cursor + a placeholder column where
-        // the range bar lives on commit rows) and pad title/author so the
-        // date column lands at the same x across rows.
+        // the range bar lives on commit rows).
         let number = format!("#{:<5}", row.summary.number);
-        let title = truncate_or_pad(&row.summary.title, 60);
-        let author = truncate_or_pad(row.summary.author.as_deref().unwrap_or("?"), 12);
-        let updated = row
-            .summary
-            .updated_at
-            .as_ref()
-            .map(format_relative_short)
-            .unwrap_or_else(|| "—".to_string());
-        let draft = if row.summary.is_draft { " [draft]" } else { "" };
+        let title = truncate_or_pad(&row.summary.title, title_width);
 
         lines.push(Line::from(vec![
-            Span::styled(pointer_str, pointer_style),
+            Span::styled(
+                pointer_str,
+                styles::selection_marker_style(theme, pointer_style),
+            ),
             Span::styled("  ", Style::default()),
             Span::styled(number, styles::hash_style(theme)),
             Span::styled(" ", Style::default()),
             Span::styled(title, Style::default().fg(theme.fg_primary)),
-            Span::styled(
-                format!("  {} \u{00b7} {}{}", author, updated, draft),
-                Style::default().fg(theme.fg_secondary),
-            ),
+            Span::styled(metadata, Style::default().fg(theme.fg_secondary)),
         ]));
     }
 
@@ -508,15 +583,15 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
         )];
         let (message_span, message_width) =
             status_bar::build_message_span(app.message.as_ref(), theme);
-        let right_span = if message_width > 0 {
-            message_span
+        let (right_span, right_width) = if message_width > 0 {
+            (message_span, message_width)
         } else {
-            Span::styled(
-                " enter apply \u{00b7} esc cancel ",
-                Style::default().fg(theme.fg_secondary),
+            let hint = " enter apply \u{00b7} esc cancel ";
+            (
+                Span::styled(hint, Style::default().fg(theme.fg_secondary)),
+                hint.width(),
             )
         };
-        let right_width = right_span.content.len();
         let spans = status_bar::build_right_aligned_spans(
             left,
             right_span,
@@ -528,7 +603,10 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
 
         // Set the terminal cursor at the end of the filter buffer so users
         // see where typing will land.
-        let cursor_x = area.x + 2 + draft.len() as u16;
+        let cursor_x = area
+            .x
+            .saturating_add(2)
+            .saturating_add(u16::try_from(draft.width()).unwrap_or(u16::MAX));
         let cursor_y = area.y;
         frame.set_cursor_position(ratatui::layout::Position {
             x: cursor_x.min(area.x + area.width.saturating_sub(1)),
@@ -548,9 +626,16 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
                     .to_string()
             }
             TargetTab::PullRequests => {
-                let scope_hint = match app.pr_tab.scope() {
-                    PullRequestListScope::Open => "r requested",
-                    PullRequestListScope::ReviewRequested => "r all PRs",
+                // Name the scope `r` switches to next, which depends on
+                // the scopes the forge supports.
+                let next_scope = app
+                    .pr_tab
+                    .repository()
+                    .map(|repo| app.pr_tab.scope().next_for(repo.kind))
+                    .unwrap_or(PullRequestListScope::ReviewRequested);
+                let scope_hint = match next_scope {
+                    PullRequestListScope::Open => "r all PRs".to_string(),
+                    other => format!("r {}", other.label()),
                 };
                 format!("   j/k navigate · ↵ open · {scope_hint} · / filter · esc back")
             }
@@ -607,6 +692,7 @@ mod selector_render_snapshot_tests {
     //! real `render` against ratatui's `TestBackend` and assert on the
     //! resulting character grid (plus a few style checks for the active
     //! tab highlight).
+    use super::pr_status_hint_span;
     use crate::app::{App, DiffSource, InputMode};
     use crate::error::Result as TuicrResult;
     use crate::error::TuicrError;
@@ -617,6 +703,7 @@ mod selector_render_snapshot_tests {
     use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
     use crate::ui::render;
+    use crate::ui::text_utils::truncate_or_pad;
     use crate::vcs::CommitInfo;
     use crate::vcs::traits::{VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
     use chrono::{TimeZone, Utc};
@@ -625,6 +712,7 @@ mod selector_render_snapshot_tests {
     use ratatui::buffer::Buffer;
     use ratatui::style::Modifier;
     use std::path::{Path, PathBuf};
+    use unicode_width::UnicodeWidthStr;
 
     struct SnapshotVcs {
         info: VcsInfo,
@@ -727,6 +815,7 @@ mod selector_render_snapshot_tests {
             head_ref_name: format!("feat/{number}"),
             base_ref_name: "main".to_string(),
             updated_at: Some(Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap()),
+            last_commit_at: None,
             url: format!("https://github.com/agavra/tuicr/pull/{number}"),
             state: "OPEN".to_string(),
             is_draft: false,
@@ -885,6 +974,62 @@ mod selector_render_snapshot_tests {
     }
 
     #[test]
+    fn selection_marker_leaves_commit_hashes_and_pr_numbers_on_theme_accent() {
+        use ratatui::style::Color;
+        let matching = Color::Rgb(36, 45, 56);
+        let mut app = make_app(vec![commit(0), commit(1)]);
+        app.theme = Theme::github_dark();
+        app.theme.selection_marker = Some(matching);
+        app.theme.bg_highlight = matching;
+        app.commit_selection_range = Some((0, 1));
+        app.review_commits = app.commit_list.clone();
+        for buffer in [draw(&mut app), draw_inline_at(&mut app, 120)] {
+            for hash in ["abc0", "abc1"] {
+                let y = (0..buffer.area.height)
+                    .find(|&y| row_text(&buffer, y).contains(hash))
+                    .unwrap();
+                let x = (0..buffer.area.width)
+                    .find(|&x| buffer[(x, y)].symbol() == "a")
+                    .unwrap();
+                assert_eq!(buffer[(x, y)].fg, app.theme.cursor_color);
+                let bar = (0..buffer.area.width)
+                    .find(|&x| buffer[(x, y)].symbol() == "▌")
+                    .unwrap();
+                assert_eq!(buffer[(bar, y)].fg, matching);
+            }
+            let pointer = buffer
+                .content
+                .iter()
+                .find(|cell| cell.symbol() == "▸")
+                .unwrap();
+            assert_eq!(pointer.fg, matching);
+            assert_eq!(pointer.bg, matching);
+        }
+
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((vec![pr(148, "Review selection", "alice")], false)));
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        let buffer = draw(&mut app);
+        let number = buffer
+            .content
+            .iter()
+            .find(|cell| cell.symbol() == "#")
+            .unwrap();
+        assert_eq!(number.fg, app.theme.cursor_color);
+        assert_ne!(number.fg, matching);
+        let pointer = buffer
+            .content
+            .iter()
+            .find(|cell| cell.symbol() == "▸")
+            .unwrap();
+        assert_eq!(pointer.fg, matching);
+        assert_eq!(pointer.bg, matching);
+    }
+
+    #[test]
     fn should_render_loaded_pr_rows_with_number_title_author() {
         // given — two loaded PRs
         let mut app = make_app(vec![commit(0)]);
@@ -917,6 +1062,116 @@ mod selector_render_snapshot_tests {
         ] {
             assert!(body.contains(needle), "missing {needle:?} in:\n{body}");
         }
+    }
+
+    fn app_with_prs(prs: Vec<PullRequestSummary>) -> App {
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((prs, false)));
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        app
+    }
+
+    fn pr_dated(
+        number: u64,
+        author: &str,
+        updated_days: i64,
+        commit_days: Option<i64>,
+    ) -> PullRequestSummary {
+        let mut summary = pr(number, &format!("PR number {number}"), author);
+        summary.updated_at = Some(Utc::now() - chrono::Duration::days(updated_days));
+        summary.last_commit_at = commit_days.map(|d| Utc::now() - chrono::Duration::days(d));
+        summary
+    }
+
+    fn row_containing(buffer: &Buffer, needle: &str) -> String {
+        (0..buffer.area.height)
+            .map(|y| row_text(buffer, y))
+            .find(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("no row contains {needle:?}"))
+    }
+
+    #[test]
+    fn should_render_last_commit_time_beside_updated_time() {
+        // given — updated 2 days ago, last commit two months ago
+        let mut app = app_with_prs(vec![
+            pr_dated(148, "alice", 2, Some(60)),
+            pr_dated(125, "ypares", 14, Some(3)),
+        ]);
+        // when
+        let buffer = draw(&mut app);
+        // then
+        let first = row_containing(&buffer, "#148");
+        let second = row_containing(&buffer, "#125");
+        assert!(
+            first.contains("alice        · 2d · commit 2mo"),
+            "{first:?}"
+        );
+        assert!(
+            second.contains("ypares       · 2w · commit 3d"),
+            "{second:?}"
+        );
+        let column = |row: &str| row[..row.find("commit").unwrap()].chars().count();
+        assert_eq!(
+            column(&first),
+            column(&second),
+            "last-commit column should line up"
+        );
+    }
+
+    #[test]
+    fn should_render_rows_without_last_commit_as_before() {
+        // given — a forge that does not report a last commit
+        let mut app = app_with_prs(vec![pr_dated(148, "alice", 2, None)]);
+        // when
+        let buffer = draw(&mut app);
+        // then
+        let row = row_containing(&buffer, "#148");
+        let expected = format!("#148   {:<60}  alice        · 2d", "PR number 148");
+        assert_eq!(row.trim_matches(['│', ' ', '▸']), expected);
+    }
+
+    #[test]
+    fn should_keep_fixed_title_width_on_narrow_terminals_without_last_commit() {
+        // given — a forge without last-commit times on an 80-column terminal
+        let mut long = pr_dated(148, "alice", 2, None);
+        long.title =
+            "A very long pull request title that would push the dates off screen".to_string();
+        let mut app = app_with_prs(vec![long.clone()]);
+        // when
+        let buffer = draw_at(&mut app, 80, 24);
+        // then — the title keeps its 60 columns and the tail is cut as on main
+        let row = row_containing(&buffer, "#148");
+        let full = format!(
+            "#148   {}  alice        · 2d",
+            truncate_or_pad(&long.title, 60)
+        );
+        let visible = row
+            .trim_start_matches(['│', ' ', '▸'])
+            .trim_end_matches(['│', ' ']);
+        assert!(full.starts_with(visible), "{visible:?} vs {full:?}");
+        assert!(
+            visible.contains(&truncate_or_pad(&long.title, 60)),
+            "{visible:?}"
+        );
+    }
+
+    #[test]
+    fn should_shrink_pr_title_to_keep_dates_visible_on_narrow_terminals() {
+        // given — a long title on an 80-column terminal
+        let mut long = pr_dated(148, "alice", 2, Some(60));
+        long.title =
+            "A very long pull request title that would push the dates off screen".to_string();
+        let mut app = app_with_prs(vec![long]);
+        // when
+        let buffer = draw_at(&mut app, 80, 24);
+        // then
+        let row = row_containing(&buffer, "#148");
+        assert!(row.contains("A very long"), "{row:?}");
+        assert!(row.contains("alice        · 2d · commit 2mo"), "{row:?}");
     }
 
     #[test]
@@ -962,7 +1217,7 @@ mod selector_render_snapshot_tests {
         );
         let footer = row_text(&buffer, buffer.area.height - 1);
         assert!(
-            footer.contains("r all PRs"),
+            footer.contains("r requested (me)"),
             "expected footer toggle hint, got: {footer:?}"
         );
     }
@@ -1166,6 +1421,62 @@ mod selector_render_snapshot_tests {
             footer.contains("apply") && footer.contains("cancel"),
             "expected apply/cancel hint in footer, got: {footer:?}"
         );
+    }
+
+    fn pr_filter_app() -> App {
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((vec![pr(1, "alpha", "a")], false)));
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        app
+    }
+
+    #[test]
+    fn should_place_filter_cursor_and_right_hint_by_display_width() {
+        // given - "é" is two bytes and "界" is two cells
+        let mut app = pr_filter_app();
+        app.pr_filter_draft = Some("é界".to_string());
+        // when
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw frame");
+        let cursor = terminal.get_cursor_position().unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        // then - cursor sits after ` /` plus three cells of draft
+        assert_eq!(cursor.x, 5);
+        let footer = row_text(&buffer, buffer.area.height - 1);
+        assert!(footer.ends_with("esc cancel "), "{footer:?}");
+    }
+
+    #[test]
+    fn should_clamp_filter_cursor_when_draft_width_exceeds_u16() {
+        // given - 65,536 cells would wrap to 0 if narrowed with `as u16`
+        let mut app = pr_filter_app();
+        app.pr_filter_draft = Some("a".repeat(usize::from(u16::MAX) + 1));
+        // when
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw frame");
+        // then - cursor is pinned to the last column
+        assert_eq!(terminal.get_cursor_position().unwrap().x, 119);
+    }
+
+    #[test]
+    fn should_measure_committed_pr_filter_hint_by_display_width() {
+        // given
+        let mut app = pr_filter_app();
+        app.pr_tab.set_filter("界界".to_string());
+        // when
+        let (span, width) = pr_status_hint_span(&app, ratatui::style::Color::Black);
+        // then
+        assert_eq!(width, UnicodeWidthStr::width(span.content.as_ref()));
     }
 
     #[test]

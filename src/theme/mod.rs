@@ -31,6 +31,8 @@ pub enum SyntaxThemeSource {
 
 /// Complete color theme for the application
 pub struct Theme {
+    /// Optional marker color; omitted themes keep each indicator's legacy style.
+    pub selection_marker: Option<Color>,
     /// Cached syntax highlighter (lazily initialized). `Arc`-wrapped so a
     /// diff-watch worker thread can hold a cloned handle without rebuilding
     /// the grammar set, which is most of the cost this cache exists to avoid.
@@ -109,6 +111,7 @@ impl Clone for Theme {
     fn clone(&self) -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: self.selection_marker,
             panel_bg: self.panel_bg,
             bg_highlight: self.bg_highlight,
             fg_primary: self.fg_primary,
@@ -167,6 +170,7 @@ impl Theme {
     pub fn dark() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             // Base colors
             panel_bg: Color::Rgb(24, 24, 28),
@@ -237,6 +241,7 @@ impl Theme {
     pub fn light() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             // Base colors - dark text on light background
             panel_bg: Color::Rgb(245, 243, 232),
@@ -322,6 +327,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             panel_bg: base3,
             bg_highlight: base2,
@@ -395,6 +401,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             panel_bg: base03,
             bg_highlight: base02,
@@ -550,6 +557,7 @@ impl Theme {
     pub fn ayu_light() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             // Base colors
             panel_bg: Color::Rgb(250, 250, 250),
@@ -641,6 +649,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             panel_bg: bg,
             bg_highlight: selection,
@@ -701,6 +710,7 @@ impl Theme {
     pub fn onedark() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             // Base colors
             panel_bg: Color::Rgb(40, 44, 52),
@@ -771,6 +781,7 @@ impl Theme {
     pub fn github_light() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             panel_bg: Color::Rgb(255, 255, 255),
             bg_highlight: Color::Rgb(221, 244, 255),
@@ -831,6 +842,7 @@ impl Theme {
     pub fn github_dark() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             panel_bg: Color::Rgb(13, 17, 23),
             bg_highlight: Color::Rgb(33, 38, 45),
@@ -891,6 +903,7 @@ impl Theme {
     pub fn github_dark_colorblind() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
             panel_bg: Color::Rgb(0x0d, 0x11, 0x17),
             bg_highlight: Color::Rgb(0x1e, 0x42, 0x73),
             fg_primary: Color::Rgb(0xf0, 0xf6, 0xfc),
@@ -966,6 +979,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             panel_bg: bg,
             bg_highlight,
@@ -1043,6 +1057,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             panel_bg: bg,
             bg_highlight,
@@ -1408,6 +1423,7 @@ fn catppuccin_theme(flavor: CatppuccinFlavor, syntect_theme: EmbeddedThemeName) 
 
     Theme {
         highlighter: OnceLock::new(),
+        selection_marker: None,
 
         // Base colors
         panel_bg: flavor.base,
@@ -1484,6 +1500,7 @@ fn gruvbox_theme(flavor: GruvboxFlavor) -> Theme {
 
     Theme {
         highlighter: OnceLock::new(),
+        selection_marker: None,
 
         // Base colors
         panel_bg: flavor.bg0,
@@ -1557,6 +1574,7 @@ fn everforest_theme(flavor: EverforestFlavor) -> Theme {
 
     Theme {
         highlighter: OnceLock::new(),
+        selection_marker: None,
 
         panel_bg: flavor.bg0,
         bg_highlight: flavor.bg3,
@@ -1622,6 +1640,7 @@ fn nord_theme(flavor: NordFlavor) -> Theme {
 
     Theme {
         highlighter: OnceLock::new(),
+        selection_marker: None,
 
         panel_bg: flavor.bg0,
         bg_highlight: flavor.bg1,
@@ -2032,50 +2051,13 @@ fn fallback_embedded_theme_for_panel_bg(panel_bg: Color) -> EmbeddedThemeName {
     }
 }
 
-fn is_supported_color_value(value: &str) -> bool {
-    let normalized = value.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return false;
-    }
-
-    if let Some(hex) = normalized.strip_prefix('#') {
-        return hex.len() == 6 && hex.chars().all(|ch| ch.is_ascii_hexdigit());
-    }
-
-    matches!(
-        normalized.as_str(),
-        "black"
-            | "red"
-            | "green"
-            | "yellow"
-            | "blue"
-            | "magenta"
-            | "cyan"
-            | "gray"
-            | "grey"
-            | "darkgray"
-            | "dark_gray"
-            | "darkgrey"
-            | "dark_grey"
-            | "lightred"
-            | "light_red"
-            | "lightgreen"
-            | "light_green"
-            | "lightyellow"
-            | "light_yellow"
-            | "lightblue"
-            | "light_blue"
-            | "lightmagenta"
-            | "light_magenta"
-            | "lightcyan"
-            | "light_cyan"
-            | "white"
-    )
-}
-
-fn parse_color_value(value: &str) -> Option<Color> {
+/// Parse a named color or `#RRGGBB`; `None` for anything else.
+pub(crate) fn parse_color_value(value: &str) -> Option<Color> {
     let normalized = value.trim().to_ascii_lowercase();
     if let Some(hex) = normalized.strip_prefix('#') {
+        if hex.len() != 6 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return None;
+        }
         let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
         let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
         let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
@@ -2110,12 +2092,8 @@ fn require_local_theme_color(table: &toml::Table, key: &str) -> Result<Color, St
     let raw = value
         .as_str()
         .ok_or_else(|| format!("Theme key '{key}' must be a string"))?;
-    if !is_supported_color_value(raw) {
-        return Err(format!(
-            "Theme key '{key}' must be a named color or #RRGGBB"
-        ));
-    }
-    parse_color_value(raw).ok_or_else(|| format!("Theme key '{key}' could not be parsed"))
+    parse_color_value(raw)
+        .ok_or_else(|| format!("Theme key '{key}' must be a named color or #RRGGBB"))
 }
 
 fn parse_optional_local_theme_string(
@@ -2178,6 +2156,7 @@ fn load_custom_syntect_theme(
 // tests stay aligned even though Rust cannot derive TOML field names from the
 // `Theme` struct itself.
 const LOCAL_THEME_KEYS: &[&str] = &[
+    "selection_marker",
     "panel_bg",
     "bg_highlight",
     "fg_primary",
@@ -2276,6 +2255,10 @@ fn load_local_theme_from_path(path: &Path) -> Result<(Theme, Vec<String>), Strin
 
     let theme = Theme {
         highlighter: OnceLock::new(),
+        selection_marker: table
+            .get("selection_marker")
+            .map(|_| require_local_theme_color(table, "selection_marker"))
+            .transpose()?,
         panel_bg,
         bg_highlight: require_local_theme_color(table, "bg_highlight")?,
         fg_primary: require_local_theme_color(table, "fg_primary")?,
@@ -2547,6 +2530,14 @@ impl Theme {
     /// expanders, hidden-line stubs) — derived as a brightness shift from
     /// `panel_bg` so it adapts across all themed palettes without per-theme
     /// tuning.
+    /// Drop the panel background so the terminal's own shows through
+    /// (`transparent_background`). Apply to every resolved theme, not just
+    /// the startup one.
+    pub fn with_transparent_background(mut self) -> Self {
+        self.panel_bg = Color::Reset;
+        self
+    }
+
     pub fn section_highlight_bg(&self) -> Color {
         shift_lightness(self.panel_bg, 18)
     }
@@ -2570,6 +2561,15 @@ fn shift_lightness(c: Color, amount: i32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_parse_only_named_colors_and_strict_hex() {
+        assert_eq!(parse_color_value(" #0A1b2C "), Some(Color::Rgb(10, 27, 44)));
+        assert_eq!(parse_color_value("Light_Blue"), Some(Color::LightBlue));
+        for bad in ["", "#", "#12345", "#1234567", "#+12345", "#1é123", "nope"] {
+            assert_eq!(parse_color_value(bad), None, "{bad:?}");
+        }
+    }
     use std::{
         collections::HashSet,
         fs,
@@ -2741,6 +2741,37 @@ mode_bg = "#82aaff"
             Some(EmbeddedThemeName::CatppuccinFrappe)
         );
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn selection_marker_is_optional_in_local_themes() {
+        let dir = tempdir().unwrap();
+        for (extra, expected) in [
+            ("", None),
+            (
+                "selection_marker = \"#242d38\"",
+                Some(Color::Rgb(36, 45, 56)),
+            ),
+            ("selection_marker = \"light_blue\"", Some(Color::LightBlue)),
+        ] {
+            let path = write_local_theme(dir.path(), "marker", &sample_local_theme_body(extra));
+            let (theme, warnings) = load_local_theme_from_path(&path).unwrap();
+            assert_eq!(theme.selection_marker, expected);
+            assert!(warnings.is_empty());
+        }
+    }
+
+    #[test]
+    fn invalid_selection_marker_rejects_local_theme() {
+        let dir = tempdir().unwrap();
+        for value in ["true", "42", "\"#12\"", "\"#é2345\"", "\"unknown\""] {
+            let body = sample_local_theme_body(&format!("selection_marker = {value}"));
+            let path = write_local_theme(dir.path(), "marker", &body);
+            let error = load_local_theme_from_path(&path)
+                .err()
+                .expect("invalid marker");
+            assert!(error.contains("Theme key 'selection_marker'"));
+        }
     }
 
     #[test]

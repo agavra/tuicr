@@ -32,6 +32,7 @@ impl VcsBackend for MockVcs {
                 content: format!("line {line_num}"),
                 old_lineno: Some(line_num),
                 new_lineno: Some(line_num),
+                raw_content: None,
                 highlighted_spans: None,
             });
         }
@@ -56,6 +57,7 @@ fn make_hunk(new_start: u32, new_count: u32) -> DiffHunk {
             content: format!("hunk line {}", new_start + i),
             old_lineno: Some(new_start + i),
             new_lineno: Some(new_start + i),
+            raw_content: None,
             highlighted_spans: None,
         });
     }
@@ -188,6 +190,7 @@ fn hunk_navigation_counts_paired_changes_and_wrapped_comments() {
                 content: "before".into(),
                 old_lineno: Some(1),
                 new_lineno: None,
+                raw_content: None,
                 highlighted_spans: None,
             },
             DiffLine {
@@ -195,6 +198,7 @@ fn hunk_navigation_counts_paired_changes_and_wrapped_comments() {
                 content: "after".into(),
                 old_lineno: None,
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             },
             DiffLine {
@@ -202,6 +206,7 @@ fn hunk_navigation_counts_paired_changes_and_wrapped_comments() {
                 content: "unchanged".into(),
                 old_lineno: Some(2),
                 new_lineno: Some(2),
+                raw_content: None,
                 highlighted_spans: None,
             },
         ];
@@ -648,6 +653,53 @@ fn should_expand_up_from_first_hunk() {
     assert_eq!(content.len(), 20);
     assert_eq!(content[0].new_lineno, Some(31));
     assert_eq!(content[19].new_lineno, Some(50));
+}
+
+#[test]
+fn should_not_expand_gap_for_zero_limit() {
+    // given: file with 50-line gap before first hunk
+    let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+    let mut app = build_app_with_files(vec![file], 100);
+    let gap_id = GapId {
+        file_idx: 0,
+        hunk_idx: 0,
+    };
+
+    // when: expanding zero lines in each direction
+    for dir in [ExpandDirection::Down, ExpandDirection::Up] {
+        app.expand_gap(gap_id.clone(), dir, Some(0)).unwrap();
+    }
+
+    // then: nothing is revealed (a zero limit must not fetch one line)
+    assert!(app.expanded_top.get(&gap_id).is_none_or(|v| v.is_empty()));
+    assert!(
+        app.expanded_bottom
+            .get(&gap_id)
+            .is_none_or(|v| v.is_empty())
+    );
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn should_expand_whole_gap_for_oversized_up_limit() {
+    // given: 50-line gap; limit wraps to 1 if truncated with `as u32`
+    let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+    let mut app = build_app_with_files(vec![file], 100);
+    let gap_id = GapId {
+        file_idx: 0,
+        hunk_idx: 0,
+    };
+
+    // when
+    app.expand_gap(
+        gap_id.clone(),
+        ExpandDirection::Up,
+        Some(u32::MAX as usize + 2),
+    )
+    .unwrap();
+
+    // then: the entire gap is revealed
+    assert_eq!(app.expanded_bottom.get(&gap_id).unwrap().len(), 50);
 }
 
 #[test]
@@ -1306,9 +1358,8 @@ fn total_lines_must_match_annotations_with_remote_threads() {
             id: "C1".into(),
             author: Some("alice".into()),
             body: "first\nsecond\nthird\nfourth".into(),
-            created_at: None,
-            in_reply_to: None,
             url: "https://example.com/c1".into(),
+            ..Default::default()
         }],
     }];
     app.rebuild_annotations();
@@ -1421,9 +1472,8 @@ fn comment_navigator_items_follow_rendered_comment_order() {
             id: "C1".into(),
             author: Some("alice".into()),
             body: "remote-thread".into(),
-            created_at: None,
-            in_reply_to: None,
             url: "https://example.com/c1".into(),
+            ..Default::default()
         }],
     }];
     app.rebuild_annotations();
@@ -1547,9 +1597,8 @@ fn should_update_current_file_when_navigating_to_remote_comment() {
             id: "C1".into(),
             author: Some("alice".into()),
             body: "remote-thread".into(),
-            created_at: None,
-            in_reply_to: None,
             url: "https://example.com/c1".into(),
+            ..Default::default()
         }],
     }];
     app.rebuild_annotations();
@@ -1595,9 +1644,8 @@ fn should_rebuild_single_file_annotations_when_navigating_to_outdated_remote_com
             id: "C1".into(),
             author: Some("alice".into()),
             body: "outdated-thread".into(),
-            created_at: None,
-            in_reply_to: None,
             url: "https://example.com/c1".into(),
+            ..Default::default()
         }],
     }];
     app.rebuild_annotations();
@@ -1688,6 +1736,7 @@ fn make_shifted_hunk(new_start: u32, count: u32, shift: u32) -> DiffHunk {
             content: format!("hunk line {}", new_start + i),
             old_lineno: Some(new_start + i + shift),
             new_lineno: Some(new_start + i),
+            raw_content: None,
             highlighted_spans: None,
         })
         .collect();
@@ -1786,4 +1835,271 @@ fn should_defer_start_line_while_there_are_no_annotations() {
     // then: no jump, and the request is kept for when rows exist
     assert!(!app.apply_pending_start_line());
     assert_eq!(app.pending_start_line, Some(5));
+}
+
+fn remote_thread_at(
+    path: &str,
+    line: u32,
+    side: crate::forge::remote_comments::RemoteCommentSide,
+) -> crate::forge::remote_comments::RemoteReviewThread {
+    use crate::forge::remote_comments::{RemoteReviewComment, RemoteReviewThread};
+    RemoteReviewThread {
+        id: format!("T{line}"),
+        path: path.into(),
+        line: Some(line),
+        side,
+        is_resolved: false,
+        is_outdated: false,
+        comments: vec![RemoteReviewComment {
+            id: format!("C{line}"),
+            author: Some("alice".into()),
+            body: "first\nsecond".into(),
+            url: "https://example.com/c".into(),
+            ..Default::default()
+        }],
+    }
+}
+
+/// Indices of the annotations that belong to remote thread `thread_idx`.
+fn remote_thread_rows(app: &App, thread_idx: usize) -> Vec<usize> {
+    app.line_annotations
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| {
+            matches!(a, AnnotatedLine::RemoteThreadLine { thread_idx: t, .. } if *t == thread_idx)
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+#[test]
+fn should_render_remote_thread_outside_hunks_under_file_header() {
+    // Regression for #823: a forge comment on line 40, outside the only hunk
+    // (42..=46), had no row to attach to and never rendered.
+    use crate::forge::remote_comments::{PrCommentsVisibility, RemoteCommentSide};
+
+    for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        let file = make_file_with_hunks("a.rs", vec![make_hunk(42, 5)]);
+        let mut app = build_app_with_files(vec![file], 60);
+        app.sync_viewport_width(80);
+        app.diff_view_mode = mode;
+        app.session.remote_comments_visibility = PrCommentsVisibility::All;
+        app.forge_review_threads = vec![remote_thread_at("a.rs", 40, RemoteCommentSide::Right)];
+        app.rebuild_annotations();
+
+        // header + 2 body lines + footer
+        let rows = remote_thread_rows(&app, 0);
+        assert_eq!(rows.len(), 4, "{mode:?}: thread should render once");
+        let header = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, AnnotatedLine::FileHeader { file_idx: 0 }))
+            .unwrap();
+        assert_eq!(
+            rows,
+            (header + 1..header + 5).collect::<Vec<_>>(),
+            "{mode:?}: thread sits under the header"
+        );
+        assert_eq!(app.total_lines(), app.line_annotations.len(), "{mode:?}");
+
+        // Expanding the gap must not render the thread a second time.
+        app.expand_gap(
+            GapId {
+                file_idx: 0,
+                hunk_idx: 0,
+            },
+            ExpandDirection::Up,
+            None,
+        )
+        .unwrap();
+        assert_eq!(remote_thread_rows(&app, 0).len(), 4, "{mode:?}");
+        assert_eq!(app.total_lines(), app.line_annotations.len(), "{mode:?}");
+
+        // `:comments hide` still hides it.
+        app.set_remote_comments_visibility(PrCommentsVisibility::Hide);
+        assert!(remote_thread_rows(&app, 0).is_empty(), "{mode:?}");
+        assert_eq!(app.total_lines(), app.line_annotations.len(), "{mode:?}");
+    }
+}
+
+#[test]
+fn should_render_remote_thread_inside_hunk_only_at_its_row() {
+    use crate::forge::remote_comments::RemoteCommentSide;
+
+    for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        let file = make_file_with_hunks("a.rs", vec![make_hunk(42, 5)]);
+        let mut app = build_app_with_files(vec![file], 60);
+        app.sync_viewport_width(80);
+        app.diff_view_mode = mode;
+        app.forge_review_threads = vec![remote_thread_at("a.rs", 44, RemoteCommentSide::Right)];
+        app.rebuild_annotations();
+
+        let rows = remote_thread_rows(&app, 0);
+        assert_eq!(rows.len(), 4, "{mode:?}: thread should render once");
+        let hunk_header = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, AnnotatedLine::HunkHeader { .. }))
+            .unwrap();
+        assert!(rows[0] > hunk_header, "{mode:?}: thread stays in the hunk");
+        assert_eq!(app.total_lines(), app.line_annotations.len(), "{mode:?}");
+    }
+}
+
+#[test]
+fn should_render_old_side_thread_on_context_line_once_in_each_view() {
+    // Both views anchor old-side threads on context rows (a context row
+    // exists on both sides), so neither falls back to the file header.
+    use crate::forge::remote_comments::RemoteCommentSide;
+
+    for (mode, under_header) in [
+        (DiffViewMode::Unified, false),
+        (DiffViewMode::SideBySide, false),
+    ] {
+        let file = make_file_with_hunks("a.rs", vec![make_hunk(42, 5)]);
+        let mut app = build_app_with_files(vec![file], 60);
+        app.sync_viewport_width(80);
+        app.diff_view_mode = mode;
+        app.forge_review_threads = vec![remote_thread_at("a.rs", 44, RemoteCommentSide::Left)];
+        app.rebuild_annotations();
+
+        let rows = remote_thread_rows(&app, 0);
+        assert_eq!(rows.len(), 4, "{mode:?}: thread should render once");
+        let hunk_header = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, AnnotatedLine::HunkHeader { .. }))
+            .unwrap();
+        assert_eq!(rows[0] < hunk_header, under_header, "{mode:?}");
+        assert_eq!(app.total_lines(), app.line_annotations.len(), "{mode:?}");
+    }
+}
+
+#[test]
+fn should_not_panic_jumping_into_hidden_gap_of_collapsed_reviewed_file() {
+    // The gap's top half is already expanded, so reaching line 10 needs zero
+    // further lines; the reviewed file hides that expansion from the cursor.
+    let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+    let mut app = build_app_with_files(vec![file], 100);
+    let gap_id = GapId {
+        file_idx: 0,
+        hunk_idx: 0,
+    };
+    app.expand_gap(gap_id.clone(), ExpandDirection::Down, Some(20))
+        .unwrap();
+    app.toggle_reviewed();
+    let before = app.expanded_top.get(&gap_id).map_or(0, |v| v.len());
+
+    app.go_to_source_line(10, LineSide::New);
+
+    assert_eq!(app.expanded_top.get(&gap_id).map_or(0, |v| v.len()), before);
+    assert!(!app.expanded_bottom.contains_key(&gap_id));
+}
+
+fn collapsed_hunk_app(file_count: usize) -> App {
+    let files = (0..file_count)
+        .map(|i| {
+            make_file_with_hunks(
+                &format!("f{i}.rs"),
+                vec![make_hunk(1, 5), make_hunk(50, 5), make_hunk(90, 5)],
+            )
+        })
+        .collect();
+    build_app_with_files(files, 200)
+}
+
+fn expanded_len(app: &App, hunk_idx: usize) -> usize {
+    let gap = GapId {
+        file_idx: 0,
+        hunk_idx,
+    };
+    app.expanded_top.get(&gap).map_or(0, |v| v.len())
+        + app.expanded_bottom.get(&gap).map_or(0, |v| v.len())
+}
+
+fn mark_hunk_reviewed(app: &mut App, hunk_idx: usize) {
+    app.diff_state.cursor_line = app
+        .line_annotations
+        .iter()
+        .position(|l| {
+            matches!(l, AnnotatedLine::HunkHeader { file_idx: 0, hunk_idx: h } if *h == hunk_idx)
+        })
+        .unwrap();
+    app.toggle_hunk_reviewed();
+    assert!(app.should_collapse_hunk(0, hunk_idx));
+    app.diff_state.cursor_line = 0;
+    app.diff_state.current_file_idx = 0;
+}
+
+#[test]
+fn goto_line_skips_gap_in_collapsed_reviewed_file() {
+    let mut app = collapsed_hunk_app(1);
+    app.toggle_reviewed();
+    assert!(app.should_collapse_file(0));
+    app.go_to_source_line(20, LineSide::New);
+    assert_eq!(expanded_len(&app, 1), 0);
+}
+
+#[test]
+fn goto_line_skips_gap_before_a_reviewed_hunk() {
+    let mut app = collapsed_hunk_app(1);
+    mark_hunk_reviewed(&mut app, 1);
+    app.go_to_source_line(20, LineSide::New); // gap 1: before reviewed hunk 1
+    assert_eq!(expanded_len(&app, 1), 0);
+}
+
+#[test]
+fn goto_line_skips_gap_after_a_reviewed_hunk() {
+    let mut app = collapsed_hunk_app(1);
+    mark_hunk_reviewed(&mut app, 1);
+    app.go_to_source_line(70, LineSide::New); // gap 2: after reviewed hunk 1
+    assert_eq!(expanded_len(&app, 2), 0);
+}
+
+#[test]
+fn goto_line_skips_eof_gap_after_a_reviewed_last_hunk() {
+    let mut app = collapsed_hunk_app(1);
+    mark_hunk_reviewed(&mut app, 2);
+    app.go_to_source_line(150, LineSide::New); // EOF gap of 200-line file
+    assert_eq!(expanded_len(&app, 3), 0);
+}
+
+#[test]
+fn goto_line_still_expands_gap_beside_unreviewed_hunks() {
+    let mut app = collapsed_hunk_app(1);
+    mark_hunk_reviewed(&mut app, 0);
+    app.go_to_source_line(70, LineSide::New);
+    assert!(expanded_len(&app, 2) > 0);
+}
+
+#[test]
+fn expand_gap_down_and_up_reveal_exactly_the_requested_count() {
+    let mut app = collapsed_hunk_app(1);
+    let gap = GapId {
+        file_idx: 0,
+        hunk_idx: 1,
+    };
+    app.expand_gap(gap.clone(), ExpandDirection::Down, Some(3))
+        .unwrap();
+    assert_eq!(app.expanded_top[&gap].len(), 3);
+    app.expand_gap(gap.clone(), ExpandDirection::Up, Some(4))
+        .unwrap();
+    assert_eq!(app.expanded_bottom[&gap].len(), 4);
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn expand_gap_count_beyond_u32_expands_whole_gap_without_panicking() {
+    let mut app = collapsed_hunk_app(1);
+    let gap = GapId {
+        file_idx: 0,
+        hunk_idx: 1,
+    };
+    app.expand_gap(
+        gap.clone(),
+        ExpandDirection::Down,
+        Some(u32::MAX as usize + 1),
+    )
+    .unwrap();
+    assert_eq!(app.expanded_top[&gap].len(), 44);
 }

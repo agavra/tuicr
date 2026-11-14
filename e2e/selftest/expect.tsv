@@ -1,0 +1,12 @@
+detect/missing_pane_fails_every_wait	PASS
+detect/killed_pane_is_not_gone_text	PASS
+detect/exit_status_is_checked	PASS
+detect/unexpected_forge_call_fails_scenario	FAIL
+detect/allowed_unexpected_forge_call_passes	PASS
+detect/skip_is_reported	SKIP
+detect/failing_assertion_fails	FAIL
+detect/quarantined_failure_does_not_gate	QFAIL
+detect/hung_scenario_is_killed_with_children	FAIL
+detect/failing_plain_assert_fails	FAIL
+detect/unexpected_cli_call_fails_scenario	FAIL
+detect/unexpected_named_cli_call_fails_scenario	FAIL
