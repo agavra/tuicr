@@ -5,7 +5,7 @@ set -euo pipefail
 # the body at a stale (0 / previous) width, so a one-row description showed split over several rows until a later redraw.
 n=$(e2e_name)
 mkdir -p $(e2e_dir $n)/config/tuicr
-E2E_VARIANT=longbody sc_pr_open $n longbody
+E2E_VARIANT=long_pr_body sc_pr_open $n long_pr_body
 e2e_settle $n
 # narrow terminal wraps the body; widening again must relayout at the new width in the very frame drawn after the resize
 e2e_resize $n 90 45; e2e_settle $n 0.4

@@ -5,7 +5,7 @@ set -euo pipefail
 # `123` becomes the integer 123 and GitHub rejects the query). Repo octo/123; assert no `-F owner=/name=/after=` in the log.
 n=$(e2e_name); d=$(e2e_dir $n); mkdir -p $d; fx_pr_repo $d/repo
 _fx_git $d/repo remote set-url origin https://github.com/octo/123.git
-E2E_ENV="E2E_VARIANT=rich" E2E_CWD=$d/repo e2e_start $n "$TUICR_BIN" --no-update-check pr 1
+E2E_ENV="E2E_VARIANT=threads_and_commits" E2E_CWD=$d/repo e2e_start $n "$TUICR_BIN" --no-update-check pr 1
 e2e_wait_for $n 'PR Description' 20; e2e_wait_for $n 'remote open thread'
 python3 - <<PY
 import json

@@ -5,7 +5,7 @@ set -euo pipefail
 # ("Esc: cancel") must stay visible while moving the cursor to the last row. Baseline rendered a plain Paragraph that clipped
 # the tail (selection vanished, footer gone). 9 file-level comments on binary files (+1 on the commit message), 26-row tty.
 export E2E_ROWS=26
-n=$(e2e_name); sc_pr_open $n manybin
+n=$(e2e_name); sc_pr_open $n many_binary_files
 for i in 1 2 3 4 5 6 7 8 9; do
   e2e_keys $n '}'; e2e_settle $n 0.2; e2e_keys $n C; e2e_wait_for $n COMMENT; e2e_keys $n -l "note-$i"; e2e_keys $n Enter; e2e_settle $n 0.2
 done

@@ -2,9 +2,9 @@
 set -euo pipefail
 . "$(dirname "$0")/../../lib/init.sh"
 # #868: submit maps comments against the displayed (selected-range) diff. src/greet.rs exists
-# only in the newest commit's diff, not in the cumulative one (variant subsetonly); a comment on
+# only in the newest commit's diff, not in the cumulative one (variant subset_only_file); a comment on
 # it must go out inline, not be sent to the "unmappable" resolver.
-n=$(e2e_name); sc_pr_open $n subsetonly
+n=$(e2e_name); sc_pr_open $n subset_only_file
 e2e_keys $n ';k'; e2e_keys $n Enter                  # narrow to the newest commit (2222222)
 e2e_wait_for $n 'Commit Message \(2222222\)'; e2e_wait_for $n 'greet\.rs'
 e2e_keys $n ';l'; e2e_settle $n
