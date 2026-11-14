@@ -1,0 +1,22 @@
+# Config for the repo's Python only (the e2e suite, its fake forges, scripts/demo); not a package.
+# A standalone file under e2e/ keeps the Rust root free of Python packaging metadata. Ruff does not discover it
+# for scripts/demo and ty only from its cwd, so always run them like this (see CONTRIBUTING.md#python-checks):
+#   uvx ruff@0.15.16 format --check --config e2e/pyproject.toml e2e scripts/demo
+#   uvx ruff@0.15.16 check --config e2e/pyproject.toml e2e scripts/demo
+#   (cd e2e && uvx ty@0.0.44 check . ../scripts/demo)   # ty reads [tool.ty] from the directory it runs in
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "ANN"]
+ignore = [
+  # Scenario/test code opens long-lived handles (pipes, logs) whose lifetime spans several calls.
+  "SIM115",
+  # Scenario helpers forward **kwargs to Scenario.start/Tui.start unchanged; the forwarded keys are the callee's.
+  "ANN401",
+]
+
+[tool.ty.environment]
+python-version = "3.11"
+root = ["lib", "."]

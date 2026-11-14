@@ -30,6 +30,9 @@ quarantined scenarios (see below). Logs, final screenshots (`*.screen.txt`), fak
 | Mercurial | real `hg` (not Sapling) | `local/hg_hunks_under_own_files` only; SKIPs without it, FAILs with `E2E_REQUIRE_HG=1` |
 | Jujutsu | real `jj` (tested with 0.47) | `local/jj_*`; SKIP without it, FAIL with `E2E_REQUIRE_JJ=1`; `E2E_JJ_DIR` names the directory holding it |
 
+Python lint, format and type checks (`uvx ruff`, `uvx ty`; needs [uv](https://docs.astral.sh/uv/)) are set up in
+[CONTRIBUTING.md](../CONTRIBUTING.md#python-checks); scenarios must pass them (typed `main(s: Scenario) -> None`).
+
 Locale: tuicr and tmux run in UTF-8 (`en_US.UTF-8` if installed, otherwise `C.UTF-8`; override with
 `E2E_LOCALE`). The terminal is 160x45 (`E2E_COLS`/`E2E_ROWS`). Linux and macOS are supported.
 

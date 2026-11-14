@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Entry point of the bin/{gh,glab,tea,bkt} wrappers: main.py <tool> <args...>."""
+
 import importlib
 import os
 import sys

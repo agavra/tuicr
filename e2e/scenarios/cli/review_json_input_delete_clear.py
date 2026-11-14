@@ -2,12 +2,13 @@
 # `tuicr review` on a saved session without a TUI: JSON payloads (stdin and literal), flag comments, `delete` by id,
 # `clearc` (keeps review marks) and `clear` (resets them, then removes the emptied session file).
 import json
+from typing import Any
 
-from e2e import grep, scenario
+from e2e import Scenario, grep, scenario
 
 
 @scenario
-def main(s):
+def main(s: Scenario) -> None:
     tui = s.diff()
     repo = s.dir / "repo"
     tui.keys("r").wait_for("Files · 1/8").save().quit()  # a session with one reviewed file
@@ -15,16 +16,26 @@ def main(s):
     assert len(sessions) == 1, sessions
     slug = sessions[0]["slug"]
 
-    def sess(cmd, *args, **kw):
+    def sess(cmd: str, *args: str, **kw: Any) -> str:
         return s.cli("review", cmd, "--repo", repo, "--session", slug, *args, **kw)
 
-    def listed(pattern):
-        return grep(pattern, sess("comments"))  # a failing `comments` fails the scenario instead of reading as "not listed"
+    def listed(pattern: str) -> bool:
+        return grep(
+            pattern, sess("comments")
+        )  # a failing `comments` fails the scenario instead of reading as "not listed"
 
-    sess("add", "--input", "-",
-         input='{"type": "issue", "content": "from stdin json", "file": "README.md", "line": 4, "side": "new"}\n')
-    sess("add", "--input", '{"comment_type": "suggestion", "content": "range from literal json", "target": '
-                           '{"type": "line_range", "file": "README.md", "start_line": 3, "end_line": 4, "side": "new"}}')
+    sess(
+        "add",
+        "--input",
+        "-",
+        input='{"type": "issue", "content": "from stdin json", "file": "README.md", "line": 4, "side": "new"}\n',
+    )
+    sess(
+        "add",
+        "--input",
+        '{"comment_type": "suggestion", "content": "range from literal json", "target": '
+        '{"type": "line_range", "file": "README.md", "start_line": 3, "end_line": 4, "side": "new"}}',
+    )
     comment_id = json.loads(sess("add", "--target-file", "src/lib.rs", "--username", "alice", "flag file note"))["id"]
 
     c = json.loads(sess("comments"))
@@ -41,8 +52,9 @@ def main(s):
 
     assert comment_id in sess("delete", "--comment-id", comment_id), "delete did not echo the id"
     assert not listed("flag file note"), "deleted comment still listed"
-    assert s.cli_result("review", "delete", "--repo", repo, "--session", slug, "--comment-id", comment_id).rc != 0, \
+    assert s.cli_result("review", "delete", "--repo", repo, "--session", slug, "--comment-id", comment_id).rc != 0, (
         "deleting a missing id succeeded"
+    )
     sess("clearc")
     assert not listed("from stdin json"), "clearc left comments"
     assert s.session_json(), "clearc removed a session that still has a reviewed file"

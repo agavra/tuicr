@@ -4,6 +4,7 @@
 Writes editor.argv next to this script: ARGV, FILE (the realpath of the snapshot), one DIR line per directory from
 the snapshot root's `snapshots` component down (mode, owner, our uid) and FILEMODE.
 """
+
 import os
 import stat
 import sys
@@ -17,7 +18,7 @@ with open(out, "w") as f:
     parts = rp.split(os.sep)
     i = max(k for k, x in enumerate(parts) if x == "snapshots")
     for k in range(i, len(parts) - 1):
-        q = os.sep.join(parts[:k + 1])
+        q = os.sep.join(parts[: k + 1])
         st = os.stat(q)
-        f.write("DIR %s %o uid=%s me=%s\n" % (q, stat.S_IMODE(st.st_mode), st.st_uid, os.getuid()))
-    f.write("FILEMODE %o\n" % stat.S_IMODE(os.stat(rp).st_mode))
+        f.write(f"DIR {q} {stat.S_IMODE(st.st_mode):o} uid={st.st_uid} me={os.getuid()}\n")
+    f.write(f"FILEMODE {stat.S_IMODE(os.stat(rp).st_mode):o}\n")
