@@ -576,6 +576,8 @@ impl App {
             pending_confirm: None,
             supports_keyboard_enhancement: false,
             show_file_list: true,
+            minimal_ui: false,
+            pending_minimal_ui_start: false,
             file_list_position: FileListPosition::default(),
             compact_folders: false,
             is_pristine_mode: false,

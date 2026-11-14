@@ -72,6 +72,9 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         &["reviewed", "set reviewed!"],
         CommandKind::ToggleShowReviewed,
     ),
+    CommandSpec::new(&["set minimal"], CommandKind::SetMinimalUi(true)),
+    CommandSpec::new(&["set nominimal"], CommandKind::SetMinimalUi(false)),
+    CommandSpec::new(&["set minimal!"], CommandKind::ToggleMinimalUi),
     CommandSpec::new(&["diff"], CommandKind::Diff),
     CommandSpec::new(&["focus", "f"], CommandKind::Focus),
     CommandSpec::new(&["stage"], CommandKind::Stage),
@@ -157,6 +160,8 @@ enum CommandKind {
     ToggleCommits,
     SetShowReviewed(bool),
     ToggleShowReviewed,
+    SetMinimalUi(bool),
+    ToggleMinimalUi,
     Diff,
     Focus,
     Stage,
@@ -1043,6 +1048,14 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::ToggleShowReviewed => {
             app.toggle_show_reviewed();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetMinimalUi(enabled) => {
+            app.set_minimal_ui(enabled);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleMinimalUi => {
+            app.toggle_minimal_ui();
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::Diff => {
@@ -2076,6 +2089,22 @@ mod command_tests {
         assert_eq!(
             command_spec_for("set relativenumber!").map(|spec| spec.kind),
             Some(CommandKind::ToggleRelativeLineNumbers)
+        );
+    }
+
+    #[test]
+    fn parses_minimal_ui_commands() {
+        assert_eq!(
+            command_spec_for("set minimal").map(|spec| spec.kind),
+            Some(CommandKind::SetMinimalUi(true))
+        );
+        assert_eq!(
+            command_spec_for("set nominimal").map(|spec| spec.kind),
+            Some(CommandKind::SetMinimalUi(false))
+        );
+        assert_eq!(
+            command_spec_for("set minimal!").map(|spec| spec.kind),
+            Some(CommandKind::ToggleMinimalUi)
         );
     }
 
