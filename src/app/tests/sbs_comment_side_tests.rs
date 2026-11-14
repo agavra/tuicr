@@ -508,16 +508,14 @@ fn suggestion_app_from_patch(patch: &str) -> App {
 fn suggestion_app_from_patch_in_view(patch: &str, view: DiffViewMode) -> App {
     let mut app = build_app();
     app.diff_view_mode = view;
-    app.diff_files = crate::vcs::diff_parser::parse_file_patches(
-        vec![crate::model::FilePatch::new(
+    app.diff_files =
+        crate::vcs::diff_parser::parse_file_patches(vec![crate::model::FilePatch::new(
             Some("test.rs".into()),
             Some("test.rs".into()),
             FileStatus::Modified,
             patch,
-        )],
-        &SyntaxHighlighter::default(),
-    )
-    .unwrap();
+        )])
+        .unwrap();
     app.rebuild_annotations();
     let indices: Vec<_> = app
         .line_annotations

@@ -667,7 +667,7 @@ fn run_git_diff_command(
     workdir: &Path,
     args: Vec<String>,
     suppress_header_only_content_changes: bool,
-    highlighter: &SyntaxHighlighter,
+    _highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     let output = run_git_diff_bytes(workdir, &args, &[])?;
     let patches = match parse_raw_patch_output(&output) {
@@ -677,7 +677,7 @@ fn run_git_diff_command(
         }
         Err(error) => return Err(error),
     };
-    diff_parser::parse_file_patches(patches, highlighter)
+    diff_parser::parse_file_patches(patches)
 }
 
 fn run_git_diff_bytes(workdir: &Path, args: &[String], pathspecs: &[&Path]) -> Result<Vec<u8>> {
@@ -2034,7 +2034,7 @@ mod tests {
         assert_eq!(files.len(), 1);
         let raw = crate::vcs::git::raw::run_git_diff(workdir, &[]).unwrap();
         assert_eq!(raw.len(), 1);
-        let parsed = diff_parser::parse_file_patches(raw, &SyntaxHighlighter::default()).unwrap();
+        let parsed = diff_parser::parse_file_patches(raw).unwrap();
         // suppressBlankEmpty would drop the blank context line's leading space.
         assert_eq!(parsed[0].hunks[0].lines.len(), 4);
     }

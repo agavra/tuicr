@@ -42,11 +42,10 @@ use crate::forge::traits::{
     PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord,
     PullRequestReviewStatus, PullRequestSummary, PullRequestTarget,
 };
-use crate::forge::{percent_encode_component, percent_encode_path};
-use crate::model::{DiffLine, FilePatch, FileStatus};
+use crate::forge::{local_range_diff, percent_encode_component, percent_encode_path};
+use crate::model::{FilePatch, FileStatus};
 use crate::process::{CommandOutputErrorKind, run_command_output, run_command_streams};
-use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch, run_git_diff};
-use crate::vcs::slice_context_lines;
+use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch};
 use crate::vcs::split_commit_message;
 
 use super::models::{
@@ -1048,15 +1047,6 @@ where
             .collect())
     }
 
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
-        if request.start_line == 0 || request.start_line > request.end_line {
-            return Ok(Vec::new());
-        }
-        let (start_line, end_line) = (request.start_line, request.end_line);
-        let content = self.fetch_file_content(request)?;
-        Ok(slice_context_lines(&content, start_line, end_line))
-    }
-
     /// Local blob when the checkout has the PR's SHA, the raw endpoint
     /// otherwise. The PR's exact SHAs may or may not be present locally; we
     /// silently fall back.
@@ -1193,7 +1183,6 @@ fn issue_into_summary(issue: GiteaIssue, repository: &ForgeRepository) -> PullRe
         .pull_request
         .unwrap_or(super::models::GiteaPullRequestMeta {
             draft: false,
-            merged: false,
             html_url: None,
         });
     PullRequestSummary {
@@ -1452,19 +1441,6 @@ fn fetch_pull_head(root: &Path, pr: &PullRequestDetails) {
             refspec.as_str(),
         ],
     );
-}
-
-/// `Some(diff)` when both SHAs are present locally.
-fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<Vec<FilePatch>> {
-    for sha in [start_sha, end_sha] {
-        run_command_output(
-            "git",
-            Some(repo_root),
-            ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
-        )
-        .ok()?;
-    }
-    run_git_diff(repo_root, &[format!("{start_sha}..{end_sha}").as_str()]).ok()
 }
 
 // ----- URL helpers -----
@@ -2297,10 +2273,8 @@ mod tests {
             resolver: resolved.then(|| GiteaUser {
                 login: "resolver".to_string(),
             }),
-            pull_request_review_id: 1,
             created_at: None,
             path: path.to_string(),
-            commit_id: String::new(),
             html_url: format!("https://gitea.example.com/c/{id}"),
             position: new_line,
             original_position: old_line,

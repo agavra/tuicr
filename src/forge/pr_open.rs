@@ -21,7 +21,6 @@ use crate::forge::traits::{
     PullRequestReviewMetadata, PullRequestTarget,
 };
 use crate::model::{DiffFile, FilePatch, ReviewSession, SessionDiffSource};
-use crate::syntax::SyntaxHighlighter;
 use crate::tuicrignore;
 use crate::vcs::diff_parser::parse_file_patches;
 
@@ -61,7 +60,6 @@ pub fn open_pull_request(
     backend: &(dyn ForgeBackend + Sync),
     target: PullRequestTarget,
     local_checkout: Option<&Path>,
-    highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
     let (details, patches, commits, review_metadata, pr_info) = fetch_pr_data(backend, target)?;
     prepare_open_pr(
@@ -71,7 +69,6 @@ pub fn open_pull_request(
         review_metadata,
         pr_info,
         local_checkout,
-        highlighter,
     )
 }
 
@@ -159,7 +156,6 @@ pub fn prepare_open_pr(
     review_metadata: PullRequestReviewMetadata,
     pr_info: PullRequestInfo,
     local_checkout: Option<&Path>,
-    highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
     let had_patches = !patches.is_empty();
     let patches = match local_checkout {
@@ -170,7 +166,7 @@ pub fn prepare_open_pr(
     let diff_files = if had_patches && patches.is_empty() {
         Vec::new()
     } else {
-        match parse_file_patches(patches, highlighter) {
+        match parse_file_patches(patches) {
             Ok(files) => files,
             Err(TuicrError::NoChanges) => {
                 return Err(TuicrError::Forge(format!(
@@ -328,8 +324,9 @@ mod tests {
                 &self.patch,
             ))
         }
-        fn fetch_file_lines(&self, _req: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
-            unimplemented!()
+        fn fetch_file_content(&self, _req: ForgeFileLinesRequest) -> Result<String> {
+            self.calls.lock().unwrap().push("fetch_file_content");
+            Ok("one\ntwo\nthree\n".to_string())
         }
         fn list_review_threads(
             &self,
@@ -378,9 +375,8 @@ index 1111111..2222222 100644
         // given
         let backend = StaticBackend::new(details(), SIMPLE_PATCH);
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        let opened = open_pull_request(&backend, target, None).unwrap();
         // then
         assert_eq!(opened.diff_files.len(), 1);
         assert_eq!(opened.key.head_sha, "abcdef0123456789");
@@ -474,9 +470,8 @@ rename to new_name.rs
         // given a backend serving a patch with add/modify/delete/rename
         let backend = StaticBackend::new(details(), MULTI_STATUS_PATCH);
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        let opened = open_pull_request(&backend, target, None).unwrap();
         // then — all four files are recognized with correct statuses
         assert_eq!(opened.diff_files.len(), 4);
         let statuses: Vec<(String, crate::model::FileStatus)> = opened
@@ -509,15 +504,130 @@ rename to new_name.rs
         // given a PR with no file changes (empty patch)
         let backend = StaticBackend::new(details(), "");
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let err = open_pull_request(&backend, target, None, &highlighter).unwrap_err();
+        let err = open_pull_request(&backend, target, None).unwrap_err();
         // then
         let msg = err.to_string();
         assert!(
             msg.contains("Pull request #125 has no file changes"),
             "unexpected error message: {msg}"
         );
+    }
+
+    fn lines_request(start_line: u32, end_line: u32) -> ForgeFileLinesRequest {
+        ForgeFileLinesRequest::for_file(
+            repo(),
+            "base".to_string(),
+            "head".to_string(),
+            crate::model::FileStatus::Modified,
+            None,
+            Some(&PathBuf::from("a.rs")),
+            (start_line, end_line),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn should_slice_file_content_for_the_default_fetch_file_lines() {
+        let backend = StaticBackend::new(details(), SIMPLE_PATCH);
+        let lines = backend.fetch_file_lines(lines_request(2, 3)).unwrap();
+        let text: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
+        assert_eq!(text, ["two", "three"]);
+    }
+
+    #[test]
+    fn should_return_no_lines_for_an_empty_or_inverted_range() {
+        let backend = StaticBackend::new(details(), SIMPLE_PATCH);
+        assert!(
+            backend
+                .fetch_file_lines(lines_request(0, 3))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            backend
+                .fetch_file_lines(lines_request(3, 2))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !backend
+                .calls
+                .lock()
+                .unwrap()
+                .contains(&"fetch_file_content"),
+            "an empty range must not fetch the file"
+        );
+    }
+
+    #[test]
+    fn should_pick_the_old_path_and_base_sha_for_a_deleted_file() {
+        let (old, new) = (PathBuf::from("old.rs"), PathBuf::from("new.rs"));
+        let request = |status| {
+            ForgeFileLinesRequest::for_file(
+                repo(),
+                "base".to_string(),
+                "head".to_string(),
+                status,
+                Some(&old),
+                Some(&new),
+                (0, 0),
+            )
+            .unwrap()
+        };
+        let deleted = request(crate::model::FileStatus::Deleted);
+        assert_eq!(
+            (deleted.path.as_path(), deleted.sha()),
+            (old.as_path(), "base")
+        );
+        let renamed = request(crate::model::FileStatus::Renamed);
+        assert_eq!(
+            (renamed.path.as_path(), renamed.sha()),
+            (new.as_path(), "head")
+        );
+        assert!(
+            ForgeFileLinesRequest::for_file(
+                repo(),
+                String::new(),
+                String::new(),
+                crate::model::FileStatus::Modified,
+                None,
+                None,
+                (0, 0),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn should_list_commits_newest_first() {
+        // given the forge's oldest-first commit list
+        let commit = |oid: &str| crate::forge::traits::PullRequestCommit {
+            oid: oid.to_string(),
+            short_oid: oid.to_string(),
+            summary: oid.to_string(),
+            body: None,
+            author: "alice".to_string(),
+            timestamp: None,
+        };
+        // when
+        let opened = prepare_open_pr(
+            details(),
+            vec![FilePatch::new(
+                None,
+                Some(std::path::PathBuf::from("a.rs")),
+                crate::model::FileStatus::Modified,
+                "@@ -1 +1 @@\n-old\n+new\n",
+            )],
+            vec![commit("oldest"), commit("newest")],
+            crate::forge::traits::PullRequestReviewMetadata::default(),
+            crate::forge::traits::PullRequestInfo::from_details(details()),
+            None,
+        )
+        .unwrap();
+        // then
+        let oids: Vec<&str> = opened.commits.iter().map(|c| c.oid.as_str()).collect();
+        assert_eq!(oids, ["newest", "oldest"]);
     }
 
     #[test]
@@ -542,7 +652,6 @@ rename to new_name.rs
                 "@@not-a-hunk\n+minified one-liner\n",
             ),
         ];
-        let highlighter = SyntaxHighlighter::default();
         // when
         let opened = prepare_open_pr(
             details(),
@@ -551,7 +660,6 @@ rename to new_name.rs
             crate::forge::traits::PullRequestReviewMetadata::default(),
             crate::forge::traits::PullRequestInfo::from_details(details()),
             Some(dir.path()),
-            &highlighter,
         )
         .expect("ignored patch must never reach the parser");
         // then only the kept file was parsed into the review
@@ -568,7 +676,6 @@ rename to new_name.rs
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         std::fs::write(dir.path().join(".tuicrignore"), "dist/\n")
             .expect("failed to write .tuicrignore");
-        let highlighter = SyntaxHighlighter::default();
 
         let opened = prepare_open_pr(
             details(),
@@ -582,7 +689,6 @@ rename to new_name.rs
             crate::forge::traits::PullRequestReviewMetadata::default(),
             crate::forge::traits::PullRequestInfo::from_details(details()),
             Some(dir.path()),
-            &highlighter,
         )
         .expect("an ignored-only PR should open as an empty review");
 
@@ -596,9 +702,8 @@ rename to new_name.rs
         let backend =
             StaticBackend::new(details(), SIMPLE_PATCH).with_diff_base_sha("mergebase111");
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        let opened = open_pull_request(&backend, target, None).unwrap();
         // then — both the standalone details and the copy carried on pr_info
         // report the merge base, so PR-mode entry, the info panel, and the
         // reload paths can't disagree about the old side.
@@ -624,9 +729,8 @@ rename to new_name.rs
         // (GitLab's diff_refs.base_sha), modeled by returning None.
         let backend = StaticBackend::new(details(), SIMPLE_PATCH);
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        let opened = open_pull_request(&backend, target, None).unwrap();
         // then — untouched.
         assert_eq!(opened.details.base_sha, "1234567890abcdef");
         assert_eq!(opened.pr_info.details.base_sha, "1234567890abcdef");

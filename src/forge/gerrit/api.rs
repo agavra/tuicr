@@ -37,10 +37,9 @@ use crate::forge::traits::{
     PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
 use crate::forge::{forge_path, percent_encode_component};
-use crate::model::{DiffLine, FilePatch};
+use crate::model::FilePatch;
 use crate::process::run_command_output;
 use crate::vcs::git::raw::run_git_diff;
-use crate::vcs::slice_context_lines;
 
 use super::models::{
     EMPTY_TREE_SHA, GerritChange, GerritComment, PATCHSET_LEVEL, mark_drafts,
@@ -615,18 +614,6 @@ impl ForgeBackend for GerritBackend {
 
     fn fetch_file_content(&self, request: ForgeFileLinesRequest) -> Result<String> {
         self.file_content(&request)
-    }
-
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
-        if request.start_line == 0 || request.start_line > request.end_line {
-            return Ok(Vec::new());
-        }
-        let content = self.file_content(&request)?;
-        Ok(slice_context_lines(
-            &content,
-            request.start_line,
-            request.end_line,
-        ))
     }
 
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {

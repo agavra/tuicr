@@ -870,12 +870,10 @@ impl App {
             display_options.show_checks,
             display_options.show_comments,
         );
-        let highlighter = theme.syntax_highlighter();
         let mut opened = open_pull_request(
             backend.as_ref(),
             parsed,
             local_checkout_for_target.as_deref(),
-            highlighter,
         )?;
         // Seed before the persisted-session restore, which replaces the
         // fresh session wholesale, so a saved visibility always wins.

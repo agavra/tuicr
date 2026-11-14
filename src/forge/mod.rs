@@ -3,7 +3,6 @@
 //! This module is intentionally transport-focused for the first integration
 //! slice. UI and review submission code should depend on the trait shape here
 //! instead of shelling out to forge-specific tools directly.
-#![allow(dead_code)]
 
 pub mod azure;
 pub mod bitbucket;
@@ -123,6 +122,27 @@ pub(crate) fn local_merge_base(repo_root: &Path, base_sha: &str, head_sha: &str)
     .ok()?;
     let sha = output.trim();
     (!sha.is_empty()).then(|| sha.to_string())
+}
+
+/// Return `Some(diff)` for `git diff <start>..<end>` when both SHAs exist in
+/// the checkout at `repo_root`; `None` lets callers fall back to the forge.
+pub(crate) fn local_range_diff(
+    repo_root: &Path,
+    start_sha: &str,
+    end_sha: &str,
+) -> Option<Vec<crate::model::FilePatch>> {
+    use std::ffi::OsStr;
+
+    for sha in [start_sha, end_sha] {
+        crate::process::run_command_output(
+            "git",
+            Some(repo_root),
+            ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
+        )
+        .ok()?;
+    }
+    let range = format!("{start_sha}..{end_sha}");
+    crate::vcs::git::raw::run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
 /// Try to detect a GitHub forge repository for the local checkout at `repo_root`.
@@ -289,6 +309,38 @@ pub(crate) static GIT_SSH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_range_diff_needs_both_shas_in_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(dir.path().join("f.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "one"]);
+        let first = git(&["rev-parse", "HEAD"]);
+        std::fs::write(dir.path().join("f.txt"), "two\n").unwrap();
+        git(&["commit", "-qam", "two"]);
+        let second = git(&["rev-parse", "HEAD"]);
+
+        let patches = local_range_diff(dir.path(), &first, &second).expect("both shas exist");
+        assert_eq!(patches.len(), 1);
+        let missing = "0".repeat(40);
+        assert!(local_range_diff(dir.path(), &first, &missing).is_none());
+        // An empty endpoint would make `git diff` default it to HEAD and succeed.
+        assert!(local_range_diff(dir.path(), "", &second).is_none());
+        assert!(local_range_diff(dir.path(), &first, "").is_none());
+    }
 
     #[test]
     fn join_returns_both_results_in_argument_order() {

@@ -242,24 +242,18 @@ impl App {
         line: Option<u32>,
     ) -> std::result::Result<EditorTarget, String> {
         let display_path = file.display_path.display().to_string();
-        let side = ForgeFileLinesRequest::side_for_status(file.status);
-        let Some(revision_path) = ForgeFileLinesRequest::path_for_side(
-            side,
+        let Some(request) = ForgeFileLinesRequest::for_file(
+            pr.key.repository.clone(),
+            pr.base_sha.clone(),
+            pr.key.head_sha.clone(),
+            file.status,
             file.old_path.as_ref(),
             file.new_path.as_ref(),
+            (0, 0),
         ) else {
             return Err(format!("Cannot open {display_path}: the diff has no path"));
         };
-        let request = ForgeFileLinesRequest {
-            repository: pr.key.repository.clone(),
-            base_sha: pr.base_sha.clone(),
-            head_sha: pr.key.head_sha.clone(),
-            path: revision_path.clone(),
-            status: file.status,
-            side,
-            start_line: 0,
-            end_line: 0,
-        };
+        let revision_path = request.path.clone();
         let sha = request.sha().to_string();
         let short = short_sha(&sha).to_string();
         let worktree = checkout.map(|root| root.join(&revision_path));

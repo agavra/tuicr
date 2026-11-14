@@ -127,7 +127,7 @@ impl HgBackend {
         &self,
         diff_args: &[&str],
         comparison: WhitespaceComparison,
-        highlighter: &SyntaxHighlighter,
+        _highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         let args = Self::diff_args(comparison, diff_args);
         let mut patch_args: Vec<&str> = args.iter().copied().collect();
@@ -169,7 +169,7 @@ impl HgBackend {
             patches
         };
 
-        diff_parser::parse_file_patches(patches, highlighter)
+        diff_parser::parse_file_patches(patches)
     }
 }
 

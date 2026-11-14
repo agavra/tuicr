@@ -165,7 +165,7 @@ impl JjBackend {
         &self,
         diff_args: &[&str],
         comparison: WhitespaceComparison,
-        highlighter: &SyntaxHighlighter,
+        _highlighter: &SyntaxHighlighter,
         ignore_working_copy: bool,
     ) -> Result<Vec<DiffFile>> {
         let args = Self::diff_args(comparison, diff_args);
@@ -187,7 +187,7 @@ impl JjBackend {
         patch_args.extend(["--git", "--ignore-working-copy"]);
         let patch = run_jj_command(&self.info.root_path, patch_args)?;
         let patches = pair_metadata_with_patch(metadata, patch.as_bytes())?;
-        diff_parser::parse_file_patches(patches, highlighter)
+        diff_parser::parse_file_patches(patches)
     }
 }
 

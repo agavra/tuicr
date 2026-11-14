@@ -27,7 +27,6 @@
 //! `staged-and-unstaged`) embed the short SHA of the current HEAD so that a
 //! new commit on the same branch produces a fresh session instead of
 //! resurrecting stale comments tied to the previous HEAD.
-#![allow(dead_code)]
 
 use std::fmt;
 use std::path::Path;

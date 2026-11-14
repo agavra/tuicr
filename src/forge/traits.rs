@@ -427,7 +427,8 @@ pub struct ForgeFileLinesRequest {
     pub path: PathBuf,
     /// File status, used to choose the appropriate side without forcing the
     /// caller to also compute it. Renames use `Renamed`; `path` should already
-    /// reflect the chosen side.
+    /// reflect the chosen side. Kept public for library callers; not read
+    /// internally.
     pub status: FileStatus,
     /// Which side to read from. The caller is responsible for picking the
     /// right side per the spec mapping rules.
@@ -438,6 +439,31 @@ pub struct ForgeFileLinesRequest {
 }
 
 impl ForgeFileLinesRequest {
+    /// Build a request for `status`'s side of a file, or `None` when the diff
+    /// carries no path for that side.
+    pub fn for_file(
+        repository: ForgeRepository,
+        base_sha: String,
+        head_sha: String,
+        status: FileStatus,
+        old_path: Option<&PathBuf>,
+        new_path: Option<&PathBuf>,
+        line_range: (u32, u32),
+    ) -> Option<Self> {
+        let side = Self::side_for_status(status);
+        let path = Self::path_for_side(side, old_path, new_path)?;
+        Some(Self {
+            repository,
+            base_sha,
+            head_sha,
+            path,
+            status,
+            side,
+            start_line: line_range.0,
+            end_line: line_range.1,
+        })
+    }
+
     /// Resolve the side and path for a given file based on its status.
     /// Helper for callers that have a `DiffFile` and want to fetch context.
     pub fn side_for_status(status: FileStatus) -> ForgeFileSide {
@@ -635,8 +661,18 @@ pub trait ForgeBackend {
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>>;
     /// Fetch the requested file lines from the forge for context expansion.
     /// Implementations may optimize by reading from a local checkout when
-    /// available; the trait does not require that path.
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>>;
+    /// available; the trait does not require that path. The default slices
+    /// [`Self::fetch_file_content`]; an empty or inverted range reads nothing.
+    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
+        if request.start_line == 0 || request.start_line > request.end_line {
+            return Ok(Vec::new());
+        }
+        let (start_line, end_line) = (request.start_line, request.end_line);
+        let content = self.fetch_file_content(request)?;
+        Ok(crate::vcs::slice_context_lines(
+            &content, start_line, end_line,
+        ))
+    }
     /// Return the whole file at the revision described by `request`, exactly as
     /// stored: unlike [`Self::fetch_file_lines`], tabs are not expanded, so the
     /// result is safe to write back out as a file. `start_line` and `end_line`

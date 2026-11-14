@@ -36,10 +36,9 @@ use crate::forge::traits::{
     GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
     PullRequestListQuery, PullRequestListScope, PullRequestTarget, SubmitReceipts,
 };
-use crate::model::{DiffLine, FilePatch};
+use crate::model::FilePatch;
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
 use crate::vcs::git::raw::run_git_diff;
-use crate::vcs::slice_context_lines;
 
 use super::models::{
     AzConnectionData, AzGitCommitRef, AzList, AzPullRequest, AzThread, AzThreadResponse,
@@ -665,15 +664,6 @@ impl ForgeBackend for AzureDevOpsBackend {
 
     fn local_checkout_path(&self) -> Option<PathBuf> {
         self.local_checkout.clone()
-    }
-
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
-        if request.start_line == 0 || request.start_line > request.end_line {
-            return Ok(Vec::new());
-        }
-        let (start_line, end_line) = (request.start_line, request.end_line);
-        let content = self.fetch_file_content(request)?;
-        Ok(slice_context_lines(&content, start_line, end_line))
     }
 
     /// File content at the request's revision: local blob first, REST fallback.

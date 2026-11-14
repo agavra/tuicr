@@ -1,5 +1,5 @@
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use sha1::{Digest, Sha1};
@@ -15,13 +15,11 @@ use crate::forge::traits::{
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
     PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord, PullRequestTarget,
 };
-use crate::forge::{forge_path, percent_encode_component};
-use crate::model::{DiffLine, FilePatch, LineOrigin};
+use crate::forge::{forge_path, local_range_diff, percent_encode_component};
+use crate::model::{FilePatch, LineOrigin};
 use crate::process::{
     CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
 };
-use crate::vcs::git::raw::run_git_diff;
-use crate::vcs::slice_context_lines;
 
 use super::instance::{self, SubfolderCache};
 use super::models::{
@@ -88,22 +86,6 @@ impl From<CommandOutputError> for GlabCommandError {
             }
         }
     }
-}
-
-/// Return `Some(diff)` when both SHAs exist locally, via `git diff <start>..<end>`.
-fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<Vec<FilePatch>> {
-    for sha in [start_sha, end_sha] {
-        let exists = run_command_output(
-            "git",
-            Some(repo_root),
-            ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
-        );
-        if exists.is_err() {
-            return None;
-        }
-    }
-    let range = format!("{start_sha}..{end_sha}");
-    run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
 /// Percent-encode a project path as `owner%2Frepo` for GitLab project API
@@ -626,15 +608,6 @@ where
             author.as_deref(),
             &pr.url,
         ))
-    }
-
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
-        if request.start_line == 0 || request.start_line > request.end_line {
-            return Ok(Vec::new());
-        }
-        let (start_line, end_line) = (request.start_line, request.end_line);
-        let content = self.fetch_file_content(request)?;
-        Ok(slice_context_lines(&content, start_line, end_line))
     }
 
     /// Local blob when the checkout has the PR's SHA, REST otherwise. The PR's
@@ -1976,7 +1949,7 @@ mod tests {
         assert_eq!(patches.len(), 1);
         assert_eq!(
             patches[0].new_path.as_deref(),
-            Some(Path::new("日本語 b/and file.sql"))
+            Some(std::path::Path::new("日本語 b/and file.sql"))
         );
         let calls = backend.runner.calls.borrow();
         assert!(
