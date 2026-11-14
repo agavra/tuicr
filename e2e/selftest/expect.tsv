@@ -7,3 +7,6 @@ detect/skip_is_reported	SKIP
 detect/failing_assertion_fails	FAIL
 detect/quarantined_failure_does_not_gate	QFAIL
 detect/hung_scenario_is_killed_with_children	FAIL
+detect/failing_plain_assert_fails	FAIL
+detect/unexpected_cli_call_fails_scenario	FAIL
+detect/unexpected_named_cli_call_fails_scenario	FAIL

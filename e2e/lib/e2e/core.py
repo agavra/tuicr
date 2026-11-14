@@ -180,6 +180,7 @@ class Scenario:
         d = self.path_of(name or self.name)
         for sub in ("home", "config", "data", "state", "tmp"):
             (d / sub).mkdir(parents=True, exist_ok=True)
+        self.forge_logs.append(d / "forge.log")   # the central UNEXPECTED check covers CLI runs too
         return child_env(d, path or f"{E2E_DIR}/bin:{TOOL_PATH}", {**self.env, **(env or {})})
 
     def cli(self, *args, input: Optional[str] = None, env: Optional[Dict[str, str]] = None, path: Optional[str] = None,
@@ -321,6 +322,8 @@ def scenario(fn):
         # No scenario may pass while a fake forge saw a call its fixtures do not cover.
         bad = s._unexpected_calls()
         if rc == 0 and bad and not s.allow_unexpected:
-            sys.stderr.write("e2e: fake forge saw an unexpected call:\n" + "\n".join(bad) + "\n")
+            sys.stderr.write("e2e: fake forge saw an unexpected call:\n"
+                             f"  at {_rel(str(s.script))}:{fn.__code__.co_firstlineno}: {fn.__name__}() finished with it unreported\n"
+                             + "\n".join(bad) + "\n")
             rc = 1
     sys.exit(rc)

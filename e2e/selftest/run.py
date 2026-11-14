@@ -71,6 +71,15 @@ def main():
             name, want = line.split("\t")
             check(name, want, results.get(name, "missing"))
 
+    print("-- failures name the scenario file:line and carry their evidence")
+    for scen_name, rx in (("failing_plain_assert_fails", r"assertion failed: arithmetic broke\s+at \S*failing_plain_assert_fails\.py:\d+"),
+                          ("unexpected_forge_call_fails_scenario", r"unexpected call:\s+at \S*unexpected_forge_call_fails_scenario\.py:\d+"),
+                          ("unexpected_cli_call_fails_scenario", r"unexpected call:\s+at \S*unexpected_cli_call_fails_scenario\.py:\d+"),
+                          ("unexpected_named_cli_call_fails_scenario", r"unexpected call:\s+at \S*unexpected_named_cli_call_fails_scenario\.py:\d+")):
+        log = root / "out/detect" / f"{scen_name}.log"
+        text = log.read_text() if log.exists() else ""
+        check(f"{scen_name} log has file:line", True, bool(re.search(rx, text)))
+
     print("-- hung scenario's background child must be dead")
     global failed
     try:
