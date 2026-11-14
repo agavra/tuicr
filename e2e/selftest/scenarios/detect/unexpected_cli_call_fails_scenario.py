@@ -3,6 +3,8 @@
 # TUICR_BIN is `env` here, so s.cli runs the command itself.
 from e2e import Scenario, scenario
 
+EXPECTED = "FAIL"  # asserted by e2e/selftest/run.py
+
 
 @scenario
 def main(s: Scenario) -> None:

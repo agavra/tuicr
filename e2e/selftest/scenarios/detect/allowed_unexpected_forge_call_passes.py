@@ -2,6 +2,8 @@
 # Runner self-test (expect PASS): a scenario that provokes unexpected calls on purpose declares it.
 from e2e import Scenario, scenario
 
+EXPECTED = "PASS"  # asserted by e2e/selftest/run.py
+
 
 @scenario
 def main(s: Scenario) -> None:

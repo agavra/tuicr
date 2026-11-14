@@ -2,6 +2,8 @@
 # Runner self-test (expect PASS): a pane that was killed mid-scenario must not satisfy "text is gone".
 from e2e import NoPane, Scenario, must_fail, scenario
 
+EXPECTED = "PASS"  # asserted by e2e/selftest/run.py
+
 
 @scenario
 def main(s: Scenario) -> None:

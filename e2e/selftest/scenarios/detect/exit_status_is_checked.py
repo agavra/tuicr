@@ -2,6 +2,8 @@
 # Runner self-test (expect PASS): wait_exit verifies the exit status (default 0); a crash is not "exited fine".
 from e2e import Scenario, must_fail, scenario
 
+EXPECTED = "PASS"  # asserted by e2e/selftest/run.py
+
 
 @scenario
 def main(s: Scenario) -> None:

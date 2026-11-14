@@ -21,15 +21,15 @@ cargo fmt
 ## Testing
 
 `cargo test` runs the unit and integration tests. User-visible bug fixes and behaviour changes also need an
-end-to-end scenario under `e2e/scenarios/<area>/<behaviour>.sh` that fails without the change:
+end-to-end scenario under `e2e/scenarios/<area>/<behaviour>.py` that fails without the change:
 
 ```bash
 cargo build --release
-TUICR_BIN=target/release/tuicr e2e/run.sh            # or filter: e2e/run.sh pr/submit
+TUICR_BIN=target/release/tuicr uv run --python 3.12 e2e/run.py   # or filter: ... e2e/run.py pr/submit
 ```
 
-Prerequisites: the Rust toolchain, python3 >= 3.9, tmux, [uv](https://docs.astral.sh/uv/) (provides `uvx` for the
-Python checks below), plus `hg` and `jj` for their scenarios (they skip without them). Forges are
+Prerequisites: the Rust toolchain, tmux, [uv](https://docs.astral.sh/uv/) (provides Python >= 3.11 for the e2e runner,
+stdlib only, and `uvx` for the Python checks below), plus `hg` and `jj` for their scenarios (they skip without them). Forges are
 faked; no credentials or network needed. CI runs the suite on Linux and macOS. See [e2e/README.md](e2e/README.md)
 and [e2e/COVERAGE.md](e2e/COVERAGE.md).
 

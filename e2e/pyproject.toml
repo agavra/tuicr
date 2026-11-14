@@ -20,3 +20,10 @@ ignore = [
 [tool.ty.environment]
 python-version = "3.11"
 root = ["lib", "."]
+
+# Harness defaults, read by e2e/run.py (environment variables still override: E2E_SCENARIO_TIMEOUT, E2E_SOCKET,
+# E2E_SETTLE_QUIET). Needs Python >= 3.11 (tomllib); run it with `uv run --python 3.12 e2e/run.py`.
+[tool.tuicr-e2e]
+scenario_timeout = 120   # seconds before a scenario's process tree is killed (FAIL, rc 124)
+socket_prefix = "tuicr-e2e"   # tmux socket name is <prefix>-<runner pid>
+settle_quiet = 0.25   # default quiet period of Tui.settle()

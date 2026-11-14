@@ -3,6 +3,8 @@
 # tuicr treats some forge failures as best-effort, so only the central check can catch this.
 from e2e import Scenario, scenario
 
+EXPECTED = "FAIL"  # asserted by e2e/selftest/run.py
+
 
 @scenario
 def main(s: Scenario) -> None:
