@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # Add line / range / file / review comments; they render inline and persist with :w.
-from e2e import scenario
+from typing import Any
+
+from e2e import Scenario, scenario
 
 
 @scenario
-def main(s):
+def main(s: Scenario) -> None:
     tui = s.diff()
     tui.cursor_on("4 ▌ second line")
     tui.comment("line note alpha")
@@ -25,7 +27,7 @@ def main(s):
     j = s.session()
     f = j["files"]
 
-    def one(cs, text):
+    def one(cs: list[dict[str, Any]], text: str) -> dict[str, Any]:
         assert len(cs) == 1 and cs[0]["content"] == text, (text, cs)
         return cs[0]
 
@@ -36,7 +38,9 @@ def main(s):
     one(f["README.md"]["file_comments"], "file note gamma")
     one(j["review_comments"], "review note delta")
     # nothing leaked into another bucket
-    assert sorted(c["content"] for fr in f.values() for cs in fr["line_comments"].values() for c in cs) \
-        == ["line note alpha", "range note beta"], f
+    assert sorted(c["content"] for fr in f.values() for cs in fr["line_comments"].values() for c in cs) == [
+        "line note alpha",
+        "range note beta",
+    ], f
     assert sum(len(fr["file_comments"]) for fr in f.values()) == 1 and len(j["review_comments"]) == 1, j
     tui.quit()
