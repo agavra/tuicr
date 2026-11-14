@@ -6,7 +6,7 @@ set -euo pipefail
 n=$(e2e_name); d=$(e2e_dir $n); mkdir -p $d; fx_wide_repo $d/repo
 E2E_CWD=$d/repo e2e_start $n "$TUICR_BIN" --no-update-check -r HEAD~1..HEAD
 e2e_wait_for $n 'Files · 0/4'; e2e_keys $n Escape
-sc_cmd $n 'set wrap!'; sc_cmd $n diff
+sc_cmd $n 'set nowrap'; sc_cmd $n diff
 e2e_keys $n ';h'; e2e_settle $n 0.2; e2e_keys $n ';h'; e2e_settle $n 0.2   # new side -> old side -> file list
 e2e_keys $n l; e2e_settle $n
 # scrolled by 4 columns: the nested file row now starts at its glyph/status, nothing pins the indent

@@ -7,7 +7,7 @@ set -euo pipefail
 n=$(e2e_name); d=$(e2e_dir $n); mkdir -p $d; fx_wide_repo $d/repo
 E2E_CWD=$d/repo e2e_start $n "$TUICR_BIN" --no-update-check -r HEAD~1..HEAD
 e2e_wait_for $n 'Files · 0/4'; e2e_keys $n Escape
-sc_cmd $n 'set wrap!'; sc_cmd $n diff
+sc_cmd $n 'set nowrap'; sc_cmd $n diff
 e2e_wait_for $n '5 ▌a日本語のテキスト' 
 e2e_keys $n l
 e2e_wait_for $n '5 ▌ 語のテキスト' || { echo "wide glyph cut by the pan was not padded (panned by characters, not cells)"; e2e_screen $n; exit 1; }

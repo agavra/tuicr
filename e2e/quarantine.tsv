@@ -1,1 +1,1 @@
-diff/wrap_default_off	docs/CONFIG.md documents wrap = false but a fresh tuicr wraps long lines (docs and behaviour disagree)
+# <area>/<behaviour><TAB>reason: a known failure that still runs and is reported (QFAIL) but does not gate. Currently empty.
