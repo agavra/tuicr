@@ -1697,7 +1697,7 @@ impl Default for DiffState {
             viewport_height: 0,
             viewport_width: 0,
             max_content_width: 0,
-            wrap_lines: true,
+            wrap_lines: false,
             visible_line_count: 0,
         }
     }
