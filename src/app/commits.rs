@@ -1091,7 +1091,7 @@ impl App {
         self.input_mode = InputMode::Normal;
 
         // Reset navigation state
-        self.diff_state = DiffState::default();
+        self.reset_diff_state();
         self.file_list_state = FileListState::default();
 
         // Newest-first display order
@@ -1166,9 +1166,7 @@ impl App {
         Self::register_diff_files(&mut self.session, &self.diff_files, true);
 
         // Reset navigation, rebuild file tree + annotations
-        let wrap = self.diff_state.wrap_lines;
-        self.diff_state = DiffState::default();
-        self.diff_state.wrap_lines = wrap;
+        self.reset_diff_state();
         self.file_list_state = FileListState::default();
         self.expanded_top.clear();
         self.expanded_bottom.clear();

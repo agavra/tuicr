@@ -440,7 +440,7 @@ impl App {
         self.diff_source = diff_source;
         self.clear_commit_pane();
         self.input_mode = InputMode::Normal;
-        self.diff_state = DiffState::default();
+        self.reset_diff_state();
         self.file_list_state = FileListState::default();
         self.clear_expanded_gaps();
         self.sort_files_by_directory(true);
@@ -985,7 +985,7 @@ impl App {
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedUnstagedAndCommits(selected_ids);
         self.input_mode = InputMode::Normal;
-        self.diff_state = DiffState::default();
+        self.reset_diff_state();
         self.file_list_state = FileListState::default();
 
         let rows: Vec<CommitInfo> = selected_commits.into_iter().rev().collect();
