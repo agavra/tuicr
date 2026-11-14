@@ -671,15 +671,19 @@ impl App {
             in_flight.pr_number,
             in_flight.pr_head_sha.clone(),
         );
-        let Ok(Some((_path, origin))) = crate::persistence::storage::load_pr_session(&key) else {
+        let Ok(Some((path, origin))) = crate::persistence::storage::load_pr_session(&key) else {
             return;
         };
-        let _ = crate::persistence::storage::save_session_by_identity(&origin.clone(), |latest| {
-            let mut session = latest.unwrap_or(origin);
-            Self::apply_submit_lifecycle(&mut session, in_flight, response);
-            session.updated_at = chrono::Utc::now();
-            Ok((session, ()))
-        });
+        let _ = crate::persistence::storage::save_session_by_identity(
+            &origin.clone(),
+            Some(&path),
+            |latest| {
+                let mut session = latest.unwrap_or(origin);
+                Self::apply_submit_lifecycle(&mut session, in_flight, response);
+                session.updated_at = chrono::Utc::now();
+                Ok((session, ()))
+            },
+        );
     }
 
     fn apply_submit_lifecycle(

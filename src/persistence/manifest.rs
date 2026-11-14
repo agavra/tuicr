@@ -54,7 +54,14 @@ pub struct ManifestEntry {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ManifestKind {
     Local,
-    Pr { number: u64, head_sha: String },
+    Pr {
+        number: u64,
+        head_sha: String,
+        /// Normalized forge host of a host-aware (new) session. Legacy
+        /// entries carry none and are never replaced by a host-aware write.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -83,23 +90,47 @@ impl Manifest {
         })
     }
 
-    /// Find the PR entry for `slug` (PR entries are singletons per slug).
-    pub fn get_pr(&self, slug: &str) -> Option<&ManifestEntry> {
-        self.entries
-            .get(slug)?
+    /// Find the PR entry of `host` in `bucket`: the entry whose host equals
+    /// `host` first, a legacy hostless (`None`) entry only as the fallback.
+    /// `host` must already be normalized.
+    pub fn get_pr_for(&self, bucket: &str, host: Option<&str>) -> Option<&ManifestEntry> {
+        self.pr_candidates(&[bucket], host).into_iter().next()
+    }
+
+    /// PR entries of `buckets` that may belong to `host`, best first: explicit
+    /// host entries, then legacy `None` entries (callers must still check the
+    /// session file's own host before trusting those).
+    pub fn pr_candidates(&self, buckets: &[&str], host: Option<&str>) -> Vec<&ManifestEntry> {
+        let all: Vec<&ManifestEntry> = buckets
             .iter()
-            .find(|e| matches!(e.kind, ManifestKind::Pr { .. }))
+            .flat_map(|bucket| self.entries.get(*bucket).into_iter().flatten())
+            .filter(|e| matches!(e.kind, ManifestKind::Pr { .. }))
+            .collect();
+        let entry_host = |e: &ManifestEntry| match &e.kind {
+            ManifestKind::Pr { host, .. } => host.as_deref().map(crate::slug::normalized_host),
+            ManifestKind::Local => None,
+        };
+        let explicit = all
+            .iter()
+            .filter(|e| entry_host(e).is_some() && entry_host(e).as_deref() == host);
+        let legacy = all.iter().filter(|e| entry_host(e).is_none());
+        let mut out: Vec<&ManifestEntry> = explicit.chain(legacy).copied().collect();
+        out.dedup_by(|a, b| a.path == b.path);
+        out
     }
 
     /// Insert or replace an entry. For local entries the matching key is
-    /// `(slug, canonical_repo_path)`; for PR entries the slug alone suffices
-    /// because each PR slug holds at most one entry.
+    /// `(slug, canonical_repo_path)`; a PR entry replaces the one at the same
+    /// path or with the same host. A legacy hostless entry is never replaced
+    /// by a host-aware write (or vice versa): the two coexist in the bucket.
     pub fn upsert(&mut self, slug: String, entry: ManifestEntry) {
         let bucket = self.entries.entry(slug).or_default();
         let idx = bucket
             .iter()
             .position(|existing| match (&existing.kind, &entry.kind) {
-                (ManifestKind::Pr { .. }, ManifestKind::Pr { .. }) => true,
+                (ManifestKind::Pr { host: old, .. }, ManifestKind::Pr { host: new, .. }) => {
+                    existing.path == entry.path || old == new
+                }
                 (ManifestKind::Local, ManifestKind::Local) => {
                     existing.canonical_repo_path == entry.canonical_repo_path
                 }
@@ -179,6 +210,7 @@ pub fn entry_from_session(
         Some(key) => ManifestKind::Pr {
             number: key.number,
             head_sha: key.head_sha.clone(),
+            host: None,
         },
         None => ManifestKind::Local,
     };
@@ -299,6 +331,7 @@ mod tests {
             kind: ManifestKind::Pr {
                 number,
                 head_sha: head_sha.to_string(),
+                host: None,
             },
             updated_at,
             canonical_repo_path: None,
@@ -313,6 +346,21 @@ mod tests {
 
     fn repo(name: &str) -> PathBuf {
         PathBuf::from(format!("/Users/agavra/{name}"))
+    }
+
+    #[test]
+    fn should_match_entry_host_by_normalized_comparison() {
+        let mut manifest = Manifest::new();
+        let mut entry = pr_entry(Utc::now(), 1, "a");
+        if let ManifestKind::Pr { host, .. } = &mut entry.kind {
+            *host = Some("GHE.Internal".to_string());
+        }
+        manifest.upsert("gh:o/r/pr/1@ghe.internal".to_string(), entry);
+        assert!(
+            manifest
+                .get_pr_for("gh:o/r/pr/1@ghe.internal", Some("ghe.internal"))
+                .is_some()
+        );
     }
 
     #[test]
@@ -415,7 +463,7 @@ mod tests {
         );
 
         assert_eq!(manifest.len(), 1);
-        let entry = manifest.get_pr("gh:agavra/tuicr/pr/125").unwrap();
+        let entry = manifest.get_pr_for("gh:agavra/tuicr/pr/125", None).unwrap();
         match &entry.kind {
             ManifestKind::Pr { head_sha, .. } => assert_eq!(head_sha, "def67890"),
             _ => panic!("expected Pr"),
@@ -449,7 +497,7 @@ mod tests {
             loaded.get_local("agavra/tuicr@main/worktree", &repo("tuicr")),
             Some(&local),
         );
-        assert!(loaded.get_pr("gh:agavra/tuicr/pr/125").is_some());
+        assert!(loaded.get_pr_for("gh:agavra/tuicr/pr/125", None).is_some());
     }
 
     #[test]
@@ -580,7 +628,9 @@ mod tests {
         );
 
         match &entry.kind {
-            ManifestKind::Pr { number, head_sha } => {
+            ManifestKind::Pr {
+                number, head_sha, ..
+            } => {
                 assert_eq!(*number, 125);
                 assert_eq!(head_sha, "abcdef0123456789");
             }

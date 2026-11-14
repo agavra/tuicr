@@ -60,6 +60,61 @@ pub struct PrSlug {
     pub owner: String,
     pub repo: String,
     pub number: u64,
+    /// Normalized forge host, present only when it is not the forge's default
+    /// host (always for Gerrit). Rendered as a trailing `@<host>` so the same
+    /// `owner/repo#N` on two hosts never shares a slug.
+    pub host: Option<String>,
+}
+
+impl PrSlug {
+    /// The slug as legacy (host-unaware) sessions are keyed.
+    pub fn hostless(&self) -> PrSlug {
+        PrSlug {
+            host: None,
+            ..self.clone()
+        }
+    }
+}
+
+/// The ONLY host normalizer for session identity: lowercase, trailing dots
+/// trimmed, any port kept verbatim. `www.github.com` is not aliased.
+pub fn normalized_host(host: &str) -> String {
+    host.to_ascii_lowercase().trim_end_matches('.').to_string()
+}
+
+/// The forge's public default host, which keeps unqualified slugs.
+pub fn default_host(kind: ForgeKind) -> Option<&'static str> {
+    match kind {
+        ForgeKind::GitHub => Some("github.com"),
+        ForgeKind::GitLab => Some("gitlab.com"),
+        ForgeKind::Gitea => Some("gitea.com"),
+        ForgeKind::Bitbucket => Some("bitbucket.org"),
+        ForgeKind::AzureDevOps => Some("dev.azure.com"),
+        ForgeKind::Gerrit => None,
+    }
+}
+
+/// Short forge code used in slugs (`gh`, `gl`, ...).
+pub fn forge_code(kind: ForgeKind) -> &'static str {
+    match kind {
+        ForgeKind::GitHub => "gh",
+        ForgeKind::GitLab => "gl",
+        ForgeKind::Gitea => "gt",
+        ForgeKind::Bitbucket => "bb",
+        ForgeKind::AzureDevOps => "az",
+        ForgeKind::Gerrit => "ge",
+    }
+}
+
+/// Two keys name the same pull request (head ignored) when forge, owner, repo,
+/// number and the normalized host agree. Never compare raw
+/// `ForgeRepository`s for identity: persisted hosts keep their raw bytes.
+pub fn same_pr_identity(a: &PrSessionKey, b: &PrSessionKey) -> bool {
+    a.number == b.number
+        && a.repository.kind == b.repository.kind
+        && a.repository.owner == b.repository.owner
+        && a.repository.name == b.repository.name
+        && normalized_host(&a.repository.host) == normalized_host(&b.repository.host)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -117,19 +172,18 @@ impl fmt::Display for LocalSlug {
 
 impl fmt::Display for PrSlug {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let kind = match self.forge {
-            ForgeKind::GitHub => "gh",
-            ForgeKind::GitLab => "gl",
-            ForgeKind::Gitea => "gt",
-            ForgeKind::Bitbucket => "bb",
-            ForgeKind::AzureDevOps => "az",
-            ForgeKind::Gerrit => "ge",
-        };
         write!(
             f,
             "{}:{}/{}/pr/{}",
-            kind, self.owner, self.repo, self.number
-        )
+            forge_code(self.forge),
+            self.owner,
+            self.repo,
+            self.number
+        )?;
+        if let Some(host) = &self.host {
+            write!(f, "@{host}")?;
+        }
+        Ok(())
     }
 }
 
@@ -215,9 +269,16 @@ fn parse_pr(forge: ForgeKind, rest: &str) -> Result<PrSlug, SlugParseError> {
     if n < 4 || parts[n - 2] != "pr" {
         return Err(SlugParseError::InvalidShape(rest.to_string()));
     }
-    let number: u64 = parts[n - 1]
+    // A host suffix (`42@ghe.internal:443`) may hold `:` or `[::1]`; hosts
+    // cannot contain `/`, so only the last segment carries it.
+    let (number_text, host) = match parts[n - 1].split_once('@') {
+        Some((number, host)) if !host.is_empty() => (number, Some(normalized_host(host))),
+        Some(_) => return Err(SlugParseError::InvalidShape(rest.to_string())),
+        None => (parts[n - 1], None),
+    };
+    let number: u64 = number_text
         .parse()
-        .map_err(|_| SlugParseError::InvalidPrNumber(parts[n - 1].to_string()))?;
+        .map_err(|_| SlugParseError::InvalidPrNumber(number_text.to_string()))?;
     let repo = parts[n - 3];
     let owner = parts[..n - 3].join("/");
     if owner.is_empty() || repo.is_empty() {
@@ -228,6 +289,7 @@ fn parse_pr(forge: ForgeKind, rest: &str) -> Result<PrSlug, SlugParseError> {
         owner,
         repo: repo.to_string(),
         number,
+        host,
     })
 }
 
@@ -356,6 +418,8 @@ impl From<&PrSessionKey> for Slug {
             owner: key.repository.owner.clone(),
             repo: key.repository.name.clone(),
             number: key.number,
+            host: Some(normalized_host(&key.repository.host))
+                .filter(|host| Some(host.as_str()) != default_host(key.repository.kind)),
         })
     }
 }
@@ -643,6 +707,88 @@ fn range_from(
 
 #[cfg(test)]
 mod tests {
+    // T9: the default-host table keeps ordinary slugs; every other host and
+    // Gerrit are qualified; ports and IPv6 hosts round-trip.
+    #[test]
+    fn should_qualify_only_non_default_hosts_in_pr_slugs() {
+        let cases = [
+            (
+                ForgeRepository::github("github.com", "o", "r"),
+                "gh:o/r/pr/7",
+            ),
+            (
+                ForgeRepository::gitlab("gitlab.com", "o", "r"),
+                "gl:o/r/pr/7",
+            ),
+            (ForgeRepository::gitea("gitea.com", "o", "r"), "gt:o/r/pr/7"),
+            (
+                ForgeRepository::bitbucket("bitbucket.org", "o", "r"),
+                "bb:o/r/pr/7",
+            ),
+            (
+                ForgeRepository::azure("dev.azure.com", "o", "r"),
+                "az:o/r/pr/7",
+            ),
+            (
+                ForgeRepository::gitlab("gl.corp", "o", "r"),
+                "gl:o/r/pr/7@gl.corp",
+            ),
+            (
+                ForgeRepository::gerrit("review.corp", "proj"),
+                "ge:review.corp/proj/pr/7@review.corp",
+            ),
+            (
+                ForgeRepository::github("ghe.corp:8443", "o", "r"),
+                "gh:o/r/pr/7@ghe.corp:8443",
+            ),
+            (
+                ForgeRepository::github("[::1]:443", "o", "r"),
+                "gh:o/r/pr/7@[::1]:443",
+            ),
+        ];
+        for (repository, expected) in cases {
+            let slug = Slug::from(&PrSessionKey::new(repository, 7, "abc"));
+            assert_eq!(slug.to_string(), expected);
+            assert_eq!(expected.parse::<Slug>().unwrap(), slug);
+        }
+    }
+
+    #[test]
+    fn should_normalize_host_when_parsing_slug_suffix() {
+        let parsed: Slug = "gh:o/r/pr/7@GHE.Internal.".parse().unwrap();
+        assert_eq!(parsed.to_string(), "gh:o/r/pr/7@ghe.internal");
+    }
+
+    #[test]
+    fn should_not_treat_other_pr_fields_as_same_identity() {
+        let base = PrSessionKey::new(ForgeRepository::github("h", "o", "r"), 1, "a");
+        for other in [
+            PrSessionKey::new(ForgeRepository::github("h", "p", "r"), 1, "a"),
+            PrSessionKey::new(ForgeRepository::github("h", "o", "q"), 1, "a"),
+            PrSessionKey::new(ForgeRepository::github("h", "o", "r"), 2, "a"),
+            PrSessionKey::new(ForgeRepository::gitlab("h", "o", "r"), 1, "a"),
+        ] {
+            assert!(!same_pr_identity(&base, &other));
+        }
+    }
+
+    #[test]
+    fn should_reject_empty_host_suffix() {
+        assert!("gh:o/r/pr/7@".parse::<Slug>().is_err());
+    }
+
+    #[test]
+    fn should_normalize_hosts_in_one_place() {
+        assert_eq!(normalized_host("GHE.Internal."), "ghe.internal");
+        assert_eq!(normalized_host("Ghe.Internal:443"), "ghe.internal:443");
+        assert_eq!(normalized_host("www.github.com"), "www.github.com");
+        let a = PrSessionKey::new(ForgeRepository::github("GHE.x", "o", "r"), 1, "a");
+        let b = PrSessionKey::new(ForgeRepository::github("ghe.x.", "o", "r"), 1, "b");
+        let c = PrSessionKey::new(ForgeRepository::github("ghe.y", "o", "r"), 1, "a");
+        assert!(same_pr_identity(&a, &b));
+        assert!(!same_pr_identity(&a, &c));
+    }
+
     use super::*;
     use crate::forge::traits::ForgeRepository;
 
@@ -705,6 +851,7 @@ mod tests {
             owner: "agavra".to_string(),
             repo: "tuicr".to_string(),
             number: 125,
+            host: None,
         };
         assert_eq!(slug.to_string(), "gh:agavra/tuicr/pr/125");
     }

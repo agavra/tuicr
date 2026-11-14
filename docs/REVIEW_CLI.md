@@ -50,6 +50,11 @@ standing in its checkout or passing `--repo slatedb/slatedb` — surfaces them.
 `list` emits a usable slug for each; pass a PR slug to `--session` to read or
 annotate it (no `--repo` needed, since PR slugs are self-contained).
 
+A PR slug names the forge's default host (`gh:` is github.com) implicitly. A PR
+session on any other host (a GitHub Enterprise server, a self-hosted GitLab,
+and always Gerrit) is listed and resolved with an `@<host>` suffix, e.g.
+`gh:owner/repo/pr/42@ghe.example.com`; a hostless slug never reaches it.
+
 ```bash
 # from anywhere:
 tuicr review list --repo slatedb/slatedb

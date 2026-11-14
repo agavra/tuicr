@@ -772,7 +772,11 @@ impl App {
     /// Take in a reload that found the PR's head unchanged: refresh the
     /// diff, the PR info and the reviewed-commit markers, and keep the
     /// session.
-    fn apply_same_head_pr_reload(&mut self, opened: crate::forge::pr_open::OpenedPullRequest) {
+    pub(in crate::app) fn apply_same_head_pr_reload(
+        &mut self,
+        opened: crate::forge::pr_open::OpenedPullRequest,
+    ) {
+        self.reresolve_pr_session_path();
         // An empty incoming list means membership is unknown (a degraded fetch,
         // gotcha F7 in docs/FORGES.md), never "commits removed", so it only skips the membership
         // comparison; a changed base still counts.
