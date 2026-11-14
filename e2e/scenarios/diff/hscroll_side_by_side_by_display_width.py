@@ -13,9 +13,7 @@ def main(s: Scenario) -> None:
     tui.cmd("set nowrap").cmd("diff")
     tui.wait_for("5 ▌a日本語のテキスト")
     tui.keys("l")
-    with because(
-        "wide glyph cut by the pan was not padded (panned by characters, not cells)"
-    ):
+    with because("wide glyph cut by the pan was not padded (panned by characters, not cells)"):
         tui.wait_for("5 ▌ 語のテキスト")
     # every pane row keeps the divider: each diff row of the hunk still holds both panes' separators
     scr = tui.screen()

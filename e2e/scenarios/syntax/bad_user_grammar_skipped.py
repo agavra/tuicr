@@ -11,9 +11,7 @@ def main(s: Scenario) -> None:
         "%YAML 1.2\n---\nname: PushEmpty\nscope: source.pushempty\nfile_extensions: [pushempty]\n"
         "contexts:\n  main:\n    - match: a\n      push: [[]]\n"
     )
-    repos.write(
-        s.dir / "config" / "tuicr" / "syntaxes" / "PushEmpty.sublime-syntax", grammar
-    )
+    repos.write(s.dir / "config" / "tuicr" / "syntaxes" / "PushEmpty.sublime-syntax", grammar)
     repos.write(r / "a.txt", "hello\n")
     repos.write(r / "b.pushempty", "aaa\n")
     tui = s.start("--file", "a.txt", cwd=r, keep=True)

@@ -13,9 +13,9 @@ def main(s: Scenario) -> None:
     os.chdir(repo)
     res = s.cli_result("--no-update-check", "--theme", "nosuch-theme")
     assert res.rc == 2, f"exit status {res.rc}, expected 2\n{res.out}"
-    assert grep("Unknown theme 'nosuch-theme'", res.out) and grep(
-        "nord-dark", res.out
-    ), f"no theme error with the bundled list:\n{res.out}"
+    assert grep("Unknown theme 'nosuch-theme'", res.out) and grep("nord-dark", res.out), (
+        f"no theme error with the bundled list:\n{res.out}"
+    )
     repos.write(s.dir / "config" / "tuicr" / "config.toml", 'theme = "also-missing"\n')
     tui = s.start("--theme", "nord-dark", "-r", "HEAD~2..HEAD", cwd=repo, keep=True)
     tui.wait_for("Files · 0/8")

@@ -12,6 +12,7 @@ Repository-managed agent integration: `skills/tuicr/` (shared skill bundle that 
 
 - Every user-visible bug fix or behaviour change adds or updates an e2e scenario `e2e/scenarios/<area>/<behaviour>.py`, named after the behaviour, with the PR/issue in its header comment. It must FAIL on the parent commit and PASS with the change. Unit tests are still required.
 - Run: `cargo build --release && TUICR_BIN=target/release/tuicr e2e/run.sh [<area>/<behaviour>…]` (needs tmux, python3; hg/jj scenarios SKIP without them). CI job `e2e` runs it on ubuntu and macOS. Authoring guide: `e2e/README.md`.
+- Before committing Python changes run `uvx ruff@0.15.16 format --check`, `uvx ruff@0.15.16 check` and `uvx ty@0.0.44 check` with `e2e/pyproject.toml` (exact commands and pinned versions as in CI: `CONTRIBUTING.md#python-checks`).
 - Scenarios are Python on the stdlib library `e2e/lib/e2e/` (`from e2e import scenario`); remaining `.sh` ones are being ported, never add one, and a behaviour is `.py` or `.sh`, never both. Harness self-test: `e2e/selftest/run.py`.
 - Forges are always faked (`e2e/fakeforge/`, `e2e/bin/{gh,glab,tea,bkt}`, fake Gerrit). Never call a real forge, network or credentials from a scenario.
 - Adding a scenario: update `e2e/COVERAGE.md`.

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # a visual (range) selection that crosses a file boundary must be rejected, not turned into a
-# comment on lines of whichever file the numbers happen to fit. Baseline opened the comment box for the cross-file range.
+# comment on lines of whichever file the numbers happen to fit. Baseline opened the comment box for the cross-file
+# range.
 from e2e import Scenario, grep, repos, scenario
 
 
@@ -19,9 +20,7 @@ def main(s: Scenario) -> None:
     tui.keys("v", "j", "j", "j", "j", "j", "j", "j").settle()
     tui.keys("c").wait_for("Invalid selection|COMMENT")
     after = tui.screen()
-    assert not grep("COMMENT", after), (
-        f"comment box opened for a cross-file selection\n{after}"
-    )
+    assert not grep("COMMENT", after), f"comment box opened for a cross-file selection\n{after}"
     assert grep("Invalid selection", after), f"no 'Invalid selection' warning\n{after}"
     # control: a single-file range still opens the comment box
     tui.keys("v", "j").keys("c").wait_for("COMMENT")

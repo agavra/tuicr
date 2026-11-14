@@ -11,12 +11,7 @@ def main(s: Scenario) -> None:
     repos.write(r / "g.txt", "x\n")
     repos.git(r, "add", "-A")
     repos.git(r, "commit", "-qm", "base")
-    text = (
-        (r / "f.txt")
-        .read_text()
-        .replace("row 5\n", "row 5 CHANGED\n")
-        .replace("row 60\n", "row 60 CHANGED\n")
-    )
+    text = (r / "f.txt").read_text().replace("row 5\n", "row 5 CHANGED\n").replace("row 60\n", "row 60 CHANGED\n")
     repos.write(r / "f.txt", text)
     repos.write(r / "g.txt", "y\n")
     tui = s.start("-w", cwd=r)
@@ -27,8 +22,6 @@ def main(s: Scenario) -> None:
     tui.wait_for("row 5 CHANGED")
     tui.settle()
     scr = tui.screen()
-    assert not grep(r"row (20|30)( |$)", scr), (
-        f"gap was expanded while the file was collapsed\n{scr}"
-    )
+    assert not grep(r"row (20|30)( |$)", scr), f"gap was expanded while the file was collapsed\n{scr}"
     assert grep("lines hidden", scr), f"expected a still-collapsed gap\n{scr}"
     tui.quit()

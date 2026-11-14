@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # Runner self-test (expect PASS): with no pane at all, every screen/process query must FAIL. Before the refactor a
 # missing pane counted as "text disappeared", "forbidden text absent" and "process exited" (all returned 0).
-from e2e import NoPane, must_fail, scenario
 from e2e.tui import Tui
+
+from e2e import NoPane, Scenario, must_fail, scenario
 
 
 @scenario
-def main(s):
+def main(s: Scenario) -> None:
     tui = Tui(s, s.name)  # never started: there is no pane
     must_fail(lambda: tui.wait_for("anything", 1), "wait_for succeeded without a pane", NoPane)
     must_fail(lambda: tui.wait_gone("anything", 1), "wait_gone succeeded without a pane", NoPane)

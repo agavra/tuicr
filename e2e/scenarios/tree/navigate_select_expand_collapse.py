@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-# File tree basics with the tree focused (<leader>h): j/k move the selection and Enter jumps the diff to the selected file;
-# Space or Enter toggles the directory under the selection, O collapses and o expands every directory; child rows appear and
+# File tree basics with the tree focused (<leader>h): j/k move the selection and Enter jumps the diff to the
+# selected file;
+# Space or Enter toggles the directory under the selection, O collapses and o expands every directory; child rows
+# appear and
 # disappear accordingly. Enter on a file moves focus to the diff, so each step refocuses the tree first.
 from e2e import Scenario, Tui, scenario
 

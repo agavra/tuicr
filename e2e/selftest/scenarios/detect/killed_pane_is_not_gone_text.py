@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # Runner self-test (expect PASS): a pane that was killed mid-scenario must not satisfy "text is gone".
-from e2e import NoPane, must_fail, scenario
+from e2e import NoPane, Scenario, must_fail, scenario
 
 
 @scenario
-def main(s):
+def main(s: Scenario) -> None:
     tui = s.start_cmd(["sh", "-c", "echo visible-text; sleep 60"])
     tui.wait_for("visible-text", 5)
     tui.wait_gone("not-on-screen", 2)  # control: a live pane without the text passes

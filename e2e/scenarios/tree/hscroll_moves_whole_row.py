@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Covers #888: file tree: horizontal scroll moves every row, including its indent and status glyph.
-# Baseline pins each row's indent while only the name scrolls (so `an_extremely_...` keeps 4 leading spaces and `b.txt` 2).
+# Baseline pins each row's indent while only the name scrolls (so `an_extremely_...` keeps 4 leading spaces and
+# `b.txt` 2).
 from e2e import Scenario, because, repos, scenario
 
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# config.toml: `file_list_position = "right"` puts the file list right of the diff, `leader = ","` replaces `;` for the sidebar
+# config.toml: `file_list_position = "right"` puts the file list right of the diff, `leader = ","` replaces `;` for
+# the sidebar
 # toggle, `q_quits = true` makes a bare `q` quit; `show_file_list = false` starts with the list hidden.
 from e2e import Scenario, repos, scenario
 

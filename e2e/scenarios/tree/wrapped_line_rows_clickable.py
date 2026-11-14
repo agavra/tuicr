@@ -19,9 +19,7 @@ def main(s: Scenario) -> None:
     tui.keys(":set wrap", "Enter").wait_for("word014")
     scr = tui.screen()
     cursor = "\n".join(line for line in scr.split("\n") if "▶" in line)
-    assert grep(r"big.txt \[A\]", cursor), (
-        f"precondition: cursor not on the header\n{scr}"
-    )
+    assert grep(r"big.txt \[A\]", cursor), f"precondition: cursor not on the header\n{scr}"
     # click the last visible diff row (bottom of the cut-off wrapped line 37)
     tui.click(60, 43).settle()
     with because("click on the partly visible wrapped line did not select it"):
