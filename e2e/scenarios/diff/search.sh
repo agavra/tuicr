@@ -12,6 +12,6 @@ e2e_keys $n Escape; e2e_wait_gone $n '\[[0-9]/3\]'
 e2e_keys $n n; e2e_wait_for $n '\[[0-9]/3\]'    # pattern kept
 # invalid regex reports an error and keeps the previous search
 e2e_keys $n '/'; e2e_keys $n '(unclosed'; e2e_keys $n Enter
-e2e_wait_for $n -i 'regex|invalid|error|parse' 2>/dev/null || e2e_wait_for $n '[Ii]nvalid|[Ee]rror|regex'
-e2e_keys $n n; e2e_expect $n '\[[0-9]/3\]'
+e2e_wait_for $n 'Invalid regex'
+e2e_keys $n n; e2e_wait_for $n '\[[0-9]/3\]'     # the previous pattern is still active
 sc_quit $n
