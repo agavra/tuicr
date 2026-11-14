@@ -52,6 +52,11 @@ def _fresh_git(d) -> Path:
     return d
 
 
+def empty_repo(d) -> Path:
+    """An empty git repository on main in a fresh directory `d` (the scenario commits what it needs)."""
+    return _fresh_git(d)
+
+
 def git_repo(d) -> Path:
     """History of 3 commits on main, plus staged + unstaged work.
 

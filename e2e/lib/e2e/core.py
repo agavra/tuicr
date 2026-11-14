@@ -7,6 +7,7 @@ Importing this module sets up the harness environment (git/hg/locale isolation, 
 """
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import json
 import os
@@ -18,7 +19,7 @@ import sys
 import tempfile
 import traceback
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Iterator, List, Optional
 
 LIB = Path(__file__).resolve().parent
 E2E_DIR = LIB.parent.parent  # e2e/
@@ -49,6 +50,18 @@ def grep(pattern: str, text: str) -> bool:
     """`grep -Eq pattern <<<text`: does any line match? (patterns are Python regexes, matched line by line)"""
     rx = re.compile(pattern)
     return any(rx.search(line) for line in text.split("\n"))
+
+
+@contextlib.contextmanager
+def because(message: str) -> Iterator[None]:
+    """Run a wait/check; if it fails, report `message` (the scenario's own words) with the same evidence. A missing pane
+    keeps its own error: it is never reworded into a product failure."""
+    try:
+        yield
+    except NoPane:
+        raise
+    except Failure as e:
+        raise Failure(f"{message} ({e})", e.evidence) from None
 
 
 def must_fail(fn: Callable, message: str, exc=Failure):
