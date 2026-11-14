@@ -11,12 +11,18 @@ trap 'tmux -L "st-$$" kill-server 2>/dev/null; rm -rf "$root"' EXIT
 check() { if [ "$2" = "$3" ]; then echo "ok   $1 ($3)"; else echo "FAIL $1: expected $2, got $3"; fail=1; fi; }
 
 export TUICR_BIN=${TUICR_BIN:-$(command -v env)} E2E_SOCKET="st-$$" E2E_ROOT="$root" E2E_OUT="$root/out"
-E2E_SCENARIO_DIR="$here/scenarios" E2E_QUARANTINE_FILE="$here/quarantine.tsv" E2E_SCENARIO_TIMEOUT=4 \
+E2E_SCENARIO_DIR="$here/scenarios" E2E_QUARANTINE_FILE="$here/quarantine.tsv" E2E_SCENARIO_TIMEOUT=${SELFTEST_TIMEOUT:-60} \
   "$here/../run.sh" > "$root/run.txt" 2>&1
 rc=$?
+# The hung scenario runs on its own with a short budget, so the PASS scenarios above never race a tight timeout.
+E2E_ROOT="$root/h" E2E_OUT="$root/h/out" E2E_SCENARIO_DIR="$here/scenarios-hung" E2E_QUARANTINE_FILE="$here/quarantine.tsv" E2E_SCENARIO_TIMEOUT=4 \
+  "$here/../run.sh" >> "$root/run.txt" 2>&1
+hrc=$?
+cat "$root/h/out/results.tsv" >> "$root/out/results.tsv"
 cat "$root/run.txt"
 echo "-- runner exit status with failing scenarios present"
 check "run.sh exits non-zero when scenarios FAIL" 1 "$rc"
+check "run.sh exits non-zero when a scenario hangs" 1 "$hrc"
 
 while IFS=$'\t' read -r name want; do
   got=$(awk -F'\t' -v n="$name" '$1 == n { print $2 }' "$root/out/results.tsv")
