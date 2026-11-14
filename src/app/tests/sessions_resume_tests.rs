@@ -1081,3 +1081,45 @@ impl VcsBackend for NoChangesRangeVcs {
         Ok(0)
     }
 }
+
+#[test]
+fn should_keep_wrap_preference_when_confirming_a_commit_range() {
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _calls) = build_app(vec![commit("bbb"), commit("aaa")]);
+    app.diff_state.wrap_lines = true;
+    app.commit_selection_range = Some((0, 1));
+
+    app.confirm_commit_selection().expect("confirm range");
+
+    assert!(matches!(app.diff_source, DiffSource::CommitRange(_)));
+    assert!(app.diff_state.wrap_lines, "commit-range load reset wrap");
+}
+
+#[test]
+fn should_keep_wrap_preference_when_loading_a_local_selection() {
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _calls) = build_app(vec![commit("aaa")]);
+    app.diff_state.wrap_lines = true;
+
+    assert!(app.load_working_tree_selection().expect("load worktree"));
+
+    assert!(app.diff_state.wrap_lines, "local selection reset wrap");
+}
+
+#[test]
+fn should_keep_wrap_preference_when_loading_staged_unstaged_and_commits() {
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _calls) = build_app(vec![commit("aaa")]);
+    app.diff_state.wrap_lines = true;
+
+    let loaded = app
+        .load_staged_unstaged_and_commits_selection(vec!["aaa".to_string()], vec![commit("aaa")])
+        .expect("load -r -w");
+
+    assert!(loaded);
+    assert!(
+        matches!(app.diff_source, DiffSource::StagedUnstagedAndCommits(_)),
+        "wrong source"
+    );
+    assert!(app.diff_state.wrap_lines, "-r -w load reset wrap");
+}

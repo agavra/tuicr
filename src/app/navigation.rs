@@ -1608,3 +1608,12 @@ impl App {
         }
     }
 }
+
+impl App {
+    /// Reset scroll/cursor state while keeping the user's wrap preference.
+    pub(super) fn reset_diff_state(&mut self) {
+        let wrap = self.diff_state.wrap_lines;
+        self.diff_state = DiffState::default();
+        self.diff_state.wrap_lines = wrap;
+    }
+}

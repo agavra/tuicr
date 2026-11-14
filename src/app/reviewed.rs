@@ -61,7 +61,7 @@ impl App {
         match self.reload_diff_files() {
             Err(TuicrError::NoChanges) => {
                 self.diff_files.clear();
-                self.diff_state = DiffState::default();
+                self.reset_diff_state();
                 self.file_list_state = FileListState::default();
                 self.clear_expanded_gaps();
                 self.rebuild_annotations();

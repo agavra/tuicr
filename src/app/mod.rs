@@ -1652,7 +1652,7 @@ pub struct CommentNavigatorItem {
     pub author: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DiffState {
     pub scroll_offset: usize,
     pub scroll_x: usize,
@@ -1684,22 +1684,6 @@ impl DiffState {
     /// viewport to guarantee a stable free zone after centering (zz).
     pub fn effective_scroll_margin(&self, scroll_offset: usize) -> usize {
         scroll_offset.min((self.effective_visible_lines() / 2).saturating_sub(1))
-    }
-}
-
-impl Default for DiffState {
-    fn default() -> Self {
-        Self {
-            scroll_offset: 0,
-            scroll_x: 0,
-            cursor_line: 0,
-            current_file_idx: 0,
-            viewport_height: 0,
-            viewport_width: 0,
-            max_content_width: 0,
-            wrap_lines: true,
-            visible_line_count: 0,
-        }
     }
 }
 

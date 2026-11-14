@@ -93,7 +93,7 @@ impl App {
         self.show_commit_selector = false;
         self.range_diff_files = None;
         self.saved_inline_selection = None;
-        self.diff_state = DiffState::default();
+        self.reset_diff_state();
         self.pr_info = Some(pr_info);
 
         // PR mode populates the inline selector with the PR's commits when
