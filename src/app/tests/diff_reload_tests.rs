@@ -312,6 +312,22 @@ fn should_stage_both_paths_of_reviewed_rename() {
 }
 
 #[test]
+fn should_keep_wrap_preference_when_staging_empties_the_diff() {
+    let _reviews = TestReviewsDir::new();
+    let (_dir, _repo, mut app) = renamed_file_app(FileStatus::Renamed);
+    app.diff_state.wrap_lines = true;
+    app.session
+        .get_file_mut(&PathBuf::from("new.txt"))
+        .unwrap()
+        .reviewed = true;
+
+    app.stage_reviewed_files();
+
+    assert!(app.diff_files.is_empty(), "staging should empty the diff");
+    assert!(app.diff_state.wrap_lines, "staging reload reset wrap");
+}
+
+#[test]
 fn should_stage_only_destination_of_reviewed_copy() {
     let _reviews = TestReviewsDir::new();
     let (_dir, repo, mut app) = renamed_file_app(FileStatus::Copied);

@@ -4716,3 +4716,25 @@ fn should_record_the_startup_vcs_options_for_cli_pr_startup() {
 
     assert_eq!(app.vcs_open_options, configured);
 }
+
+#[test]
+fn should_keep_wrap_preference_when_opening_a_pr() {
+    let mut app = build_app();
+    app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+    app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+    app.pr_tab.start_initial_load();
+    let summary = sample_pr(42, "answer");
+    app.pr_tab
+        .apply_initial_load(Ok((vec![summary.clone()], false)));
+    app.target_tab = TargetTab::PullRequests;
+    app.diff_state.wrap_lines = true;
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "answer"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    ));
+
+    app.open_pr_with_backend(&summary, backend, None).unwrap();
+
+    assert!(matches!(app.diff_source, DiffSource::PullRequest(_)));
+    assert!(app.diff_state.wrap_lines, "PR open reset wrap");
+}

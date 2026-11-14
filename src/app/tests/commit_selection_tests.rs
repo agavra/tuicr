@@ -979,3 +979,19 @@ fn should_keep_a_mark_made_while_narrowed_after_widening_back() {
     );
     assert_eq!(app.session.files[&path].content_hash, Some(7));
 }
+
+#[test]
+fn should_keep_wrap_preference_when_narrowing_the_commit_pane() {
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
+    app.review_commits = app.commit_list.clone();
+    app.commit_diff_cache
+        .insert((0, 0), vec![commit_only_file(&path, Vec::new())]);
+    app.diff_state.wrap_lines = true;
+
+    app.commit_selection_range = Some((0, 0));
+    app.reload_inline_selection()
+        .expect("narrowing should load");
+
+    assert!(app.diff_state.wrap_lines, "inline narrowing reset wrap");
+}
