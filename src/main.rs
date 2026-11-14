@@ -604,12 +604,7 @@ fn main() -> anyhow::Result<()> {
                         match key.code {
                             crossterm::event::KeyCode::Char('Z') => {
                                 // ZZ: save session, export, and quit (same as :wq)
-                                let _ = app.save_current_session_merging_external();
-                                if app.session.has_comments() {
-                                    handler::handle_export_and_quit(&mut app);
-                                } else {
-                                    app.should_quit = true;
-                                }
+                                handler::handle_write_and_quit(&mut app);
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('Q') => {

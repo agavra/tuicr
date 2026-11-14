@@ -151,16 +151,29 @@ impl App {
     /// Discard this session's persisted state and quit.
     ///
     /// Used when the only unsaved change is reviewed-file markers (no
-    /// comments): rather than forcing `:q!`, we drop the persisted session so
-    /// reopening starts clean, then quit. Reviewed markers are persisted
-    /// eagerly, so the on-disk file is removed too.
+    /// comments in memory): rather than forcing `:q!`, we drop the persisted
+    /// session so reopening starts clean, then quit. A file holding comments on
+    /// disk (added by `tuicr review add` since the last poll, or saved earlier
+    /// and deleted here) is kept: its external changes are merged and the quit
+    /// is refused, so `:w` or `:q!` stays an explicit choice.
     pub fn discard_session_and_quit(&mut self) {
         let path = self
             .session_path
             .clone()
             .or_else(|| crate::persistence::storage::session_path(&self.session).ok());
         if let Some(path) = path {
-            let _ = crate::persistence::storage::delete_session(&path);
+            match crate::persistence::storage::delete_session_unless_commented(&path) {
+                Ok(false) if path.exists() => {
+                    if let Err(e) = self.reload_persisted_session(true) {
+                        self.set_warning(format!("Review reload failed: {e}"));
+                    }
+                    self.set_error(
+                        "Saved session has comments (:w to save, add ! to discard)".to_string(),
+                    );
+                    return;
+                }
+                _ => {}
+            }
             self.ephemeral_session_paths.remove(&path);
             if self.session_path.as_ref() == Some(&path) {
                 self.session_file_state = None;
