@@ -359,10 +359,24 @@ impl VcsBackend for HgBackend {
         // user's revset in `sort(..., rev)` and let Mercurial order the output
         // by revision number instead of guessing from the revset direction.
         let sorted_revset = format!("sort({revisions}, rev)");
-        let output = run_hg_command(
-            &self.info.root_path,
-            ["log", "-r", &sorted_revset, "--template", "{node}\\n"],
-        )?;
+        let revset_to_nodes = |revset: &str| {
+            run_hg_command(
+                &self.info.root_path,
+                ["log", "-r", revset, "--template", "{node}\\n"],
+            )
+        };
+
+        let output = match revset_to_nodes(&sorted_revset) {
+            Ok(output) => output,
+            // hg points parse errors at the exact string it received, so re-run
+            // with the user's own revset to report against what they typed.
+            Err(wrapped_error) => match revset_to_nodes(revisions) {
+                Err(raw_error) => return Err(raw_error),
+                // the wrapped revset failed, but the raw one succeeded; the
+                // wrapper itself is the problem, so report the wrapped error.
+                Ok(_) => return Err(wrapped_error),
+            },
+        };
 
         let commit_ids: Vec<String> = output
             .lines()
@@ -1232,6 +1246,31 @@ mod tests {
             .resolve_revision_range(&format!("{second}"))
             .expect("failed to resolve single revision");
         assert_eq!(single.commit_ids, vec![second.clone()]);
+    }
+
+    #[test]
+    fn test_hg_resolve_revision_range_error_quotes_raw_revset() {
+        let Some(temp) = setup_test_repo_with_commits() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+
+        let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create hg backend");
+
+        let error = backend
+            .resolve_revision_range("foo(")
+            .expect_err("malformed revset should fail")
+            .to_string();
+
+        assert!(
+            error.contains("hg log -r foo("),
+            "error should quote the user's revset: {error}"
+        );
+        assert!(
+            !error.contains("sort("),
+            "error should not quote the wrapper: {error}"
+        );
     }
 
     #[test]
