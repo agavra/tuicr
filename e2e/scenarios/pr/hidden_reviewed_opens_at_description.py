@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# With `show_reviewed = false`, a PR review opens with the cursor on the description at the top. Baseline jumped to
-# the first file at an offset measured before the first frame knew the real width, so the diff opened scrolled past
-# the end and looked empty.
+# Covers #944: with `show_reviewed = false`, a PR review opens with the cursor on the description at the top.
+# Baseline jumped to the first file at an offset measured before the first frame knew the real width, so the diff
+# opened scrolled past the end and looked empty.
 from e2e import Scenario, repos, scenario
 
 
