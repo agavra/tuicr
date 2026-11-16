@@ -2307,63 +2307,6 @@ mod tests {
     }
 
     #[test]
-    fn should_prefer_local_tools_over_terminal_relay_in_linux_tmux() {
-        let env = ClipboardEnv {
-            is_macos: false,
-            ssh_tty: false,
-            tmux: true,
-            zellij: false,
-            rex: false,
-        };
-        let order = copy_method_order(&env, None);
-        let sub = order.iter().position(|m| *m == CopyMethod::SubProcess);
-        let relay = order.iter().position(|m| *m == CopyMethod::TerminalRelay);
-        assert!(sub < relay, "local tmux prefer direct tools: {order:?}");
-    }
-
-    #[test]
-    fn should_use_terminal_relay_over_ssh() {
-        let env = ClipboardEnv {
-            is_macos: false,
-            ssh_tty: true,
-            tmux: true,
-            zellij: false,
-            rex: false,
-        };
-        assert_eq!(
-            copy_method_order(&env, None),
-            vec![CopyMethod::TerminalRelay]
-        );
-    }
-
-    #[test]
-    fn should_use_terminal_relay_in_rex() {
-        let env = ClipboardEnv {
-            is_macos: false,
-            ssh_tty: false,
-            tmux: false,
-            zellij: false,
-            rex: true,
-        };
-        assert_eq!(
-            copy_method_order(&env, None),
-            vec![CopyMethod::TerminalRelay]
-        );
-    }
-
-    #[test]
-    fn should_prefer_pbcopy_on_macos() {
-        let env = ClipboardEnv {
-            is_macos: true,
-            ssh_tty: false,
-            tmux: true,
-            zellij: false,
-            rex: false,
-        };
-        assert_eq!(copy_method_order(&env, None)[0], CopyMethod::Pbcopy);
-    }
-
-    #[test]
     fn should_map_config_name_to_copy_method() {
         assert_eq!(
             CopyMethod::from_config_name("arboard"),
@@ -2396,9 +2339,7 @@ mod tests {
 
     #[test]
     fn should_keep_auto_order_when_override_is_none() {
-        // Sane-default regression guard: `None` must reproduce the env-only
-        // order for every environment branch, unchanged from before the
-        // override parameter existed.
+        // Automatic order covers each environment, including remote-session precedence.
         let cases = [
             (
                 env(true, false, false, false),
@@ -2415,6 +2356,29 @@ mod tests {
             (
                 env(false, false, true, false),
                 vec![CopyMethod::SubProcess, CopyMethod::TerminalRelay],
+            ),
+            (
+                env(false, false, false, true),
+                vec![CopyMethod::SubProcess, CopyMethod::TerminalRelay],
+            ),
+            (
+                ClipboardEnv {
+                    rex: true,
+                    ..env(false, false, true, false)
+                },
+                vec![CopyMethod::TerminalRelay],
+            ),
+            (
+                env(true, true, true, false),
+                vec![
+                    CopyMethod::Pbcopy,
+                    CopyMethod::Arboard,
+                    CopyMethod::TerminalRelay,
+                ],
+            ),
+            (
+                env(false, true, true, false),
+                vec![CopyMethod::TerminalRelay],
             ),
             (
                 env(false, false, false, false),
