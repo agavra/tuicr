@@ -288,10 +288,7 @@ impl VcsBackend for GitCliBackend {
 
     fn get_change_status(&self) -> Result<VcsChangeStatus> {
         if self.repo_mode == GitRepoMode::Standard {
-            if self.include_untracked {
-                return get_cli_change_status(&self.root_path);
-            }
-            return get_cli_change_status_tracked_only(&self.root_path);
+            return get_cli_change_status(&self.root_path, self.include_untracked);
         }
 
         // Keep sparse probes pathspec-scoped. Plain `git status` reports
@@ -453,7 +450,7 @@ impl VcsBackend for GitCliBackend {
                 base_rev.clone(),
                 "--".into(),
             ],
-            true,
+            self.include_untracked,
             GitContentSource::Revision(&base_rev),
             GitContentSource::Workdir,
             highlighter,
@@ -522,31 +519,15 @@ fn parse_git_runtime_flags(output: &str) -> (bool, bool) {
     (untracked_cache.unwrap_or(many_files), fsmonitor)
 }
 
-fn get_cli_change_status(workdir: &Path) -> Result<VcsChangeStatus> {
+fn get_cli_change_status(workdir: &Path, include_untracked: bool) -> Result<VcsChangeStatus> {
     let output = Command::new("git")
         .current_dir(workdir)
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=normal"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
-
-    if !output.status.success() {
-        return Err(TuicrError::VcsCommand(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
-    }
-
-    Ok(parse_porcelain_status(&output.stdout))
-}
-
-/// Same probe as [`get_cli_change_status`], but with untracked files excluded
-/// at the Git level so `include_untracked = false` never pays the untracked
-/// scan that can hang large working trees.
-fn get_cli_change_status_tracked_only(workdir: &Path) -> Result<VcsChangeStatus> {
-    let output = Command::new("git")
-        .current_dir(workdir)
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=no"])
+        .args(["status", "--porcelain=v1", "-z"])
+        .arg(if include_untracked {
+            "--untracked-files=normal"
+        } else {
+            "--untracked-files=no"
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -1806,7 +1787,7 @@ mod tests {
 
     #[test]
     fn detects_untracked_files_inside_sparse_cone_in_change_status() {
-        let (temp_dir, backend, _ids) = setup_sparse_index_repo();
+        let (temp_dir, mut backend, _ids) = setup_sparse_index_repo();
         write_file(temp_dir.path(), "keep/new.txt", "inside cone\n");
 
         let status = backend
@@ -1820,6 +1801,21 @@ mod tests {
                 unstaged: true,
             }
         );
+        backend.include_untracked = false;
+        assert_eq!(
+            backend.get_change_status().unwrap(),
+            VcsChangeStatus::default()
+        );
+        assert!(
+            backend
+                .list_changed_paths(ChangeKind::Unstaged)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            backend.get_unstaged_diff(&SyntaxHighlighter::plain()),
+            Err(TuicrError::NoChanges)
+        ));
     }
 
     #[test]
@@ -1883,7 +1879,8 @@ mod tests {
                     &repo,
                     &[ids[1].clone()],
                     &DiffWhitespaceMode::Normal,
-                    &highlighter,
+                    true,
+                    &highlighter
                 )
                 .unwrap()
             )

@@ -780,6 +780,80 @@ mod tests {
         assert_root_diff_for_object_formats("worktree");
     }
 
+    #[test]
+    fn untracked_option_matches_across_backends_and_worktree_views() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        setup_standard_repo(root);
+        let head = run_git_command(root, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        fs::write(root.join("src/file.txt"), "tracked edit\n").unwrap();
+        fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
+        fs::write(root.join("staged.txt"), "staged\n").unwrap();
+        run_git_command(root, &["add", "staged.txt"]).unwrap();
+        let highlighter = SyntaxHighlighter::plain();
+        for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+            for include_untracked in [false, true] {
+                let backend = GitBackend::discover_from(
+                    root,
+                    preference,
+                    DiffWhitespaceMode::Normal,
+                    include_untracked,
+                )
+                .unwrap();
+                for files in [
+                    backend.get_unstaged_diff(&highlighter).unwrap(),
+                    backend.get_working_tree_diff(&highlighter).unwrap(),
+                    backend
+                        .get_working_tree_with_commits_diff(
+                            std::slice::from_ref(&head),
+                            &highlighter,
+                        )
+                        .unwrap(),
+                    backend
+                        .get_working_tree_with_commits_diff(&[], &highlighter)
+                        .unwrap(),
+                ] {
+                    assert!(
+                        files
+                            .iter()
+                            .any(|file| file.display_path() == Path::new("src/file.txt"))
+                    );
+                    assert_eq!(
+                        files
+                            .iter()
+                            .any(|file| file.display_path() == Path::new("untracked.txt")),
+                        include_untracked,
+                        "{preference:?}"
+                    );
+                }
+                let paths = backend.list_changed_paths(ChangeKind::Unstaged).unwrap();
+                assert_eq!(
+                    paths.contains(&PathBuf::from("untracked.txt")),
+                    include_untracked
+                );
+                assert_eq!(backend.get_staged_diff(&highlighter).unwrap().len(), 1);
+                run_git_command(root, &["checkout", "--", "src/file.txt"]).unwrap();
+                assert_eq!(
+                    !backend
+                        .list_changed_paths(ChangeKind::Unstaged)
+                        .unwrap()
+                        .is_empty(),
+                    include_untracked
+                );
+                if preference == GitBackendPreference::Cli {
+                    assert_eq!(
+                        backend.get_change_status().unwrap().unstaged,
+                        include_untracked
+                    );
+                }
+                fs::write(root.join("src/file.txt"), "tracked edit\n").unwrap();
+            }
+        }
+    }
+
     fn setup_standard_repo(root: &Path) {
         fs::create_dir(root.join("src")).expect("failed to create src dir");
         fs::write(root.join("src/file.txt"), "one\n").expect("failed to write file");

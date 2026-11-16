@@ -265,10 +265,17 @@ pub fn get_working_tree_with_commits_diff(
     repo: &Repository,
     commit_ids: &[String],
     whitespace_mode: &DiffWhitespaceMode,
+    include_untracked: bool,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     materialize_diff(whitespace_mode, |comparison| {
-        get_working_tree_with_commits_diff_once(repo, commit_ids, comparison, highlighter)
+        get_working_tree_with_commits_diff_once(
+            repo,
+            commit_ids,
+            comparison,
+            include_untracked,
+            highlighter,
+        )
     })
 }
 
@@ -276,11 +283,12 @@ fn get_working_tree_with_commits_diff_once(
     repo: &Repository,
     commit_ids: &[String],
     comparison: WhitespaceComparison,
+    include_untracked: bool,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     if commit_ids.is_empty() {
         // An empty revision range still has a meaningful working-tree diff.
-        return get_working_tree_diff_once(repo, comparison, true, highlighter);
+        return get_working_tree_diff_once(repo, comparison, include_untracked, highlighter);
     }
 
     let oldest_id = git2::Oid::from_str(&commit_ids[0])?;
@@ -293,9 +301,9 @@ fn get_working_tree_with_commits_diff_once(
     };
 
     let mut opts = diff_options(comparison);
-    opts.include_untracked(true);
-    opts.show_untracked_content(true);
-    opts.recurse_untracked_dirs(true);
+    opts.include_untracked(include_untracked);
+    opts.show_untracked_content(include_untracked);
+    opts.recurse_untracked_dirs(include_untracked);
 
     let diff = repo.diff_tree_to_workdir_with_index(old_tree.as_ref(), Some(&mut opts))?;
     let mut files = parse_diff(repo, diff, highlighter)?;
@@ -544,6 +552,7 @@ mod tests {
             &repo,
             &range.commit_ids,
             &DiffWhitespaceMode::Normal,
+            true,
             &SyntaxHighlighter::default(),
         )
         .expect("an empty commit range must still show working-tree changes");

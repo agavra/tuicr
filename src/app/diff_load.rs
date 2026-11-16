@@ -2005,7 +2005,7 @@ mod tests {
             ("custom".into(), true),
         ]));
         let options = AppStartupOptions {
-            include_untracked: true,
+            include_untracked: false,
             revisions: None,
             working_tree: false,
             path_filter: None,
@@ -2022,6 +2022,7 @@ mod tests {
             repo_url_override: None,
         };
         let captured = options.vcs_open_options();
+        assert!(!captured.include_untracked);
         assert_eq!(captured.git_backend_preference, GitBackendPreference::Cli);
         assert_eq!(captured.diff_whitespace_mode, mode);
         assert_eq!(captured.clone().diff_whitespace_mode, mode);

@@ -229,6 +229,7 @@ impl VcsBackend for Libgit2Backend {
             &self.repo,
             commit_ids,
             &self.whitespace_mode,
+            self.include_untracked,
             highlighter,
         )
     }

@@ -219,7 +219,7 @@ pub struct VcsChangeStatus {
 pub enum ChangeKind {
     /// HEAD vs index — paths that would land in `get_staged_diff`.
     Staged,
-    /// Index vs workdir, including untracked — paths that would land in
+    /// Index vs workdir, including untracked when enabled — paths that would land in
     /// `get_unstaged_diff`.
     Unstaged,
 }

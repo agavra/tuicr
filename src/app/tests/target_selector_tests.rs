@@ -4688,7 +4688,7 @@ fn should_record_the_startup_vcs_options_for_cli_pr_startup() {
     )
     .unwrap();
     let configured = VcsOpenOptions {
-        include_untracked: true,
+        include_untracked: false,
         git_backend_preference: GitBackendPreference::Cli,
         diff_whitespace_mode: DiffWhitespaceMode::IgnoreAll,
     };
