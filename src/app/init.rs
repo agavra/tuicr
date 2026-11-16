@@ -297,6 +297,7 @@ impl App {
                 options.repo_url_override.clone(),
             )?
             .with_vcs_open_options(options.vcs_open_options());
+            app.revision_range = Some(revision_range);
 
             app.install_review_commits(review_commits, options.commit_selection)?;
 
@@ -612,6 +613,7 @@ impl App {
             pending_count: None,
             pending_start_line: None,
             review_commits: Vec::new(),
+            revision_range: None,
             pr_commits: Vec::new(),
             pr_last_reviewed_commit_index: None,
             pr_range_reload_state: None,
