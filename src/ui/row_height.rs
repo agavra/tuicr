@@ -829,6 +829,7 @@ mod tests {
                 new_lineno: Some(n),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             })
             .collect();
         app.file_line_count_cache.insert(idx, 10101);
