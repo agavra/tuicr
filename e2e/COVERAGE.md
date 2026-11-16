@@ -12,7 +12,7 @@ Workflow area -> scenarios (`e2e/scenarios/<area>/<behaviour>.py`; each file's h
 | `theme` | `:theme` picker, apply/rollback, `--theme` | 5: `confirm_missing_file_rolls_back`, `picker_enter_applies_first_row`, `picker_preview_revert_keep`, `transparent_background_survives_switch`, `unknown_theme_exits_before_tui` |
 | `input` | Prompts, mouse, paste, visual selection, goto guards | 4: `goto_line_in_collapsed_file_keeps_gap`, `paste_into_tree_filter_prompt`, `prompt_keeps_focus_on_mouse_click`, `visual_selection_across_files_rejected` |
 | `help` | Help popup | 2: `open_search_close`, `scroll_clamped_on_resize` |
-| `ui` | Chrome: header/chips, config layout, leader and quit keys | 2: `config_layout_leader_and_quit_key`, `header_and_chip_use_display_width` |
+| `ui` | Chrome: header/chips, config layout, leader and quit keys, minimal UI | 3: `config_layout_leader_and_quit_key`, `header_and_chip_use_display_width`, `minimal_ui_shows_only_the_diff` |
 | `export` | Markdown export of local and remote threads | 4: `clip_copies_markdown`, `no_comments`, `remote_thread_carriage_return_stays_in_item`, `stdout_markdown` |
 | `syntax` | Syntax colouring, user grammars | 2: `bad_user_grammar_skipped`, `vue_script_block_colored` |
 | `cli` | Non-interactive CLI: `review` subcommands, flag validation, update detection, install script | 9: `conflicting_flags_rejected`, `install_script_without_tty`, `not_repo_error`, `review_add_live`, `review_clear_keeps_session_open_in_tui`, `review_json_input_delete_clear`, `review_list_recovers_damaged_index`, `review_list_repo_selector_gerrit_path`, `update_detects_cargo_install_via_symlink` |
