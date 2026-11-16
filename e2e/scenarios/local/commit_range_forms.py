@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -r A..B, -r A...B (merge-base forms) and the default -r HEAD~2..HEAD.
-from e2e import repos, scenario
+from e2e import Scenario, repos, scenario
 
 
 @scenario
-def main(s):
+def main(s: Scenario) -> None:
     mb = repos.git_merge_base(s.dir / "mb")
     tui = s.start("-r", "main...topic", cwd=mb.repo)
     tui.wait_for(r"topic\.txt").expect("topic change").reject("mainonly")
@@ -20,5 +20,7 @@ def main(s):
     # multi-commit range on the 3-commit repo
     repo = repos.git_repo(s.dir / "repo")
     tui = s.start("-r", "HEAD~2..HEAD", cwd=repo)
-    tui.wait_for("Files · 0/8").expect("fix: greeting").expect("feat: touch every file kind").reject(r"1f95fd7|\bbase\b")
+    tui.wait_for("Files · 0/8").expect("fix: greeting").expect("feat: touch every file kind").reject(
+        r"1f95fd7|\bbase\b"
+    )
     tui.keys(":q!", "Enter").wait_exit()

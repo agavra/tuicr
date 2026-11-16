@@ -1,6 +1,6 @@
 # e2e coverage
 
-Workflow area -> scenarios (`e2e/scenarios/<area>/<behaviour>.py`; each file's header comment says what it checks and the PR/issue it covers). Run `e2e/run.sh --list` for the current set.
+Workflow area -> scenarios (`e2e/scenarios/<area>/<behaviour>.py`; each file's header comment says what it checks and the PR/issue it covers). Run `uv run --python 3.12 e2e/run.py --list` for the current set.
 
 | Area | Workflow | Scenarios |
 |---|---|---|

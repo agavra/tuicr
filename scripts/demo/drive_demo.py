@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import os
 import re
 import shutil
@@ -17,30 +18,23 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import TextIO
 
 try:
-    import pexpect
+    import pexpect  # ty: ignore[unresolved-import] - only needed to record the demo, not installed in CI
 except ImportError as exc:  # pragma: no cover - exercised by shell checks
-    raise SystemExit(
-        "error: missing Python module 'pexpect'. Install it with: "
-        "python3 -m pip install pexpect"
-    ) from exc
+    raise SystemExit("error: missing Python module 'pexpect'. Install it with: python3 -m pip install pexpect") from exc
 
 
 SUGGESTION = "Consider covering the retry path with a regression test."
 ISSUE = "This timeout is too aggressive for slow CI runners."
 
 # Starship-ish prompt for the fake shell session that bookends the recording.
-SHELL_PROMPT = (
-    "\x1b[1;36m~/code/auth-service\x1b[0m"
-    " \x1b[2mon\x1b[0m"
-    " \x1b[1;35mmain\x1b[0m"
-    " \x1b[1;32m❯\x1b[0m "
-)
+SHELL_PROMPT = "\x1b[1;36m~/code/auth-service\x1b[0m \x1b[2mon\x1b[0m \x1b[1;35mmain\x1b[0m \x1b[1;32m❯\x1b[0m "
 
 
 class OutputCapture:
-    def __init__(self, stream):
+    def __init__(self, stream: TextIO) -> None:
         self.stream = stream
         self.parts: list[str] = []
         self.expect_pos = 0
@@ -81,7 +75,7 @@ def line_number(path: Path, needle: str) -> int:
     raise SystemExit(f"error: could not find {needle!r} in {path}")
 
 
-def pretype(capture: "OutputCapture", command: str, delay: float) -> None:
+def pretype(capture: OutputCapture, command: str, delay: float) -> None:
     """Render a fake shell prompt, then visibly type the given command."""
     capture.write("\r\n" + SHELL_PROMPT)
     capture.flush()
@@ -149,7 +143,7 @@ def send_unbracketed_paste(child: pexpect.spawn, text: str) -> None:
 def expect(
     child: pexpect.spawn,
     pattern: str,
-    capture: "OutputCapture | None" = None,
+    capture: OutputCapture | None = None,
     timeout: int = 20,
 ) -> None:
     # sleep_and_drain pulls bytes off pexpect's internal buffer so they show up
@@ -171,9 +165,7 @@ def expect(
                 return
         if time.time() >= deadline:
             tail = capture.text()[-2000:] if capture is not None else ""
-            raise SystemExit(
-                f"error: timed out waiting for {pattern!r}\n\nrecent output:\n{tail}"
-            )
+            raise SystemExit(f"error: timed out waiting for {pattern!r}\n\nrecent output:\n{tail}")
 
 
 def add_line_comment(
@@ -182,7 +174,7 @@ def add_line_comment(
     tab_count: int,
     typing_delay: float,
     step_delay: float,
-    capture: "OutputCapture",
+    capture: OutputCapture,
 ) -> None:
     send_keys(child, "c", step_delay)
     expect(child, "Type your comment", capture)
@@ -199,8 +191,7 @@ def read_pasteboard() -> str:
             ["pbpaste"],
             check=True,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
         )
     except (FileNotFoundError, subprocess.CalledProcessError):
         return ""
@@ -219,8 +210,7 @@ def copy_to_pasteboard(content: str) -> bool:
             check=True,
             text=True,
             input=content,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
         )
     except (FileNotFoundError, subprocess.CalledProcessError):
         return False
@@ -264,7 +254,7 @@ def resolve_clipboard_markdown(captured_output: str) -> str:
 
 def run_claude_paste(
     markdown: str,
-    capture: "OutputCapture",
+    capture: OutputCapture,
     env: dict,
     cols: int,
     rows: int,
@@ -290,10 +280,8 @@ def run_claude_paste(
     try:
         # Wait for the input box to render. Claude draws a Unicode-bordered
         # prompt; any of these characters indicates the UI is ready.
-        try:
+        with contextlib.suppress(pexpect.TIMEOUT, pexpect.EOF):
             claude.expect(r"[╭╰>│]", timeout=15)
-        except (pexpect.TIMEOUT, pexpect.EOF):
-            pass
         sleep_and_drain(claude, 0.9)
 
         # Send the markdown WITHOUT bracketed-paste markers. With markers,
@@ -309,10 +297,8 @@ def run_claude_paste(
         # agg's --last-frame-duration holds that view to close the demo.
         if claude.isalive():
             claude.kill(9)
-            try:
+            with contextlib.suppress(pexpect.TIMEOUT, pexpect.EOF):
                 claude.expect(pexpect.EOF, timeout=2)
-            except (pexpect.TIMEOUT, pexpect.EOF):
-                pass
 
 
 def main() -> int:
