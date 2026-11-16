@@ -154,9 +154,7 @@ pub struct ExportDiff<'a> {
     /// Whether the inline commit selector narrows the loaded diff to a
     /// strict subset of the review's commits.
     pub subset_loaded: bool,
-    /// The one commit the loaded diff shows, when the selection is exactly
-    /// one real commit. `None` for a multi-commit selection, the staged or
-    /// unstaged rows, or a review without a commit selector.
+    /// The loaded single commit; `None` for cumulative or working-tree views.
     pub single_commit: Option<String>,
 }
 
@@ -904,13 +902,8 @@ fn write_remote_body(md: &mut String, prefix: &str, indent: &str, body: &str) {
     }
 }
 
-/// Whether the loaded diff is exactly the diff a comment was written
-/// against, so quoting it cannot show code the comment was not about.
-///
-/// Stricter than `App::comment_visible_with`, which also shows unscoped
-/// comments over a commit subset and stamped comments inside a wider
-/// subset. Those render at their line, but the code there may differ from
-/// what the reviewer saw, and a reader trusts quoted code.
+/// Quote code only for the comment's exact diff scope. Visibility alone allows
+/// legacy comments over subsets and stamped comments over wider diffs.
 fn comment_addresses_loaded_diff(comment: &Comment, diff: &ExportDiff) -> bool {
     match &comment.commit_id {
         None => !diff.subset_loaded,
@@ -918,14 +911,8 @@ fn comment_addresses_loaded_diff(comment: &Comment, diff: &ExportDiff) -> bool {
     }
 }
 
-/// A fenced `diff` block holding the commented lines plus up to
-/// [`CODE_CONTEXT_LINES`] diff lines either side, clipped to the hunk.
-///
-/// Each hunk slice opens with its own `@@ -a,b +c,d @@` header, so a reader
-/// can number every line and tell the commented ones from their context.
-/// Returns `None` when no loaded line falls in the range, for example after
-/// the file changed under the comment. Commit messages get no block: their
-/// lines are prose, not a diff.
+/// Quote the range plus [`CODE_CONTEXT_LINES`] rows either side, clipped to
+/// each hunk with its own `@@` header. Skip commit messages and missing anchors.
 fn code_context_block(file: &DiffFile, range: LineRange, side: LineSide) -> Option<String> {
     if file.is_commit_message {
         return None;
@@ -2482,6 +2469,7 @@ mod tests {
             &ExportConfig::default(),
             &threads,
             None,
+            &ExportDiff::default(),
         );
 
         // then every continuation is indented under its marker; no raw \r
@@ -2534,6 +2522,7 @@ mod tests {
             &ExportConfig::default(),
             &[thread],
             None,
+            &ExportDiff::default(),
         );
 
         // then nothing escapes its list item
