@@ -2,6 +2,7 @@
 # a visual (range) selection that crosses a file boundary must be rejected, not turned into a
 # comment on lines of whichever file the numbers happen to fit. Baseline opened the comment box for the cross-file
 # range.
+# Covers #883: changed lines include their stage marker in the gutter.
 from e2e import Scenario, grep, repos, scenario
 
 
@@ -16,7 +17,7 @@ def main(s: Scenario) -> None:
     repos.write(r / "b.txt", "b1\nb2 changed\nb3\n")
     tui = s.start("-w", cwd=r)
     tui.wait_for("a.txt").keys("Escape")
-    tui.cursor_on("2 ▌ a2 changed")
+    tui.cursor_on("2○▌ a2 changed")
     tui.keys("v", "j", "j", "j", "j", "j", "j", "j").settle()
     tui.keys("c").wait_for("Invalid selection|COMMENT")
     after = tui.screen()
