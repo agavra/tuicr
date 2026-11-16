@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# `forge.comment_type_format` shapes the type prefix on submitted comments, e.g. Conventional Comments style
-# `**nitpick (non-blocking):** ` instead of the default `[NITPICK (NON-BLOCKING)] `.
+# Covers #945: `forge.comment_type_format` shapes the type prefix on submitted comments, e.g. Conventional Comments
+# style `**nitpick (non-blocking):** ` instead of the default `[NITPICK (NON-BLOCKING)] `.
 from e2e import Scenario, pr_comment, repos, scenario
 
 
