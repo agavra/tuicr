@@ -84,7 +84,7 @@ pub(crate) fn resolve_clipboard_override(names: Option<&[String]>) -> Option<Vec
 /// Environment inputs that decide clipboard strategy.
 struct ClipboardEnv {
     is_macos: bool,
-    ssh_tty: bool,
+    ssh: bool,
     tmux: bool,
     zellij: bool,
     rex: bool,
@@ -94,7 +94,8 @@ impl ClipboardEnv {
     fn detect() -> Self {
         Self {
             is_macos: cfg!(target_os = "macos"),
-            ssh_tty: std::env::var_os("SSH_TTY").is_some(),
+            ssh: std::env::var_os("SSH_TTY").is_some()
+                || std::env::var_os("SSH_CONNECTION").is_some(),
             tmux: std::env::var_os("TMUX").is_some(),
             zellij: std::env::var_os("ZELLIJ").is_some(),
             rex: std::env::var_os("REX_SESSION").is_some()
@@ -115,7 +116,7 @@ fn copy_method_order(env: &ClipboardEnv, override_order: Option<&[CopyMethod]>) 
         ];
     }
     // Local tools would copy on the remote host, not the user's machine.
-    if env.ssh_tty || env.rex {
+    if env.ssh || env.rex {
         return vec![CopyMethod::TerminalRelay];
     }
     if env.tmux || env.zellij {
@@ -2327,10 +2328,10 @@ mod tests {
         assert_eq!(CopyMethod::from_config_name("nope"), None);
     }
 
-    fn env(is_macos: bool, ssh_tty: bool, tmux: bool, zellij: bool) -> ClipboardEnv {
+    fn env(is_macos: bool, ssh: bool, tmux: bool, zellij: bool) -> ClipboardEnv {
         ClipboardEnv {
             is_macos,
-            ssh_tty,
+            ssh,
             tmux,
             zellij,
             rex: false,
