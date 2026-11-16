@@ -27,7 +27,7 @@ quarantined scenarios (see below). Logs, final screenshots (`*.screen.txt`), fak
 | tmux | 3.4+ (developed on 3.8) | provides the pty; no display or attached terminal needed |
 | Python | 3.11+, standard library only | runner, scenario library (`lib/e2e/`), fakes, selftest; provision it with [uv](https://docs.astral.sh/uv/): `uv run --python 3.12 e2e/run.py` |
 | git | any recent | fixtures; sparse/CLI backend scenarios use the git CLI |
-| Mercurial | real `hg` (not Sapling) | `local/hg_hunks_under_own_files` only; SKIPs without it, FAILs with `E2E_REQUIRE_HG=1` |
+| Mercurial | real `hg` (not Sapling) | `local/hg_*`; SKIP without it, FAIL with `E2E_REQUIRE_HG=1` |
 | Jujutsu | real `jj` (tested with 0.47) | `local/jj_*`; SKIP without it, FAIL with `E2E_REQUIRE_JJ=1`; `E2E_JJ_DIR` names the directory holding it |
 
 Python lint, format and type checks (`uvx ruff`, `uvx ty`; needs [uv](https://docs.astral.sh/uv/)) are set up in

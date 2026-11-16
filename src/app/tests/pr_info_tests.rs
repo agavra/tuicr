@@ -173,6 +173,52 @@ fn should_start_overview_at_top_of_main_view() {
 }
 
 #[test]
+fn should_keep_overview_at_top_when_hiding_reviewed_files_at_startup() {
+    // `show_reviewed = false` used to jump past the PR description to the
+    // first file, at a row offset measured before the first frame knew the
+    // real width, so a PR review opened scrolled to the bottom.
+    for stale_width in [0, 8, 120] {
+        let mut app = build_pr_app();
+        app.diff_state.viewport_width = stale_width;
+        app.rebuild_annotations();
+
+        app.init_show_reviewed(false);
+
+        assert_eq!(app.diff_state.cursor_line, 0, "stale width {stale_width}");
+        assert_eq!(app.diff_state.scroll_offset, 0, "stale width {stale_width}");
+        assert!(crate::ui::pr_info_panel::is_cursor_in_pr_info(&app));
+    }
+}
+
+#[test]
+fn should_select_first_visible_file_when_hiding_reviewed_files_at_startup() {
+    let mut app = build_pr_app();
+    app.diff_files.push(DiffFile {
+        old_path: None,
+        new_path: Some("src/main.rs".into()),
+        status: FileStatus::Modified,
+        hunks: vec![],
+        is_binary: false,
+        is_too_large: false,
+        is_commit_message: false,
+        content_hash: 0,
+    });
+    let files = app.diff_files.clone();
+    App::register_diff_files(&mut app.session, &files, false);
+    app.session
+        .files
+        .get_mut(&PathBuf::from("src/lib.rs"))
+        .expect("registered file")
+        .reviewed = true;
+    app.rebuild_annotations();
+
+    app.init_show_reviewed(false);
+
+    assert_eq!(app.diff_state.cursor_line, 0);
+    assert_eq!(app.diff_state.current_file_idx, 1);
+}
+
+#[test]
 fn should_walk_from_overview_to_first_file_with_next_file() {
     let mut app = build_pr_app();
     app.diff_state.cursor_line = 0;

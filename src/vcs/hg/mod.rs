@@ -351,13 +351,34 @@ impl VcsBackend for HgBackend {
 
     fn resolve_revision_range(&self, revisions: &str) -> Result<ResolvedRevisionRange<'static>> {
         // Use hg log to resolve the revset to commit hashes.
-        // hg log outputs newest first; we reverse so oldest is first.
-        let output = run_hg_command(
-            &self.info.root_path,
-            ["log", "-r", revisions, "--template", "{node}\\n"],
-        )?;
+        //
+        // `hg log -r <revset>` preserves the order of the revset itself, so an
+        // ascending range like `a:b` prints oldest-first while a descending one
+        // prints newest-first (and a plain `hg log` walk is newest-first too).
+        // Downstream code needs an unambiguous oldest-first list, so wrap the
+        // user's revset in `sort(..., rev)` and let Mercurial order the output
+        // by revision number instead of guessing from the revset direction.
+        let sorted_revset = format!("sort({revisions}, rev)");
+        let revset_to_nodes = |revset: &str| {
+            run_hg_command(
+                &self.info.root_path,
+                ["log", "-r", revset, "--template", "{node}\\n"],
+            )
+        };
 
-        let mut commit_ids: Vec<String> = output
+        let output = match revset_to_nodes(&sorted_revset) {
+            Ok(output) => output,
+            // hg points parse errors at the exact string it received, so re-run
+            // with the user's own revset to report against what they typed.
+            Err(wrapped_error) => match revset_to_nodes(revisions) {
+                Err(raw_error) => return Err(raw_error),
+                // the wrapped revset failed, but the raw one succeeded; the
+                // wrapper itself is the problem, so report the wrapped error.
+                Ok(_) => return Err(wrapped_error),
+            },
+        };
+
+        let commit_ids: Vec<String> = output
             .lines()
             .map(|l| l.trim())
             .filter(|l| !l.is_empty())
@@ -368,8 +389,6 @@ impl VcsBackend for HgBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        // hg log outputs newest first; reverse so oldest is first
-        commit_ids.reverse();
         Ok(ResolvedRevisionRange::from_owned_commit_ids(
             commit_ids,
             RevisionDiffTarget::CommitList,
@@ -1181,6 +1200,77 @@ mod tests {
             assert!(!commit.short_id.is_empty());
             assert!(commit.short_id.len() <= commit.id.len());
         }
+    }
+
+    #[test]
+    fn test_hg_resolve_revision_range_order() {
+        let Some(temp) = setup_test_repo_with_commits() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+
+        let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create hg backend");
+
+        let commits = backend
+            .get_recent_commits(0, 5)
+            .expect("Failed to get commits");
+        assert_eq!(commits.len(), 3);
+        // commits[0] is newest ("Third"), commits[2] is oldest ("First")
+        let first = &commits[2].id;
+        let second = &commits[1].id;
+        let third = &commits[0].id;
+
+        // Whatever order the user writes the revset in, the resolved range
+        // must be oldest-first.
+        for revset in [
+            // Ascending ranges print oldest-first already...
+            format!("{first}:{third}"),
+            format!("{first}+{second}+{third}"),
+            // ...descending ranges print newest-first...
+            format!("{third}:{first}"),
+            format!("{third}+{second}+{first}"),
+        ] {
+            let range = backend
+                .resolve_revision_range(&revset)
+                .unwrap_or_else(|e| panic!("failed to resolve revset {revset}: {e:?}"));
+            assert_eq!(
+                range.commit_ids,
+                vec![first.clone(), second.clone(), third.clone()],
+                "revset {revset} resolved in the wrong order",
+            );
+        }
+
+        // A single commit resolves to itself.
+        let single = backend
+            .resolve_revision_range(&format!("{second}"))
+            .expect("failed to resolve single revision");
+        assert_eq!(single.commit_ids, vec![second.clone()]);
+    }
+
+    #[test]
+    fn test_hg_resolve_revision_range_error_quotes_raw_revset() {
+        let Some(temp) = setup_test_repo_with_commits() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+
+        let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create hg backend");
+
+        let error = backend
+            .resolve_revision_range("foo(")
+            .expect_err("malformed revset should fail")
+            .to_string();
+
+        assert!(
+            error.contains("hg log -r foo("),
+            "error should quote the user's revset: {error}"
+        );
+        assert!(
+            !error.contains("sort("),
+            "error should not quote the wrapper: {error}"
+        );
     }
 
     #[test]
