@@ -682,7 +682,12 @@ impl App {
     /// now" rather than a failure. True for the staged, unstaged, and
     /// staged-plus-unstaged reviews, which can open empty.
     pub fn reload_can_empty(&self) -> bool {
-        Self::worktree_side_empty_message(&self.diff_source).is_some()
+        Self::worktree_side_empty_message(&Self::narrowed_fetch_source(
+            &self.diff_source,
+            &self.review_commits,
+            self.commit_selection_range,
+        ))
+        .is_some()
     }
 
     /// `:e` on a staged/unstaged review whose side has emptied: show the
@@ -700,7 +705,7 @@ impl App {
         self.file_list_state = FileListState::default();
         self.clear_expanded_gaps();
         self.rebuild_annotations();
-        if let Some(message) = Self::worktree_side_empty_message(&self.diff_source) {
+        if let Some(message) = self.empty_review_placeholder() {
             self.set_message(message);
         }
     }
@@ -1294,7 +1299,11 @@ impl App {
             highlighter,
             path_filter,
             current,
-        )?;
+        );
+        let files = match files {
+            Err(TuicrError::NoChanges) => Some(Vec::new()),
+            other => other?,
+        };
         // Runs on the worker, alongside the diff fetch, so the event loop never
         // pays for it.
         //
@@ -1381,7 +1390,18 @@ impl App {
             }
             Ok(Some(diff_files)) => {
                 self.last_diff_watch_error = None;
-                self.apply_watched_diff(diff_files)
+                if diff_files.is_empty() && self.reload_can_empty() {
+                    if self.diff_files.is_empty() {
+                        false
+                    } else {
+                        self.show_emptied_review();
+                        true
+                    }
+                } else if diff_files.is_empty() {
+                    false
+                } else {
+                    self.apply_watched_diff(diff_files)
+                }
             }
             Err(err) => {
                 let text = format!("Diff watch failed: {err}");
@@ -1755,15 +1775,14 @@ pub(in crate::app) fn diff_watch_result_is_stale(
 
 /// Maps the worker's fetch outcome onto the channel's `String`-error wire
 /// type (errors cross threads as text, not `TuicrError`, matching
-/// `PrRangeReloadEvent`). `NoChanges` is folded into `Ok(None)`, because it
-/// means the same thing to a caller as "fetched, nothing changed". Both are a
-/// silent no-op, never a warning.
+/// `PrRangeReloadEvent`). `NoChanges` carries an empty diff so eligible
+/// working-tree reviews can clear stale files; `Ok(None)` is an unchanged fetch.
 pub(in crate::app) fn normalize_diff_watch_result(
     result: Result<Option<Vec<DiffFile>>>,
 ) -> std::result::Result<Option<Vec<DiffFile>>, String> {
     match result {
         Ok(files) => Ok(files),
-        Err(TuicrError::NoChanges) => Ok(None),
+        Err(TuicrError::NoChanges) => Ok(Some(Vec::new())),
         Err(e) => Err(e.to_string()),
     }
 }

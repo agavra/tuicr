@@ -496,6 +496,53 @@ fn should_not_disturb_view_on_unchanged_result() {
 }
 
 #[test]
+fn should_clear_emptied_worktree_targets_without_dropping_session_comments() {
+    for (source, narrowed, message) in [
+        (DiffSource::Staged, false, "No staged changes"),
+        (DiffSource::Unstaged, false, "No unstaged changes"),
+        (
+            DiffSource::StagedAndUnstaged,
+            false,
+            "No staged or unstaged changes",
+        ),
+        (
+            DiffSource::StagedUnstagedAndCommits(vec!["c1".into()]),
+            true,
+            "No staged changes",
+        ),
+    ] {
+        let mut app = build_app(vec![make_diff_file("a.rs", 1)], source.clone());
+        app.session.add_diff_file(&app.diff_files[0]);
+        let file = app.session.files.get_mut(Path::new("a.rs")).unwrap();
+        file.reviewed = true;
+        file.add_file_comment(Comment::new("keep comment".into(), CommentType::None, None));
+        if narrowed {
+            app.review_commits = vec![App::staged_commit_entry(), watch_commit("c1")];
+            app.commit_list = app.review_commits.clone();
+            app.commit_selection_range = Some((0, 0));
+        }
+        assert!(app.reload_can_empty());
+        let request = DiffWatchReloadRequest {
+            diff_source: source,
+            commit_selection_range: app.commit_selection_range,
+        };
+        let event = || DiffWatchReloadEvent::Done {
+            request: request.clone(),
+            result: normalize_diff_watch_result(Err(TuicrError::NoChanges)),
+            commits: None,
+            change_status: None,
+        };
+        assert!(deliver(&mut app, request.clone(), event()));
+        assert!(app.diff_files.is_empty());
+        assert_eq!(app.empty_review_placeholder(), Some(message));
+        let file = &app.session.files[Path::new("a.rs")];
+        assert!(file.reviewed);
+        assert_eq!(file.file_comments[0].content, "keep comment");
+        assert!(!deliver(&mut app, request.clone(), event()));
+    }
+}
+
+#[test]
 fn should_apply_and_report_a_changed_result() {
     let mut app = build_app(vec![make_diff_file("a.rs", 1)], DiffSource::WorkingTree);
 
@@ -945,10 +992,10 @@ fn should_be_stale_when_input_mode_left_normal() {
 }
 
 #[test]
-fn should_normalize_no_changes_error_to_silent_none() {
+fn should_normalize_no_changes_error_to_empty_diff() {
     match normalize_diff_watch_result(Err(TuicrError::NoChanges)) {
-        Ok(None) => {}
-        other => panic!("expected Ok(None), got {other:?}"),
+        Ok(Some(files)) => assert!(files.is_empty()),
+        other => panic!("expected an empty diff, got {other:?}"),
     }
 }
 
