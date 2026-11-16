@@ -12,7 +12,8 @@ def main(s: Scenario) -> None:
         "https://github.com/other/project/pull/1",
         cwd=repo,
         name=s.name + "_foreign",
-        env={"XDG_DATA_HOME": str(s.dir / "data")},
+        # macOS stores reviews under HOME rather than XDG_DATA_HOME.
+        env={"HOME": str(s.dir / "home"), "XDG_DATA_HOME": str(s.dir / "data")},
     )
     foreign.wait_for("PR Description", 20).cursor_on("new line").comment("foreign PR session")
     foreign.quit()
