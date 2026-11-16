@@ -457,8 +457,8 @@ impl App {
 
     /// Install a staged/unstaged/working-tree review from a fetched diff.
     ///
-    /// Returns `Ok(false)` and leaves the current review untouched when there
-    /// is nothing to show. Otherwise the outgoing session is saved first, the
+    /// An empty Git side can open from the selector; an empty session resume
+    /// returns `Ok(false)` without changing the review. The outgoing session is saved first, the
     /// new one replaces it, and the commit pane of the previous review is
     /// dropped: none of these sources has one, and a stale pane would stamp
     /// comments with a foreign commit and make `)` load the old range.
@@ -468,13 +468,11 @@ impl App {
         session_source: SessionDiffSource,
         diff_source: DiffSource,
         empty_message: &str,
+        allow_empty: bool,
     ) -> Result<bool> {
         let diff_files = match fetched {
             Ok(diff_files) => diff_files,
-            Err(TuicrError::NoChanges)
-                if self.vcs_info.vcs_type == VcsType::Git
-                    && Self::worktree_side_empty_message(&diff_source).is_some() =>
-            {
+            Err(TuicrError::NoChanges) if allow_empty && self.vcs_info.vcs_type == VcsType::Git => {
                 Vec::new()
             }
             Err(TuicrError::NoChanges) => {
@@ -568,7 +566,10 @@ impl App {
         Ok(())
     }
 
-    pub(in crate::app) fn load_staged_and_unstaged_selection(&mut self) -> Result<bool> {
+    pub(in crate::app) fn load_staged_and_unstaged_selection(
+        &mut self,
+        allow_empty: bool,
+    ) -> Result<bool> {
         let highlighter = self.theme.syntax_highlighter();
         let fetched = Self::get_working_tree_diff_with_ignore(
             self.vcs.as_ref(),
@@ -581,6 +582,7 @@ impl App {
             SessionDiffSource::StagedAndUnstaged,
             DiffSource::StagedAndUnstaged,
             "No staged or unstaged changes",
+            allow_empty,
         )
     }
 
@@ -602,10 +604,11 @@ impl App {
             SessionDiffSource::WorkingTree,
             DiffSource::WorkingTree,
             "No working tree changes",
+            false,
         )
     }
 
-    pub(in crate::app) fn load_staged_selection(&mut self) -> Result<bool> {
+    pub(in crate::app) fn load_staged_selection(&mut self, allow_empty: bool) -> Result<bool> {
         let highlighter = self.theme.syntax_highlighter();
         let fetched = Self::get_staged_diff_with_ignore(
             self.vcs.as_ref(),
@@ -618,10 +621,11 @@ impl App {
             SessionDiffSource::Staged,
             DiffSource::Staged,
             "No staged changes",
+            allow_empty,
         )
     }
 
-    pub(in crate::app) fn load_unstaged_selection(&mut self) -> Result<bool> {
+    pub(in crate::app) fn load_unstaged_selection(&mut self, allow_empty: bool) -> Result<bool> {
         let highlighter = self.theme.syntax_highlighter();
         let fetched = Self::get_unstaged_diff_with_ignore(
             self.vcs.as_ref(),
@@ -634,6 +638,7 @@ impl App {
             SessionDiffSource::Unstaged,
             DiffSource::Unstaged,
             "No unstaged changes",
+            allow_empty,
         )
     }
 
@@ -655,7 +660,11 @@ impl App {
         if !self.diff_files.is_empty() {
             return None;
         }
-        Self::worktree_side_empty_message(&self.diff_source)
+        Self::worktree_side_empty_message(&Self::narrowed_fetch_source(
+            &self.diff_source,
+            &self.review_commits,
+            self.commit_selection_range,
+        ))
     }
 
     /// Whether `commit` is a working-tree row whose side the last status read

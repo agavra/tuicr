@@ -326,6 +326,7 @@ fn narrowing_the_inline_pane_to_an_empty_side_shows_an_empty_diff() {
 
     assert!(app.diff_files.is_empty());
     assert_eq!(app.commit_list.len(), 3, "the pane keeps every row");
+    assert_eq!(app.empty_review_placeholder(), Some("No staged changes"));
 }
 
 /// Swaps the app's backend for one whose tree holds `staged` and `unstaged`,

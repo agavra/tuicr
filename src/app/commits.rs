@@ -532,9 +532,9 @@ impl App {
                 self.load_commit_range_selection(ordered_ids, commits)
             }
             SessionDiffSource::WorkingTree => self.load_working_tree_selection(),
-            SessionDiffSource::Unstaged => self.load_unstaged_selection(),
-            SessionDiffSource::Staged => self.load_staged_selection(),
-            SessionDiffSource::StagedAndUnstaged => self.load_staged_and_unstaged_selection(),
+            SessionDiffSource::Unstaged => self.load_unstaged_selection(false),
+            SessionDiffSource::Staged => self.load_staged_selection(false),
+            SessionDiffSource::StagedAndUnstaged => self.load_staged_and_unstaged_selection(false),
             SessionDiffSource::WorkingTreeAndCommits
             | SessionDiffSource::StagedUnstagedAndCommits => {
                 let Some(commits) = self.session_range_commits(&session)? else {
@@ -551,10 +551,12 @@ impl App {
                     highlighter,
                     self.path_filter.as_deref(),
                 )?;
-                if change_status.staged {
+                self.worktree_status = Some(change_status);
+                let rows = Self::worktree_row_status(self.vcs_info.vcs_type, change_status);
+                if rows.staged {
                     commits.push(Self::staged_commit_entry());
                 }
-                if change_status.unstaged {
+                if rows.unstaged {
                     commits.push(Self::unstaged_commit_entry());
                 }
                 self.load_staged_unstaged_and_commits_selection(ordered_ids, commits)
@@ -1082,15 +1084,15 @@ impl App {
         }
 
         if selected_staged && selected_unstaged {
-            return self.load_staged_and_unstaged_selection().map(|_| ());
+            return self.load_staged_and_unstaged_selection(true).map(|_| ());
         }
 
         if selected_staged {
-            return self.load_staged_selection().map(|_| ());
+            return self.load_staged_selection(true).map(|_| ());
         }
 
         if selected_unstaged {
-            return self.load_unstaged_selection().map(|_| ());
+            return self.load_unstaged_selection(true).map(|_| ());
         }
 
         self.load_commit_range_selection(selected_ids, selected_commits)

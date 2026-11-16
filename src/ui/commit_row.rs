@@ -426,6 +426,7 @@ mod tests {
                         is_cursor: false,
                         is_selected: false,
                         is_reviewed: false,
+                        is_empty: false,
                         theme: &theme,
                     }))
                 };

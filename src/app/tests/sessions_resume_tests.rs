@@ -820,11 +820,12 @@ fn should_restore_the_working_tree_rows_when_resuming_a_range_with_working_tree(
     // when
     app.sessions_tab_select().expect("resume");
 
-    // then — the staged row sits above the commits, newest first
+    // then — both Git rows sit above the commits, newest first
     let ids: Vec<&str> = app.review_commits.iter().map(|c| c.id.as_str()).collect();
-    assert_eq!(app.review_commits.len(), 3);
-    assert!(App::is_staged_commit(&app.review_commits[0]), "{ids:?}");
-    assert_eq!(&ids[1..], ["bbb", "aaa"]);
+    assert_eq!(app.review_commits.len(), 4);
+    assert!(App::is_unstaged_commit(&app.review_commits[0]), "{ids:?}");
+    assert!(App::is_staged_commit(&app.review_commits[1]), "{ids:?}");
+    assert_eq!(&ids[2..], ["bbb", "aaa"]);
     assert!(app.show_commit_selector);
     // and the stored range keeps real ids only
     assert_eq!(
@@ -911,7 +912,9 @@ fn should_return_focus_to_the_diff_when_a_local_switch_hides_the_focused_pane() 
     // when — the staged target replaces it
     app.enter_target_selector(TargetTab::Local)
         .expect("selector");
-    assert!(App::is_staged_commit(&app.commit_list[0]));
+    assert!(App::is_staged_commit(
+        &app.commit_list[app.commit_list_cursor]
+    ));
     app.confirm_commit_selection().expect("confirm");
 
     // then — keys reach the diff, not the hidden empty selector
