@@ -1628,6 +1628,8 @@ pub struct App {
     /// remember to trigger it. Cleared on explicit reload so an edited
     /// `.gitattributes` takes effect.
     pub generated_probed: HashSet<PathBuf>,
+    /// Attributes source for the cached paths, including no matching checkout.
+    pub generated_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

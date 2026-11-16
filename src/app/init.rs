@@ -646,6 +646,7 @@ impl App {
             generated_files: HashSet::new(),
             collapse_override: HashMap::new(),
             generated_probed: HashSet::new(),
+            generated_root: None,
         };
         // Auto-hide file list when path filter matches exactly one file
         if app.path_filter.is_some() && app.diff_files.len() == 1 {

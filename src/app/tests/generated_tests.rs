@@ -425,18 +425,25 @@ fn space_in_the_diff_panel_expands_the_generated_file_under_the_cursor() {
 }
 
 #[test]
-fn detection_is_skipped_when_there_is_no_local_repository_root() {
-    // PR mode's root is the synthetic `forge:host/owner/repo` identity, and
-    // without a matching local checkout there is nothing to read attributes
-    // from. It must degrade to "nothing is generated", not panic.
+fn detection_follows_the_review_repository_root() {
     let dir = repo();
     let mut app = collapsing_app(&dir, &["api.pb.go"]);
-    app.vcs_info.root_path = PathBuf::from("forge:github.com/agavra/tuicr");
-    app.invalidate_generated_detection();
-    app.rebuild_annotations();
+    assert!(collapsed(&app, "api.pb.go"));
+    let other = tempdir().unwrap();
+    git2::Repository::init(other.path()).unwrap();
 
-    assert!(app.generated_files.is_empty());
-    assert!(!collapsed(&app, "api.pb.go"));
+    for root in [
+        other.path().to_path_buf(),
+        PathBuf::from("forge:github.com/other/repo"),
+    ] {
+        app.vcs_info.root_path = root;
+        app.rebuild_annotations();
+        assert!(app.generated_files.is_empty());
+        assert!(!collapsed(&app, "api.pb.go"));
+    }
+    app.vcs_info.root_path = dir.path().to_path_buf();
+    app.rebuild_annotations();
+    assert!(collapsed(&app, "api.pb.go"));
 }
 
 #[test]

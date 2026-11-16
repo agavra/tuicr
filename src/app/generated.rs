@@ -1,14 +1,8 @@
 use super::*;
 
 impl App {
-    /// Apply resolved `[generated]` settings and detect matching files.
-    ///
-    /// Called from startup after config load. `App::build` has already built
-    /// annotations against the defaults (collapse on, count on), so they are
-    /// rebuilt whenever the configured settings differ from those or
-    /// detection finds new files; otherwise a `collapse = false` config would
-    /// leave the annotations describing collapsed files the renderer draws
-    /// expanded.
+    /// Apply `[generated]` and rebuild the annotations made with startup defaults
+    /// when settings or detected files change.
     pub fn apply_generated_config(&mut self, config: &GeneratedConfig) {
         let previous = (self.collapse_generated, self.count_generated);
         self.collapse_generated = config.collapse();
@@ -21,19 +15,12 @@ impl App {
 
     /// Whether `.gitattributes` has to be consulted at all.
     ///
-    /// Both features off means the detected set stays empty, which is what
-    /// makes the default configuration free: no repository is opened, and the
-    /// render path's guards short-circuit before any lookup.
+    /// Skip attribute lookup when neither setting needs generated-file metadata.
     fn generated_detection_enabled(&self) -> bool {
         self.collapse_generated || !self.count_generated
     }
 
-    /// Repository root to resolve `.gitattributes` against, if there is one.
-    ///
-    /// PR mode's `root_path` is the synthetic `forge:host/owner/repo` identity
-    /// rather than a directory, so it falls back to the local checkout the
-    /// forge backend resolved — which is only set when the checkout matches
-    /// the PR's target repository, so a foreign checkout can't mis-mark files.
+    /// Resolve attributes in the checkout, or the forge's verified local clone in PR mode.
     fn generated_attributes_root(&self) -> Option<PathBuf> {
         if self.vcs_info.root_path.is_absolute() {
             return Some(self.vcs_info.root_path.clone());
@@ -43,27 +30,27 @@ impl App {
             .and_then(|backend| backend.local_checkout_path())
     }
 
-    /// Look up `.gitattributes` for every diff file not probed yet, returning
-    /// whether that grew the generated set.
-    ///
-    /// Probed paths are remembered, so a repeat call over an unchanged file
-    /// set costs one hash lookup per file and no libgit2 work. That memo is
-    /// also the staleness test, which is what lets `rebuild_annotations` keep
-    /// detection current without each of the fifteen `diff_files` assignments
-    /// having to remember to trigger it.
+    /// Probe newly loaded paths once. Annotation rebuilds cover every diff assignment
+    /// without repeating VCS work for unchanged file sets.
     pub(in crate::app) fn detect_generated_files(&mut self) -> bool {
         if !self.generated_detection_enabled() {
             return false;
+        }
+        let root = self.generated_attributes_root();
+        let root_changed = self.generated_root != root;
+        if root_changed {
+            self.invalidate_generated_detection();
+            self.generated_root = root.clone();
         }
         if self
             .diff_files
             .iter()
             .all(|file| self.generated_probed.contains(file.display_path()))
         {
-            return false;
+            return root_changed;
         }
-        let Some(root) = self.generated_attributes_root() else {
-            return false;
+        let Some(root) = root else {
+            return root_changed;
         };
 
         let unprobed: Vec<PathBuf> = self
@@ -79,7 +66,7 @@ impl App {
         });
 
         self.generated_probed.extend(unprobed);
-        let changed = !detected.is_empty();
+        let changed = root_changed || !detected.is_empty();
         self.generated_files.extend(detected);
         changed
     }
@@ -92,16 +79,8 @@ impl App {
         self.generated_files.clear();
     }
 
-    /// Whether to surface this path as code-generated.
-    ///
-    /// Gated on the same condition as detection rather than on the detected
-    /// set being non-empty, so the decoration is a function of the current
-    /// settings and not of what the session has detected in the past. The set
-    /// is deliberately *not* discarded when the feature is switched off — that
-    /// is what makes re-enabling free — so keying the decoration off it would
-    /// make `:set generated` / `:set nogenerated` asymmetric: the labels, the
-    /// dimmed tree rows, and the counter would all survive a toggle back off
-    /// and never return to how the session started.
+    /// Gate cached detection on current settings. Retain the cache while disabled
+    /// so re-enabling needs no VCS lookup.
     #[inline]
     pub fn is_generated_file(&self, path: &Path) -> bool {
         self.generated_detection_enabled() && self.generated_files.contains(path)
