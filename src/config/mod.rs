@@ -188,9 +188,8 @@ impl ExportConfig {
 /// code-generated (`linguist-generated` or `gitlab-generated`).
 ///
 /// Both fields are optional so the shipped defaults stay distinguishable from
-/// an explicit setting, matching `[export]`. The defaults reproduce tuicr's
-/// behavior before generated-file support existed, so an absent section is
-/// exactly today's behavior — and skips attribute detection entirely.
+/// an explicit setting, matching `[export]`. An absent section keeps generated
+/// files collapsed by default and excluded from review progress.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct GeneratedConfig {
@@ -937,8 +936,8 @@ fn parse_export(value: &Value, warnings: &mut Vec<String>) -> Option<ExportConfi
 }
 
 /// Parse the `[generated]` section. Returns `Some` only when at least one
-/// recognized key is set, so an absent or empty section leaves both defaults —
-/// and therefore skips attribute detection — untouched.
+/// recognized key is set. An absent or empty section keeps the defaults:
+/// collapse generated files and exclude them from review progress.
 fn parse_generated(value: &Value, warnings: &mut Vec<String>) -> Option<GeneratedConfig> {
     let Some(table) = value.as_table() else {
         warnings
