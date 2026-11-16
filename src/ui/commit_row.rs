@@ -110,7 +110,7 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
     let hash_content_width = (HASH_COL_WIDTH - 1).max(spec.commit.short_id.chars().count());
     let hash = format!(
         "{} ",
-        truncate_or_pad_column(&spec.commit.short_id, hash_content_width)
+        truncate_or_pad(&spec.commit.short_id, hash_content_width)
     );
     spans.push(Span::styled(hash, styles::hash_style(theme)));
 
@@ -153,7 +153,7 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
     }
 
     spans.push(Span::styled(
-        truncate_or_pad_column(&spec.commit.summary, summary_col_width),
+        truncate_or_pad(&spec.commit.summary, summary_col_width),
         row_text_style,
     ));
 
@@ -181,14 +181,6 @@ fn commit_column_widths(available_width: usize, hash_col_width: usize) -> (usize
         COMPACT_BRANCH_COL_WIDTH + branch_surplus,
         COMPACT_SUMMARY_COL_WIDTH + surplus - branch_surplus,
     )
-}
-
-fn truncate_or_pad_column(value: &str, width: usize) -> String {
-    if width < 3 {
-        value.chars().take(width).collect()
-    } else {
-        truncate_or_pad(value, width)
-    }
 }
 
 /// Compact relative time used in selector rows: `5m`, `3h`, `2d`, `6w`, `4mo`,
