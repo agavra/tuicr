@@ -378,7 +378,6 @@ fn render_sessions_tab(frame: &mut Frame, app: &mut App, area: Rect) {
 /// Pointer, range-bar placeholder, `#number` and its trailing space.
 const PR_ROW_LEAD_WIDTH: usize = 2 + 2 + 6 + 1;
 const PR_TITLE_MIN_WIDTH: usize = 20;
-const PR_TITLE_MAX_WIDTH: usize = 60;
 const PR_AUTHOR_WIDTH: usize = 12;
 
 /// The `  author · updated · commit 2mo [draft]` tail of each PR row. The
@@ -473,27 +472,15 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
         .as_ref()
         .map(|s| pr_open_spinner_glyph(s.started_at.elapsed()));
 
-    // Metadata trails the title, so a narrow terminal cuts it off first.
-    // When the page carries last-commit times, shrink the title column to
-    // keep both times visible; it stays the same width on every row so the
-    // metadata lands at the same x. Pages without them keep the fixed width.
+    // Metadata trails the title, so the title column takes the width the
+    // metadata leaves: a wide terminal shows long titles in full, and a
+    // narrow one shrinks the title rather than cutting the dates off. It
+    // stays the same width on every row so the metadata lands at the same x.
     let metadata: Vec<String> = pr_row_metadata(view);
-    let has_last_commit = view
-        .rows
-        .iter()
-        .any(|row| row.summary.last_commit_at.is_some());
-    let title_width = if has_last_commit {
-        let metadata_width = metadata
-            .iter()
-            .map(|m| m.chars().count())
-            .max()
-            .unwrap_or(0);
-        (area.width as usize)
-            .saturating_sub(PR_ROW_LEAD_WIDTH + metadata_width)
-            .clamp(PR_TITLE_MIN_WIDTH, PR_TITLE_MAX_WIDTH)
-    } else {
-        PR_TITLE_MAX_WIDTH
-    };
+    let metadata_width = metadata.iter().map(|m| m.width()).max().unwrap_or(0);
+    let title_width = (area.width as usize)
+        .saturating_sub(PR_ROW_LEAD_WIDTH + metadata_width)
+        .max(PR_TITLE_MIN_WIDTH);
 
     let mut lines: Vec<Line> = Vec::new();
     for (i, (row, metadata)) in view.rows.iter().zip(metadata).enumerate() {
@@ -703,7 +690,6 @@ mod selector_render_snapshot_tests {
     use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
     use crate::ui::render;
-    use crate::ui::text_utils::truncate_or_pad;
     use crate::vcs::CommitInfo;
     use crate::vcs::traits::{VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
     use chrono::{TimeZone, Utc};
@@ -1123,55 +1109,58 @@ mod selector_render_snapshot_tests {
     }
 
     #[test]
-    fn should_render_rows_without_last_commit_as_before() {
-        // given — a forge that does not report a last commit
-        let mut app = app_with_prs(vec![pr_dated(148, "alice", 2, None)]);
+    fn should_show_long_pr_titles_in_full_on_wide_terminals() {
+        // given — a title past the old 60-column cap on a 200-column terminal
+        let mut long = pr_dated(148, "alice", 2, None);
+        long.title = "A very long pull request title that used to be cut off at sixty columns \
+                      on a wide terminal"
+            .to_string();
+        let mut app = app_with_prs(vec![long.clone(), pr_dated(125, "ypares", 14, None)]);
         // when
-        let buffer = draw(&mut app);
-        // then
-        let row = row_containing(&buffer, "#148");
-        let expected = format!("#148   {:<60}  alice        · 2d", "PR number 148");
-        assert_eq!(row.trim_matches(['│', ' ', '▸']), expected);
+        let buffer = draw_at(&mut app, 200, 24);
+        // then — the whole title shows and the authors still line up
+        let first = row_containing(&buffer, "#148");
+        let second = row_containing(&buffer, "#125");
+        assert!(first.contains(&long.title), "{first:?}");
+        let column = |row: &str, author: &str| row[..row.find(author).unwrap()].chars().count();
+        assert_eq!(
+            column(&first, "alice"),
+            column(&second, "ypares"),
+            "author column should line up"
+        );
     }
 
     #[test]
-    fn should_keep_fixed_title_width_on_narrow_terminals_without_last_commit() {
-        // given — a forge without last-commit times on an 80-column terminal
-        let mut long = pr_dated(148, "alice", 2, None);
-        long.title =
-            "A very long pull request title that would push the dates off screen".to_string();
-        let mut app = app_with_prs(vec![long.clone()]);
+    fn should_keep_dates_visible_beside_a_wide_glyph_title() {
+        // given — a title of two-cell glyphs too long for a 200-column terminal
+        let mut wide = pr_dated(148, "alice", 2, Some(60));
+        wide.title = "界".repeat(80);
+        let mut app = app_with_prs(vec![wide]);
         // when
-        let buffer = draw_at(&mut app, 80, 24);
-        // then — the title keeps its 60 columns and the tail is cut as on main
+        let buffer = draw_at(&mut app, 200, 24);
+        // then — the title is cut by cells, not chars, so the tail still shows
         let row = row_containing(&buffer, "#148");
-        let full = format!(
-            "#148   {}  alice        · 2d",
-            truncate_or_pad(&long.title, 60)
-        );
-        let visible = row
-            .trim_start_matches(['│', ' ', '▸'])
-            .trim_end_matches(['│', ' ']);
-        assert!(full.starts_with(visible), "{visible:?} vs {full:?}");
-        assert!(
-            visible.contains(&truncate_or_pad(&long.title, 60)),
-            "{visible:?}"
-        );
+        assert!(row.contains("alice        · 2d · commit 2mo"), "{row:?}");
     }
 
     #[test]
     fn should_shrink_pr_title_to_keep_dates_visible_on_narrow_terminals() {
-        // given — a long title on an 80-column terminal
-        let mut long = pr_dated(148, "alice", 2, Some(60));
-        long.title =
-            "A very long pull request title that would push the dates off screen".to_string();
-        let mut app = app_with_prs(vec![long]);
-        // when
-        let buffer = draw_at(&mut app, 80, 24);
-        // then
-        let row = row_containing(&buffer, "#148");
-        assert!(row.contains("A very long"), "{row:?}");
-        assert!(row.contains("alice        · 2d · commit 2mo"), "{row:?}");
+        for (commit_days, tail) in [
+            (None, "alice        · 2d"),
+            (Some(60), "alice        · 2d · commit 2mo"),
+        ] {
+            // given — a long title on an 80-column terminal
+            let mut long = pr_dated(148, "alice", 2, commit_days);
+            long.title =
+                "A very long pull request title that would push the dates off screen".to_string();
+            let mut app = app_with_prs(vec![long]);
+            // when
+            let buffer = draw_at(&mut app, 80, 24);
+            // then
+            let row = row_containing(&buffer, "#148");
+            assert!(row.contains("A very long"), "{row:?}");
+            assert!(row.contains(tail), "{row:?}");
+        }
     }
 
     #[test]
