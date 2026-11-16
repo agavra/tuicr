@@ -538,6 +538,7 @@ fn handle_export_to_file(app: &mut App, path: &str) {
         &app.forge_review_threads,
         slug.as_deref(),
         &path,
+        &app.export_diff(),
     ) {
         Ok(msg) => app.set_message(msg),
         Err(TuicrError::Io(e)) => {

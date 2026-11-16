@@ -237,6 +237,7 @@ pub(crate) fn export_to_clipboard_with(
 }
 
 /// Write the same review `:clip` copies to `path`, replacing any file there.
+#[allow(clippy::too_many_arguments)]
 pub fn export_to_file(
     session: &ReviewSession,
     diff_source: &DiffSource,
@@ -245,6 +246,7 @@ pub fn export_to_file(
     remote_threads: &[RemoteReviewThread],
     session_slug: Option<&str>,
     path: &std::path::Path,
+    diff: &ExportDiff,
 ) -> Result<String> {
     let content = generate_export_content(
         session,
@@ -253,6 +255,7 @@ pub fn export_to_file(
         export,
         remote_threads,
         session_slug,
+        diff,
     )?;
     std::fs::write(path, content)?;
     Ok(format!("Review written to {}", path.display()))
@@ -1350,9 +1353,27 @@ mod tests {
             &ExportConfig::default(),
         );
 
-        let message = export_to_file(&session, args.0, args.1, args.2, &[], None, &path).unwrap();
+        let message = export_to_file(
+            &session,
+            args.0,
+            args.1,
+            args.2,
+            &[],
+            None,
+            &path,
+            &ExportDiff::default(),
+        )
+        .unwrap();
 
-        let expected = generate_export_content(&session, args.0, args.1, args.2, &[], None);
+        let expected = generate_export_content(
+            &session,
+            args.0,
+            args.1,
+            args.2,
+            &[],
+            None,
+            &ExportDiff::default(),
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), expected.unwrap());
         assert_eq!(message, format!("Review written to {}", path.display()));
     }
@@ -1369,6 +1390,7 @@ mod tests {
             &[],
             None,
             &path,
+            &ExportDiff::default(),
         );
         assert!(matches!(result, Err(TuicrError::Io(_))));
     }
@@ -1391,6 +1413,7 @@ mod tests {
             &[],
             None,
             &path,
+            &ExportDiff::default(),
         );
         assert!(matches!(result, Err(TuicrError::NoComments)));
         assert!(!path.exists());

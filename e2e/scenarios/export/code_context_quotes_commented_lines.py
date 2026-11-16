@@ -18,6 +18,9 @@ def main(s: Scenario) -> None:
         tui.keys("g").comment("file context", key="C")
         tui.cmd("clip").wait_for("Review copied to clipboard")
         text = clipboard.text()
+        output = s.path_of(name) / "review.md"
+        tui.cmd(f"file {output}").wait_for("Review written to")
+        assert output.read_text() == text, "file export differs from clipboard context"
         assert "`README.md:4` - line context" in text, text
         assert "`gone.txt:~1-~2` - range context" in text, text
         if enabled:
