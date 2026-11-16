@@ -317,10 +317,11 @@ fn try_clipboard_cmd(program: &str, args: &[&str], text: &str) -> bool {
     else {
         return false;
     };
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = std::io::Write::write_all(&mut stdin, text.as_bytes());
-    }
-    matches!(child.wait(), Ok(s) if s.success())
+    let written = child
+        .stdin
+        .take()
+        .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+    matches!(child.wait(), Ok(s) if s.success()) && written
 }
 
 /// Copy text to clipboard using OSC 52 escape sequence.
@@ -2324,6 +2325,32 @@ mod tests {
 
         assert!(markdown.contains("Comment types: QUESTION (ask for clarification)"));
         assert!(!markdown.contains("ISSUE"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_command_receives_text_on_stdin() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.txt");
+        let command = format!("cat > '{}'", out.display());
+        assert!(try_clipboard_command(&command, "hello\nworld"));
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "hello\nworld");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_command_rejects_partial_input() {
+        assert!(!try_clipboard_command(
+            "head -c 1 >/dev/null",
+            &"x".repeat(1_000_000)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_command_reports_execution_failures() {
+        assert!(!try_clipboard_command("exit 1", "hello"));
+        assert!(!try_clipboard_command("no-such-tuicr-command", "hello"));
     }
 
     #[test]
