@@ -82,6 +82,7 @@ custom = true                 # ignore whitespace in *.custom files
 
 [forge]
 comment_type_prefix = true
+comment_type_format = "[{LABEL}] "
 pr_search = "review-requested:@me draft:false"
 
 [export]
@@ -337,6 +338,7 @@ comment_type_prefix = false
 | Key                   | Default | Description                                                                                                                                                                 |
 | --------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `comment_type_prefix` | `true`  | Prepend `[TYPE] ` to comment bodies on submit (e.g. `[ISSUE] Magic number should be a constant`). The tag uses the type's `label`, uppercased — the same text the TUI badge and export show. Set to `false` to send the raw comment body without a classification tag. |
+| `comment_type_format` | `"[{LABEL}] "` | Template for that prefix. `{label}` is the type's `label` as written in `comment_types` (or its `id`), `{LABEL}` the same uppercased. Must contain one of them, otherwise it is ignored with a startup warning. Only affects submitted comments; the TUI badge and the clipboard export keep the `[TYPE]` form. |
 | `pr_search`           | unset   | GitHub search for the Pull Requests review scope (`r`). Same syntax as `gh pr list --search` (for example `review-requested:@me draft:false status:success`). Applied only on GitHub; other forges ignore it. Unset keeps `review-requested:@me`. When set, the scope shows as `search` in the PR tab. |
 
 When enabled (the default), submitted comments look like:
@@ -353,6 +355,24 @@ When disabled, the same comments are submitted without the prefix:
 Consider adding unit tests
 Magic number should be a named constant
 This module could use a doc comment
+```
+
+For [Conventional Comments](https://conventionalcomments.org/), use lowercase labels and a
+`label:` format. Decorations go in the label itself:
+
+```toml
+comment_types = [
+  { id = "suggestion" },
+  { id = "nitpick", label = "nitpick (non-blocking)" },
+]
+
+[forge]
+comment_type_format = "**{label}:** "
+```
+
+```
+**suggestion:** Consider adding unit tests
+**nitpick (non-blocking):** File-level: Prefer `snake_case` here
 ```
 
 This applies to inline line comments, file-level comments, and review-level comments pushed via

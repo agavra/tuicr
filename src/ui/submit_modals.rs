@@ -224,15 +224,11 @@ pub fn render_submit_confirm(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, inner);
 }
 
-/// The `[TYPE]` tag here must match what submit actually sends, so it resolves
-/// the configured `label` rather than the raw id.
+/// The type tag here must match what submit actually sends, so it goes
+/// through the same `forge.comment_type_format` rendering.
 fn describe_row(app: &App, item: &UnmappableItem) -> String {
-    let label = app.comment_type_label(&item.comment.comment_type);
-    let type_tag = if label.is_empty() {
-        String::new()
-    } else {
-        format!("[{label}] ")
-    };
+    let type_tag = crate::forge::submit::SubmitContext::new(&app.forge_config, &app.comment_types)
+        .type_tag(&item.comment.comment_type);
     let path = item.file.display();
     let content = item
         .comment

@@ -1572,6 +1572,24 @@ pub fn resolve_comment_type_label(
     }
 }
 
+/// The configured label as written, else the id. Empty for
+/// [`CommentType::None`]. Feeds `{label}` in `forge.comment_type_format`.
+pub fn resolve_comment_type_raw_label(
+    comment_type: &crate::model::CommentType,
+    comment_types: &[CommentTypeDefinition],
+) -> String {
+    if comment_type.is_none() {
+        return String::new();
+    }
+    match comment_types
+        .iter()
+        .find(|definition| definition.id == comment_type.id())
+    {
+        Some(definition) => definition.label.clone(),
+        None => comment_type.id().to_string(),
+    }
+}
+
 #[derive(Default)]
 pub struct FileListState {
     pub list_state: ratatui::widgets::ListState,
