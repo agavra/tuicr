@@ -17,6 +17,7 @@ Workflow areas (`e2e/scenarios/<area>/<behaviour>.py`; each file's header commen
 | `syntax` | Syntax colouring, user grammars |
 | `cli` | Non-interactive CLI: `review` subcommands, flag validation, update detection, install script |
 | `pr` | GitHub PR flows: open, reload, commit selector, threads, submit, editor snapshots, selector |
+| `gerrit` | Gerrit: URL, threads, root change, HTTPS trust (reads only) |
 | `gitlab` | GitLab MR: URL/host, threads, draft read-back, submit, partial submit |
 | `gitea` | Gitea PR: pagination, votes, draft read-back, submit |
 | `bitbucket` | Bitbucket Cloud: threads, submit |
@@ -25,7 +26,7 @@ Workflow areas (`e2e/scenarios/<area>/<behaviour>.py`; each file's header commen
 
 ## Known gaps
 
-* **Gerrit and Azure DevOps submit:** Gerrit refuses credentials over `http://`, so a fake would need HTTPS with a certificate tuicr trusts (platform verifier; not portable). Azure needs a fake for iterations/threads/PAT or `az rest`. Both forges' reads are covered where a fake exists.
+* **Gerrit and Azure DevOps submit:** Gerrit refuses credentials over `http://`, so a fake needs HTTPS with a certificate tuicr trusts. `e2e.forge.tls_files` + `gerrit_serve(tls=)` provide that on Linux (`SSL_CERT_FILE` feeds the platform verifier); macOS would need a Keychain edit, so a submit scenario would be Linux-only. Azure needs a fake for iterations/threads/PAT or `az rest`. Both forges' reads are covered where a fake exists.
 * **Gitea range paths and Azure iteration anchors:** need a two-commit clone plus compare/fetch fakes; unit-tested only.
 * **Not driven end to end yet:** Sessions tab `a` toggle, `:messages`/`:version`, mouse wheel/drag, the update install flow, `[export]` config keys, `scroll_offset`/`cursor_line`/`search_highlight`/`ignore_whitespace`/`initial_commit_selection`, comment-input editing keys and the rest of `comment_vim` (Insert-mode `Ctrl-W` is covered), PR `:prs`/scope cycle/`:copy-url`.
 * **Environment-dependent:** `local/hg_*` need real Mercurial and `local/jj_*` need Jujutsu; both SKIP without them (`E2E_REQUIRE_HG=1`/`E2E_REQUIRE_JJ=1` fail instead). `cli/install_script_without_tty` needs `install.sh` from the `site` branch.

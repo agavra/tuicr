@@ -92,6 +92,7 @@ impl PatHttp {
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
             .http_status_as_error(false)
+            .tls_config(crate::forge::platform_tls_config())
             .build();
         Self {
             auth_header: format!("Basic {token}"),

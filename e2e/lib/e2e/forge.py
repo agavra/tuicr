@@ -5,7 +5,8 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from . import repos
 from .core import E2E_DIR, Failure, grep
@@ -83,6 +84,16 @@ def gerrit_open(
       threads: base + head; a.txt line 1 thread resolved by a reply, line 2 thread reopened by a reply.
     target: the `tuicr pr` argument, "@PORT@" replaced by the fake's port. The server is stopped by a cleanup
     registered here (it also dies with the scenario's process group); gerrit_stop() stops it earlier."""
+    r, url = gerrit_serve(s, kind, host=host, project=project)
+    port = url.rsplit(":", 1)[1]
+    return s.start("pr", target.replace("@PORT@", port), cwd=r, env={"GERRIT_URL": url})
+
+
+def gerrit_serve(
+    s: Scenario, kind: str, host: str = "gerrit.example.test", project: str = "proj", tls: TlsFiles | None = None
+) -> tuple[Path, str]:
+    """gerrit_open's fixture without starting tuicr: returns (clone, GERRIT_URL). tls: serve HTTPS with that
+    certificate (see tls_files) instead of plain HTTP."""
     d = s.dir
     r, gd = d / "repo", d / "gerrit"
     shutil.rmtree(gd, ignore_errors=True)
@@ -105,11 +116,48 @@ def gerrit_open(
         tpl.replace("@PROJECT@", project).replace("@HEAD@", head).replace("@PARENTS@", parents)
     )
     shutil.copy(E2E_DIR / "data/gerrit/comments.json", gd / "comments.json")
-    s.gerrit_proc = subprocess.Popen([sys.executable, str(E2E_DIR / "fakeforge/gerrit.py"), str(gd), str(gd / "port")])
+    argv = [sys.executable, str(E2E_DIR / "fakeforge/gerrit.py"), str(gd), str(gd / "port")]
+    if tls is not None:
+        argv += [str(tls.cert), str(tls.key)]
+    s.gerrit_proc = subprocess.Popen(argv)
     s.on_exit(gerrit_stop, s)
     wait_file(gd / "port", 10)
     port = (gd / "port").read_text().strip()
-    return s.start("pr", target.replace("@PORT@", port), cwd=r, env={"GERRIT_URL": f"http://127.0.0.1:{port}"})
+    return r, f"{'https' if tls else 'http'}://127.0.0.1:{port}"
+
+
+class TlsFiles(NamedTuple):
+    ca: Path  # PEM root certificate, trusted by nothing until a scenario says so
+    cert: Path  # PEM leaf for IP 127.0.0.1, signed by `ca`
+    key: Path  # the leaf's private key
+
+
+def tls_files(d: Path) -> TlsFiles:
+    """A throwaway CA and a 127.0.0.1 server certificate it signs, made with the `openssl` CLI under `d`."""
+    d.mkdir(parents=True, exist_ok=True)
+    ca_conf = repos.write(
+        d / "ca.cnf",
+        "[req]\ndistinguished_name = dn\nprompt = no\nx509_extensions = v3_ca\n[dn]\nCN = tuicr e2e CA\n"
+        "[v3_ca]\nbasicConstraints = critical,CA:TRUE\nkeyUsage = critical,keyCertSign,cRLSign\n"
+        "subjectKeyIdentifier = hash\n",
+    )
+    leaf_ext = repos.write(
+        d / "leaf.ext",
+        "basicConstraints = CA:FALSE\nkeyUsage = critical,digitalSignature,keyEncipherment\n"
+        "extendedKeyUsage = serverAuth\nsubjectAltName = IP:127.0.0.1\n",
+    )
+    ca, ca_key, cert, key, csr = (d / n for n in ("ca.pem", "ca.key", "leaf.pem", "leaf.key", "leaf.csr"))
+    for argv in (
+        ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-config", str(ca_conf)]
+        + ["-keyout", str(ca_key), "-out", str(ca)],
+        ["req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=127.0.0.1", "-keyout", str(key), "-out", str(csr)],
+        ["x509", "-req", "-in", str(csr), "-CA", str(ca), "-CAkey", str(ca_key), "-set_serial", "2", "-days", "2"]
+        + ["-extfile", str(leaf_ext), "-out", str(cert)],
+    ):
+        p = subprocess.run(["openssl", *argv], capture_output=True, text=True)
+        if p.returncode != 0:
+            raise Failure(f"openssl {argv[0]} failed", p.stderr)
+    return TlsFiles(ca, cert, key)
 
 
 def gerrit_stop(s: Scenario) -> None:

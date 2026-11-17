@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Fake Gerrit REST server (anonymous, http://127.0.0.1). usage: fakeforge/gerrit.py <dir> <portfile>
+"""Fake Gerrit REST server (anonymous, 127.0.0.1). usage: fakeforge/gerrit.py <dir> <portfile> [<cert.pem> <key.pem>]
+Plain HTTP, or HTTPS when a certificate chain and key are given.
 Serves $dir/change.json for /changes/N/ and $dir/comments.json for /changes/N/comments, '[]'-style magic prefix
 included; logs every request path to $dir/gerrit.log; anything else is 404."""
 
@@ -8,6 +9,7 @@ from __future__ import annotations
 import http.server
 import os
 import socketserver
+import ssl
 import sys
 from typing import Any
 
@@ -47,5 +49,10 @@ class S(http.server.ThreadingHTTPServer):
 
 
 s = S(("127.0.0.1", 0), H)
+if len(sys.argv) == 5:
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(sys.argv[3], sys.argv[4])
+    # A client that rejects the certificate fails the handshake inside accept(); socketserver drops that OSError.
+    s.socket = ctx.wrap_socket(s.socket, server_side=True)
 open(portfile, "w").write(str(s.server_address[1]))
 s.serve_forever()

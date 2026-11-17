@@ -40,7 +40,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Utilities
 directories = "6.0"
-ureq = { version = "3", features = ["json"] }
+ureq = { version = "3", features = ["json", "platform-verifier"] }
 unicode-width = "0.2"
 # Measure text one grapheme cluster at a time, the way ratatui draws it.
 unicode-segmentation = "1"
