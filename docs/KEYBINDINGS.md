@@ -375,10 +375,12 @@ are kept. If that save fails, the switch is aborted and the current review stays
 with its unsaved changes. The commit pane of the replaced review is closed, and focus
 returns to the diff if it was in that pane.
 
-Press `dd` to delete the saved review under the cursor. tuicr asks to confirm first, and
-refuses to delete a review that is open in another tuicr, since that process would write
-it straight back. Combine `a` with `dd` to clear out empty sessions left behind by a
-crash, or by `tuicr review delete`/`clear` emptying a review another tuicr had open.
+Press `dd` to delete the saved review under the cursor. tuicr asks to confirm first. The
+review this tuicr has open can be deleted too: its comments and reviewed marks are dropped
+with the file, and a later save starts a fresh review. A review open in *another* tuicr is
+refused, since that process would write it straight back. Combine `a` with `dd` to clear
+out empty sessions left behind by a crash, or by `tuicr review delete`/`clear` emptying a
+review another tuicr had open.
 
 ## Inline commit selector
 
