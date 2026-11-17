@@ -57,6 +57,7 @@ e2e/
     repos.py            fixture repositories (git_repo, git_merge_base, pr_repo, wide_repo, long_file_repo, hg_repo, jj_repo, use_hg/use_jj)
     flows.py            open_review/diff, FakeClipboard (recording pbcopy/xclip/wl-copy), minimal_path
     forge.py            pr_open/forge_open, pr_comment, gerrit_open (REST server), pr_editor_snapshot
+    ttyrelay.py         a pty between the pane and tuicr that logs how each synchronized frame arrives (argv, frames)
   fakeforge/          ONE fake-forge core (core.py) + thin adapters gh.py glab.py tea.py bkt.py, gerrit.py (REST server)
   bin/                gh glab tea bkt: wrappers that put fakeforge first on the child's PATH
   data/               fixture data per forge (github/, gitlab/, gitea/, bitbucket/, gerrit/), variant overlays
@@ -117,7 +118,9 @@ Fixtures: `s.diff()` / `s.open(*args)` (git fixture, tuicr started), `s.pr_open(
 `s.minimal_path(dir, "git")` (a PATH holding only those tools; pass as `path=` to `s.cli`), `s.use_hg()` / `s.use_jj()`
 (SKIP without the real tool, FAIL with `E2E_REQUIRE_HG=1`/`E2E_REQUIRE_JJ=1`), and in `e2e.repos`: `git_repo`,
 `empty_repo` (empty git repo on main), `git_merge_base` (`.repo .base .main .topic`), `pr_repo`, `wide_repo`, `long_file_repo`, `hg_repo`, `jj_repo`, `git(repo, *args)`,
-`run(cwd, *argv)`, `write(path, text_or_bytes)`.
+`run(cwd, *argv)`, `write(path, text_or_bytes)`. `e2e.ttyrelay.argv(log, *cmd)` wraps a command for `s.start_cmd` in a
+pty of its own and logs each synchronized frame it draws; `e2e.ttyrelay.frames(log)` reads back `{"bytes", "reads"}` per
+frame.
 
 `Tui`: input `keys(*tmux_keys)`, `type(text)` (literal, `send-keys -l`), `click(col, row)`, `paste(text)`,
 `resize(cols, rows)`, `kill()`; screen `screen(colors=, join=)`, `cursor_row()`, `colors_hash(*rows)` (rows are `1` or
