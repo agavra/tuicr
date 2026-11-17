@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Covers readable libgit2 defaults (PR pending): reordered functions and inserted blocks stay whole.
+# Covers #950: readable libgit2 defaults keep reordered functions and inserted blocks whole.
 from pathlib import Path
 
 from e2e import Scenario, repos, scenario
