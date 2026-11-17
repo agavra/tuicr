@@ -4862,3 +4862,91 @@ fn should_quit_on_zz_when_save_succeeds() {
 
     assert!(app.should_quit);
 }
+
+#[test]
+fn pr_list_query_carries_pr_search_on_first_and_later_pages() {
+    use crate::forge::selector::PR_PAGE_SIZE;
+    use crate::forge::traits::PullRequestListScope;
+
+    // given
+    let mut app = build_app();
+    app.forge_config.pr_search = Some("review-requested:@me draft:false".to_string());
+    let repo = ForgeRepository::github("github.com", "agavra", "tuicr");
+
+    // when
+    let first = app.pr_list_query(repo.clone(), PullRequestListScope::ReviewRequested, 0);
+    let second = app.pr_list_query(
+        repo.clone(),
+        PullRequestListScope::ReviewRequested,
+        PR_PAGE_SIZE,
+    );
+
+    // then
+    assert_eq!(first.already_loaded, 0);
+    assert_eq!(second.already_loaded, PR_PAGE_SIZE);
+    for query in [&first, &second] {
+        assert_eq!(query.repository, repo);
+        assert_eq!(query.page_size, PR_PAGE_SIZE);
+        assert_eq!(query.scope, PullRequestListScope::ReviewRequested);
+        assert_eq!(
+            query.search.as_deref(),
+            Some("review-requested:@me draft:false")
+        );
+    }
+}
+
+#[test]
+fn pr_list_query_leaves_search_unset_without_pr_search() {
+    use crate::forge::traits::PullRequestListScope;
+
+    // given
+    let app = build_app();
+    let repo = ForgeRepository::github("github.com", "agavra", "tuicr");
+
+    // when
+    let query = app.pr_list_query(repo, PullRequestListScope::ReviewRequested, 0);
+
+    // then
+    assert_eq!(query.search, None);
+}
+
+#[test]
+fn pr_scope_label_names_the_review_scope_search_when_pr_search_applies() {
+    use crate::forge::traits::{ForgeKind, PullRequestListScope};
+
+    // given
+    let github = ForgeRepository::github("github.com", "agavra", "tuicr");
+    let gitlab = ForgeRepository {
+        kind: ForgeKind::GitLab,
+        ..github.clone()
+    };
+    let mut app = build_app();
+    app.forge_config.pr_search = Some("review-requested:@me draft:false".to_string());
+
+    // when / then: GitHub runs the configured search
+    app.pr_tab = PullRequestsTab::new(Some(github.clone()));
+    assert_eq!(
+        app.pr_scope_label(PullRequestListScope::ReviewRequested),
+        "search"
+    );
+    assert_eq!(
+        app.pr_scope_label(PullRequestListScope::PersonallyRequested),
+        "requested (me)"
+    );
+    assert_eq!(app.pr_scope_label(PullRequestListScope::Open), "all");
+
+    // other forges ignore pr_search, so the label stays
+    app.pr_tab = PullRequestsTab::new(Some(gitlab));
+    assert_eq!(
+        app.pr_scope_label(PullRequestListScope::ReviewRequested),
+        "requested"
+    );
+
+    // no pr_search keeps the default label on GitHub
+    app.forge_config.pr_search = None;
+    app.pr_tab = PullRequestsTab::new(Some(github));
+    assert_eq!(
+        app.pr_scope_label(PullRequestListScope::ReviewRequested),
+        "requested"
+    );
+}

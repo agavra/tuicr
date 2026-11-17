@@ -258,6 +258,7 @@ In command mode,
 | `:e` (`:reload`) | Reload diff files |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
+| `:file <path>` | Write the same review to `<path>`, replacing any file there (`~/` means home) |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
 | `:summary` | Show all pending local-draft comments; `j`/`k` select, `dd` deletes, and `Enter` jumps |
 | `:diff` | Toggle diff view (unified / side-by-side) |
@@ -353,7 +354,7 @@ retry); GitHub rejects an empty request-changes review, so it needs a comment th
 | `Space` | Toggle local commit selection |
 | `Enter` | Confirm local commit range, open PR, load more PRs, or resume a saved review |
 | `/` | Filter currently loaded PR rows locally |
-| `r` | In Pull Requests tab, cycle all open PRs / PRs requesting your review / (GitHub) PRs requesting you by name |
+| `r` | In Pull Requests tab, cycle all open PRs / PRs requesting your review (the `pr_search` query on GitHub when set) / (GitHub) PRs requesting you by name |
 | `a` | In Sessions tab, show or hide saved reviews holding no progress |
 | `dd` | In Sessions tab, delete the saved review under the cursor (asks to confirm) |
 | `Esc` | Return to the diff |

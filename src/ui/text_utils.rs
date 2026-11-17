@@ -27,14 +27,19 @@ pub(super) fn truncate_str(s: &str, max_width: usize) -> String {
     format!("{kept}...")
 }
 
-/// Truncate or pad a string to a specific width
+/// Truncate or pad a string to exactly `width` display cells, so wide glyphs
+/// (CJK, emoji) do not push the next column out of line. Columns too narrow
+/// for `...` keep only what fits.
 pub(super) fn truncate_or_pad(s: &str, width: usize) -> String {
-    let char_count = s.chars().count();
-    if char_count > width {
-        s.chars().take(width.saturating_sub(3)).collect::<String>() + "..."
-    } else {
-        format!("{s:width$}")
+    let s_width = s.width();
+    if s_width <= width {
+        return format!("{s}{}", " ".repeat(width - s_width));
     }
+    let ellipsis = if width < 3 { "" } else { "..." };
+    let kept = prefix_within_width(s, width - ellipsis.len());
+    // A wide glyph that did not fit leaves the cell short; pad it back.
+    let pad = width.saturating_sub(kept.width() + ellipsis.len());
+    format!("{kept}{ellipsis}{}", " ".repeat(pad))
 }
 
 /// Truncate or pad highlighted spans to a specific display width
@@ -702,6 +707,29 @@ mod tests {
         // then
         assert!(result.ends_with("..."));
         assert!(result.is_char_boundary(result.len()));
+    }
+
+    #[test]
+    fn should_truncate_or_pad_wide_chars_to_exact_display_width() {
+        // given - titles of two-cell CJK glyphs, one short and one too long
+        let short = "界".repeat(3);
+        let long = "界".repeat(10);
+        // when
+        let padded = truncate_or_pad(&short, 10);
+        let truncated = truncate_or_pad(&long, 10);
+        // then - both take exactly ten cells, the long one with an ellipsis
+        assert_eq!(padded, format!("{short}    "));
+        assert_eq!(truncated, "界界界... ");
+        assert_eq!(truncated.width(), 10);
+    }
+
+    #[test]
+    fn should_not_overrun_columns_too_narrow_for_an_ellipsis() {
+        // given - budgets of zero to two cells
+        // when / then - each result is exactly the budget, with no "..."
+        assert_eq!(truncate_or_pad("abc", 0), "");
+        assert_eq!(truncate_or_pad("abc", 2), "ab");
+        assert_eq!(truncate_or_pad("界界", 1), " ");
     }
 
     fn row_texts(rows: &[Vec<Span<'_>>]) -> Vec<String> {

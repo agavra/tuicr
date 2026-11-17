@@ -409,7 +409,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  r         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Cycle PR scope: all / requested / requested (me) on GitHub"),
+            Span::raw("Cycle PR scope: all / requested (search with pr_search) / requested (me)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -750,6 +750,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Copy review to clipboard"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :file <p> ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Write review to file <p>"),
         ]),
         Line::from(vec![
             Span::styled(

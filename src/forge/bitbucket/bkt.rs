@@ -977,6 +977,7 @@ mod tests {
             already_loaded: 60,
             page_size: 30,
             scope: PullRequestListScope::Open,
+            search: None,
         };
         // when
         backend.list_pull_requests(query).unwrap();
@@ -1255,6 +1256,7 @@ mod tests {
             already_loaded: 0,
             page_size: 500,
             scope: PullRequestListScope::Open,
+            search: None,
         };
         // when
         backend.list_pull_requests(query).unwrap();
