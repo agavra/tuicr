@@ -128,6 +128,13 @@ session_header = true
 | `comment_types`            | (none)       | Comment categories. Untyped by default. See [Comment types](#comment-types).                                                                               |
 | `export_legend`            | `true`       | Include the `Comment types:` legend in the exported review. Superseded by `legend` under [Export](#export).                                                |
 
+## Git diff generation
+
+The default `libgit2` backend uses patience diff and the indent heuristic to
+keep changes aligned with code blocks. Set `backend = "cli"` to use Git's diff
+output and its configured diff algorithm. These choices affect local Git
+reviews; pull-request diffs come from the forge.
+
 ## Whitespace comparison
 
 `ignore_whitespace = "auto"` ignores whitespace in files with extensions

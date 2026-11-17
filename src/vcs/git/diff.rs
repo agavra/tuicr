@@ -302,6 +302,7 @@ fn get_working_tree_with_commits_diff_once(
 
 fn diff_options(comparison: WhitespaceComparison) -> DiffOptions {
     let mut opts = DiffOptions::new();
+    opts.patience(true).indent_heuristic(true);
     opts.ignore_whitespace(comparison.ignores_all());
     opts
 }
@@ -496,6 +497,109 @@ mod tests {
 
         repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .expect("failed to create commit");
+    }
+
+    fn alignment_diff(old: &str, new: &str) -> DiffFile {
+        assert_ne!(old, new, "fixture must contain a change");
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(temp_dir.path()).unwrap();
+        create_initial_commit(&repo, "fixture.rs", old);
+        fs::write(temp_dir.path().join("fixture.rs"), new).unwrap();
+        let mut files = get_working_tree_diff(
+            &repo,
+            &DiffWhitespaceMode::Normal,
+            &SyntaxHighlighter::default(),
+        )
+        .unwrap();
+        assert_eq!(files.len(), 1);
+        let file = files.remove(0);
+        // Hunk alignment must preserve source coordinates used by comment anchors.
+        let old_lines: Vec<_> = old.lines().collect();
+        let new_lines: Vec<_> = new.lines().collect();
+        for line in file.hunks.iter().flat_map(|hunk| &hunk.lines) {
+            if let Some(number) = line.old_lineno {
+                assert_eq!(line.content, old_lines[number as usize - 1]);
+            }
+            if let Some(number) = line.new_lineno {
+                assert_eq!(line.content, new_lines[number as usize - 1]);
+            }
+        }
+        file
+    }
+
+    fn changed_lines(file: &DiffFile, origin: LineOrigin) -> Vec<&str> {
+        file.hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .filter(|line| line.origin == origin)
+            .map(|line| line.content.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn reordered_functions_keep_their_bodies_together() {
+        let old = include_str!("../../../tests/fixtures/diff_alignment/reordered_functions.old.rs");
+        let new = include_str!("../../../tests/fixtures/diff_alignment/reordered_functions.new.rs");
+        let file = alignment_diff(old, new);
+        let moved: Vec<_> = old.lines().take(6).collect();
+        assert_eq!(changed_lines(&file, LineOrigin::Deletion), moved);
+        assert_eq!(
+            changed_lines(&file, LineOrigin::Addition),
+            [
+                "",
+                "fn first() {",
+                "    shared();",
+                "    shared();",
+                "    shared();",
+                "}"
+            ]
+        );
+        assert!(
+            file.hunks.iter().flat_map(|hunk| &hunk.lines).any(|line| {
+                line.origin == LineOrigin::Context && line.content == "fn second() {"
+            })
+        );
+    }
+
+    #[test]
+    fn inserted_and_removed_blocks_keep_their_braces_together() {
+        let old = include_str!("../../../tests/fixtures/diff_alignment/inserted_block.old.rs");
+        let new = include_str!("../../../tests/fixtures/diff_alignment/inserted_block.new.rs");
+        let block = [
+            "    if ready {",
+            "        extra();",
+            "        work();",
+            "    }",
+        ];
+        for (before, after, origin, absent) in [
+            (old, new, LineOrigin::Addition, LineOrigin::Deletion),
+            (new, old, LineOrigin::Deletion, LineOrigin::Addition),
+        ] {
+            let file = alignment_diff(before, after);
+            assert_eq!(changed_lines(&file, origin), block);
+            assert!(changed_lines(&file, absent).is_empty());
+        }
+    }
+
+    #[test]
+    fn alignment_keeps_reindentation_and_edits_visible() {
+        let old = "fn run() {\n    work();\n}\n";
+        let wrapped = "fn run() {\n    if ready {\n        work();\n    }\n}\n";
+        for (before, after) in [(old, wrapped), (wrapped, old)] {
+            let file = alignment_diff(before, after);
+            assert!(!changed_lines(&file, LineOrigin::Addition).is_empty());
+            assert!(!changed_lines(&file, LineOrigin::Deletion).is_empty());
+        }
+        let old = include_str!("../../../tests/fixtures/diff_alignment/reordered_functions.old.rs");
+        let moved_and_edited =
+            include_str!("../../../tests/fixtures/diff_alignment/reordered_functions.new.rs")
+                .replace(
+                    "fn first() {\n    shared();",
+                    "fn first() {\n    changed();",
+                );
+        let file = alignment_diff(old, &moved_and_edited);
+        assert!(changed_lines(&file, LineOrigin::Addition).contains(&"    changed();"));
+        assert!(!changed_lines(&file, LineOrigin::Deletion).is_empty());
     }
 
     #[test]
