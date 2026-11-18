@@ -250,6 +250,27 @@ mod tests {
     }
 
     #[test]
+    fn insert_mode_ctrl_w_mid_word_deletes_up_to_cursor() {
+        let mut editor = CommentVimEditor::from_buffer("hello world", 9);
+        let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(editor.feed_key(ctrl_w), ("hello ld".to_string(), 6));
+    }
+
+    #[test]
+    fn insert_mode_ctrl_w_skips_trailing_whitespace() {
+        let mut editor = CommentVimEditor::from_buffer("hello world   ", 14);
+        let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(editor.feed_key(ctrl_w), ("hello ".to_string(), 6));
+    }
+
+    #[test]
+    fn insert_mode_ctrl_w_at_word_start_deletes_previous_word_and_space() {
+        let mut editor = CommentVimEditor::from_buffer("hello world", 6);
+        let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(editor.feed_key(ctrl_w), ("world".to_string(), 0));
+    }
+
+    #[test]
     fn esc_switches_to_normal_mode() {
         let mut editor = CommentVimEditor::from_buffer("hello", 5);
         editor.feed_key(special(KeyCode::Esc));
