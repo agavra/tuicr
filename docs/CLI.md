@@ -14,8 +14,8 @@ Related references: [CONFIG.md](CONFIG.md) for the config file and themes,
 |---|---|
 | `tuicr` | Open the TUI on the review target selector |
 | `tuicr tui` | Same TUI, explicit subcommand |
-| `tuicr pr <target>` (`tuicr mr`) | Review a pull request / merge request |
-| `tuicr tui pr <target>` (`tuicr tui mr`) | Same, under the explicit TUI subcommand |
+| `tuicr pr [target]` (`tuicr mr`) | Review a pull request / merge request |
+| `tuicr tui pr [target]` (`tuicr tui mr`) | Same, under the explicit TUI subcommand |
 | `tuicr review list` | List persisted review sessions |
 | `tuicr review add` | Add a local draft comment to a session |
 | `tuicr review comments` (`tuicr review get`) | Print a session's comments |
@@ -24,6 +24,16 @@ Related references: [CONFIG.md](CONFIG.md) for the config file and themes,
 `mr` is an alias of `pr`, and `get` an alias of `comments`; they behave
 identically. `<target>` accepts a bare `<number>`, `<owner/repo#N>`, or a PR
 URL.
+
+Without a target, `tuicr pr` reviews the open PR for the branch checked out in
+the current directory, like `gh pr view`. It finds the PR on the same repository
+a bare number would use (`--repo-url` / `--remote` first, then the checkout's
+`origin`, or its upstream for a fork). GitHub, GitLab, Gitea, Bitbucket and Azure
+DevOps match the PR whose head branch is the checked-out branch, scanning at most
+1,000 open PRs. Gerrit matches the `Change-Id` trailer of the `HEAD` commit. The
+command fails, naming `tuicr pr <number>` as the way out, when no PR matches, when
+several do (the same branch name opened from different forks), on a detached
+`HEAD`, or outside a checkout.
 
 `tuicr update` takes an optional SemVer version to install a specific release,
 including an older known-good one. It only accepts a version number — there is

@@ -64,6 +64,7 @@ fn should_select_the_only_commit_when_started_with_one_revision() {
             diff_whitespace_mode: DiffWhitespaceMode::default(),
             commit_selection: CommitSelectionStart::All,
             pr_target: None,
+            pr_current_branch: false,
             repo_url_override: None,
         },
     )

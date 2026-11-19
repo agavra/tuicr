@@ -443,8 +443,15 @@ impl App {
         let session_ref = summary.session_ref.clone();
         let slug = summary.slug.clone();
         // The store re-checks whether another tuicr has the session open at
-        // delete time; the row's `active` flag dates from the listing.
-        let outcome = match crate::review_store::ReviewStore::new().delete_review(&session_ref) {
+        // delete time; the row's `active` flag dates from the listing. This
+        // process may hold the session itself, so ask for a delete that
+        // ignores its own registration, then drop the in-memory review.
+        let deleting_current = self.session_path.as_deref().is_some_and(|tracked| {
+            crate::persistence::storage::normalize_path_for_comparison(tracked)
+                == crate::persistence::storage::normalize_path_for_comparison(session_ref.path())
+        });
+        let outcome = match crate::review_store::ReviewStore::new().delete_open_review(&session_ref)
+        {
             Ok(outcome) => outcome,
             Err(e) => {
                 self.set_error(format!("Failed to delete review: {e}"));
@@ -458,10 +465,19 @@ impl App {
                 self.set_message("That review is open in another tuicr — close it first");
                 return;
             }
-            DeleteOutcome::Deleted => self.set_message(format!("Deleted review {slug}")),
+            DeleteOutcome::Deleted => {
+                if deleting_current {
+                    self.forget_deleted_session(session_ref.path());
+                }
+                self.set_message(format!("Deleted review {slug}"));
+            }
             // Already gone on disk: the store pruned its manifest entry, so
             // just drop the stale row rather than report an error.
-            DeleteOutcome::Missing => {}
+            DeleteOutcome::Missing => {
+                if deleting_current {
+                    self.forget_deleted_session(session_ref.path());
+                }
+            }
         }
         self.sessions_tab.remove_row(index);
         self.sessions_tab

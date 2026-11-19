@@ -134,6 +134,18 @@ impl ReviewStore {
         storage::delete_inactive_session_in_dir(session_ref.path(), &reviews_dir)
     }
 
+    /// Delete a persisted session this process itself has open.
+    ///
+    /// The registration this process wrote does not block the delete, while a
+    /// registration from any other live tuicr still reports
+    /// [`DeleteOutcome::Active`]. The owning TUI must also drop its in-memory
+    /// copy (as the Sessions tab does), or its next save writes the review
+    /// back.
+    pub fn delete_open_review(&self, session_ref: &SessionRef) -> Result<DeleteOutcome> {
+        let reviews_dir = self.reviews_dir()?;
+        storage::delete_inactive_session_except_own_pid_in_dir(session_ref.path(), &reviews_dir)
+    }
+
     /// Save a session through this store's storage root.
     pub fn save_review(&self, session: &ReviewSession) -> Result<SessionRef> {
         let reviews_dir = self.reviews_dir()?;

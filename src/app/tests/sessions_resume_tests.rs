@@ -591,7 +591,15 @@ fn should_refuse_to_delete_a_session_open_in_another_tuicr() {
     let summary = stage_session(&mut app, session.clone());
     assert!(!summary.active);
     let path = summary.session_ref.path().to_path_buf();
-    crate::persistence::storage::mark_session_active(&session, &path).expect("mark active");
+    // pid 1 stands in for the other live tuicr: this process's own
+    // registration is deliberately deletable from its Sessions tab.
+    crate::persistence::storage::mark_session_active_for_pid_in_dir(
+        &session,
+        &path,
+        &crate::persistence::storage::get_reviews_dir().expect("reviews dir"),
+        1,
+    )
+    .expect("mark active");
 
     // when
     app.sessions_tab_delete_selected();

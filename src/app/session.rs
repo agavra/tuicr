@@ -148,6 +148,23 @@ impl App {
         crate::persistence::storage::clear_active_session_for_pid()
     }
 
+    /// Drop the review this TUI has open after its session file was deleted
+    /// from the Sessions tab. The delete ignores this process's own "open"
+    /// registration, so the in-memory copy has to go too: autosave and the
+    /// post-edit diff reconciliation would otherwise write the deleted
+    /// comments straight back. The path stays tracked as ephemeral so an
+    /// empty file a later full reload re-creates is cleaned up on quit.
+    pub(in crate::app) fn forget_deleted_session(&mut self, path: &Path) {
+        self.session.clear_comments(ClearScope::CommentsAndReviewed);
+        self.session.session_notes = None;
+        self.session_path = None;
+        self.session_file_state = None;
+        self.persisted_session_snapshot = self.session.clone();
+        self.ephemeral_session_paths.insert(path.to_path_buf());
+        self.dirty = false;
+        self.rebuild_annotations();
+    }
+
     /// Discard this session's persisted state and quit.
     ///
     /// Used when the only unsaved change is reviewed-file markers (no

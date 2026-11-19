@@ -49,6 +49,19 @@ fn event_drain_timeout(drained: usize) -> Option<Duration> {
     }
 }
 
+/// Room for a full repaint of a large terminal, so a frame leaves in one write.
+const TTY_WRITE_BUFFER: usize = 1 << 16;
+
+/// The `/dev/tty` writer under `--stdout`, buffered like `io::stdout()` is.
+/// ratatui queues every cell's escape sequences separately, so a bare `File`
+/// turns one frame into thousands of write(2) calls. Frames then take long
+/// enough that zellij, which does not present a pane mid synchronized update,
+/// shows nothing while a wheel scroll keeps tuicr redrawing. `terminal.draw`
+/// and the `execute!` that ends each frame flush it.
+fn buffered_tty<W: Write>(tty: W) -> io::BufWriter<W> {
+    io::BufWriter::with_capacity(TTY_WRITE_BUFFER, tty)
+}
+
 fn should_probe_keyboard_enhancement(output_to_stdout: bool, stdin_is_terminal: bool) -> bool {
     !output_to_stdout && stdin_is_terminal
 }
@@ -252,6 +265,7 @@ fn main() -> anyhow::Result<()> {
                 diff_whitespace_mode,
                 commit_selection,
                 pr_target: cli_args.pr_target.as_deref(),
+                pr_current_branch: cli_args.pr_current_branch,
                 repo_url_override,
             },
         )
@@ -326,7 +340,7 @@ fn main() -> anyhow::Result<()> {
 
     // When --stdout is used, render TUI to /dev/tty so stdout is free for export output
     let tty_output: Box<dyn Write> = if cli_args.output_to_stdout {
-        Box::new(File::options().write(true).open("/dev/tty")?)
+        Box::new(buffered_tty(File::options().write(true).open("/dev/tty")?))
     } else {
         Box::new(io::stdout())
     };
@@ -1074,6 +1088,60 @@ mod tests {
             event_drain_timeout(EVENT_DRAIN_LIMIT),
             None,
             "a capped burst must repaint instead of draining forever"
+        );
+    }
+
+    /// A tty stand-in that keeps each write it receives, one entry per write(2).
+    #[derive(Clone, Default)]
+    struct RecordingTty(std::rc::Rc<std::cell::RefCell<Vec<Vec<u8>>>>);
+
+    impl Write for RecordingTty {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().push(buf.to_vec());
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn stdout_mode_frame_reaches_the_tty_whole() {
+        use ratatui::layout::Rect;
+        use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
+
+        let tty = RecordingTty::default();
+        let mut terminal = Terminal::with_options(
+            CrosstermBackend::new(buffered_tty(tty.clone())),
+            TerminalOptions {
+                viewport: Viewport::Fixed(Rect::new(0, 0, 160, 45)),
+            },
+        )
+        .unwrap();
+        let rows = vec![ratatui::text::Line::from("x".repeat(160)); 45];
+
+        // The main loop's frame: every cell changes, as when a scroll moves the diff.
+        queue!(terminal.backend_mut(), BeginSynchronizedUpdate).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(ratatui::widgets::Paragraph::new(rows), frame.area());
+            })
+            .unwrap();
+        execute!(terminal.backend_mut(), EndSynchronizedUpdate).unwrap();
+
+        let writes = tty.0.borrow();
+        let frame = &writes[0];
+        assert!(
+            frame.starts_with(b"\x1b[?2026h")
+                && frame.iter().filter(|b| **b == b'x').count() == 160 * 45,
+            "the first write must carry the whole repaint ({} writes in total)",
+            writes.len()
+        );
+        assert_eq!(
+            writes.last().map(Vec::as_slice),
+            Some(b"\x1b[?2026l".as_slice()),
+            "the frame must end with the synchronized-update close"
         );
     }
 
