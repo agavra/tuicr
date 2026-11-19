@@ -18,9 +18,7 @@ pub(super) fn render_comment_navigator(
     items: &[CommentNavigatorItem],
 ) {
     let focused = app.focused_panel == FocusedPanel::Comments;
-    let title = format!(" Comments · {} ", items.len());
     let block = Block::default()
-        .title(title)
         .borders(Borders::ALL)
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
@@ -30,6 +28,11 @@ pub(super) fn render_comment_navigator(
     app.comment_navigator_state.viewport_width = inner.width as usize;
     app.comment_navigator_state.viewport_height = inner.height as usize;
     app.sync_comment_navigator_selection(items);
+    // The title is built after the sync so it names the row drawn as selected.
+    let block = block.title(navigator_title(
+        app.comment_navigator_state.list_state.selected(),
+        items.len(),
+    ));
 
     let row_lines: Vec<Line> = items
         .iter()
@@ -55,6 +58,16 @@ pub(super) fn render_comment_navigator(
         .block(block);
 
     frame.render_stateful_widget(list, area, &mut app.comment_navigator_state.list_state);
+}
+
+/// `Comments · 17/38`: the selected row's 1-based position, then the total.
+/// The pane has no scrollbar, so this is the only cue for how far through
+/// the list the selection is.
+fn navigator_title(selected: Option<usize>, total: usize) -> String {
+    match selected {
+        Some(idx) if idx < total => format!(" Comments · {}/{} ", idx + 1, total),
+        _ => format!(" Comments · {total} "),
+    }
 }
 
 fn render_comment_row(app: &App, item: &CommentNavigatorItem) -> Line<'static> {
@@ -114,4 +127,22 @@ fn comment_location(item: &CommentNavigatorItem) -> String {
         location.push_str(&line.to_string());
     }
     location
+}
+
+#[cfg(test)]
+mod tests {
+    use super::navigator_title;
+
+    #[test]
+    fn should_show_the_selected_position_before_the_total() {
+        assert_eq!(navigator_title(Some(0), 38), " Comments · 1/38 ");
+        assert_eq!(navigator_title(Some(16), 38), " Comments · 17/38 ");
+        assert_eq!(navigator_title(Some(37), 38), " Comments · 38/38 ");
+    }
+
+    #[test]
+    fn should_show_only_the_total_without_a_valid_selection() {
+        assert_eq!(navigator_title(None, 38), " Comments · 38 ");
+        assert_eq!(navigator_title(Some(38), 38), " Comments · 38 ");
+    }
 }

@@ -155,6 +155,7 @@ considers files that pass the active filters.
 ## Comment navigator
 
 Shown below the file tree when local comments or visible remote PR threads exist.
+The title shows the selected comment's position and the total (`Comments · 17/38`).
 
 | Key | Action |
 |-----|--------|
