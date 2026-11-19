@@ -11,7 +11,7 @@
 See e2e/README.md ("Writing a scenario") for the API.
 """
 
-from . import flows, forge, repos
+from . import flows, forge, repos, ttyrelay
 from .core import (
     E2E_DIR,
     OUT,
@@ -52,6 +52,7 @@ __all__ = [
     "repos",
     "scenario",
     "tmux",
+    "ttyrelay",
     "wait_cmd",
     "wait_file",
     "wait_grep",
