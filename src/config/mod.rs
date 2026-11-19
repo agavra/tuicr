@@ -189,7 +189,8 @@ impl ExportConfig {
 ///
 /// Both fields are optional so the shipped defaults stay distinguishable from
 /// an explicit setting, matching `[export]`. An absent section keeps generated
-/// files collapsed by default and excluded from review progress.
+/// files collapsed by default (`collapse = true`) while still counting them
+/// toward review progress (`count = true`).
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct GeneratedConfig {
@@ -197,8 +198,9 @@ pub struct GeneratedConfig {
     /// Defaults to true. `Space` still expands an individual file.
     pub collapse: Option<bool>,
     /// Whether generated files count toward the reviewed/total progress
-    /// indicator. Deliberately independent of `collapse`: expanding a
-    /// generated file to peek at it must not add it to the denominator, or
+    /// indicator. Defaults to true; `false` drops them from both halves.
+    /// Deliberately independent of `collapse`: with `count = false`, expanding
+    /// a generated file to peek at it must not add it to the denominator, or
     /// review progress would regress as a side effect of looking.
     pub count: Option<bool>,
 }
@@ -937,7 +939,8 @@ fn parse_export(value: &Value, warnings: &mut Vec<String>) -> Option<ExportConfi
 
 /// Parse the `[generated]` section. Returns `Some` only when at least one
 /// recognized key is set. An absent or empty section keeps the defaults:
-/// collapse generated files and exclude them from review progress.
+/// collapse generated files (`collapse = true`) and count them toward review
+/// progress (`count = true`).
 fn parse_generated(value: &Value, warnings: &mut Vec<String>) -> Option<GeneratedConfig> {
     let Some(table) = value.as_table() else {
         warnings
