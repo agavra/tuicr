@@ -1969,6 +1969,15 @@ struct VcsOpenOptions {
     include_untracked: bool,
 }
 
+impl VcsOpenOptions {
+    fn diff_options(&self) -> crate::vcs::VcsDiffOptions {
+        crate::vcs::VcsDiffOptions {
+            whitespace_mode: self.diff_whitespace_mode.clone(),
+            include_untracked: self.include_untracked,
+        }
+    }
+}
+
 impl Default for VcsOpenOptions {
     /// What every non-Git start uses: `--file`, `--all-files`, and PR reviews
     /// never reopen a backend, so their options are never read.

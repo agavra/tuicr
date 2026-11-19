@@ -28,7 +28,7 @@ pub use jj::JjBackend;
 pub use pr_noop::PrNoopVcs;
 pub use traits::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
-    VcsBackend, VcsChangeStatus, VcsInfo, WhitespaceAutoPolicy,
+    VcsBackend, VcsChangeStatus, VcsDiffOptions, VcsInfo, WhitespaceAutoPolicy,
 };
 
 use std::collections::HashMap;
@@ -359,25 +359,20 @@ fn apply_full_file_spans(
 /// Jujutsu is tried first because jj repos are Git-backed.
 pub fn detect_vcs(
     git_backend_preference: GitBackendPreference,
-    whitespace_mode: DiffWhitespaceMode,
-    include_untracked: bool,
+    options: VcsDiffOptions,
 ) -> Result<Box<dyn VcsBackend>> {
     // Try jj first since jj repos are Git-backed
-    if let Ok(backend) = JjBackend::discover(whitespace_mode.clone()) {
+    if let Ok(backend) = JjBackend::discover(options.whitespace_mode.clone()) {
         return Ok(Box::new(backend));
     }
 
     // Try git
-    if let Ok(backend) = GitBackend::discover(
-        git_backend_preference,
-        whitespace_mode.clone(),
-        include_untracked,
-    ) {
+    if let Ok(backend) = GitBackend::discover(git_backend_preference, options.clone()) {
         return Ok(Box::new(backend));
     }
 
     // Try hg
-    if let Ok(backend) = HgBackend::discover(whitespace_mode) {
+    if let Ok(backend) = HgBackend::discover(options.whitespace_mode) {
         return Ok(Box::new(backend));
     }
 
@@ -389,21 +384,15 @@ pub fn detect_vcs(
 pub fn detect_vcs_in(
     path: &Path,
     git_backend_preference: GitBackendPreference,
-    whitespace_mode: DiffWhitespaceMode,
-    include_untracked: bool,
+    options: VcsDiffOptions,
 ) -> Result<Box<dyn VcsBackend>> {
-    if let Ok(backend) = JjBackend::discover_from(path, whitespace_mode.clone()) {
+    if let Ok(backend) = JjBackend::discover_from(path, options.whitespace_mode.clone()) {
         return Ok(Box::new(backend));
     }
-    if let Ok(backend) = GitBackend::discover_from(
-        path,
-        git_backend_preference,
-        whitespace_mode.clone(),
-        include_untracked,
-    ) {
+    if let Ok(backend) = GitBackend::discover_from(path, git_backend_preference, options.clone()) {
         return Ok(Box::new(backend));
     }
-    if let Ok(backend) = HgBackend::discover_from(path, whitespace_mode) {
+    if let Ok(backend) = HgBackend::discover_from(path, options.whitespace_mode) {
         return Ok(Box::new(backend));
     }
     Err(TuicrError::NotARepository)
@@ -431,8 +420,7 @@ mod tests {
     #[test]
     fn exports_are_accessible() {
         // Verify that public types are properly exported
-        let _: fn(GitBackendPreference, DiffWhitespaceMode, bool) -> Result<Box<dyn VcsBackend>> =
-            detect_vcs;
+        let _: fn(GitBackendPreference, VcsDiffOptions) -> Result<Box<dyn VcsBackend>> = detect_vcs;
 
         // VcsInfo can be constructed
         let info = VcsInfo {
@@ -462,11 +450,7 @@ mod tests {
         // Note: This test may pass or fail depending on where tests are run
         // In CI or outside a repo, it should fail with NotARepository
         // Inside the tuicr repo (which is git), it will succeed
-        let result = detect_vcs(
-            GitBackendPreference::Libgit2,
-            DiffWhitespaceMode::Normal,
-            true,
-        );
+        let result = detect_vcs(GitBackendPreference::Libgit2, VcsDiffOptions::default());
 
         // We just verify the function runs without panic
         // The actual result depends on the environment

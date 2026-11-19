@@ -17,7 +17,7 @@ use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_out
 use crate::syntax::SyntaxHighlighter;
 
 use super::traits::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, VcsBackend, VcsChangeStatus,
+    ChangeKind, CommitInfo, ResolvedRevisionRange, VcsBackend, VcsChangeStatus, VcsDiffOptions,
     VcsInfo,
 };
 use cli::GitCliBackend;
@@ -155,21 +155,20 @@ impl GitRepoMode {
 
 impl GitBackend {
     /// Discover a git repository from the current directory.
-    pub fn discover(
-        preference: GitBackendPreference,
-        whitespace_mode: DiffWhitespaceMode,
-        include_untracked: bool,
-    ) -> Result<Self> {
+    pub fn discover(preference: GitBackendPreference, options: VcsDiffOptions) -> Result<Self> {
         let cwd = std::env::current_dir().map_err(|_| TuicrError::NotARepository)?;
-        Self::discover_from(&cwd, preference, whitespace_mode, include_untracked)
+        Self::discover_from(&cwd, preference, options)
     }
 
     pub(crate) fn discover_from(
         cwd: &Path,
         preference: GitBackendPreference,
-        whitespace_mode: DiffWhitespaceMode,
-        include_untracked: bool,
+        options: VcsDiffOptions,
     ) -> Result<Self> {
+        let VcsDiffOptions {
+            whitespace_mode,
+            include_untracked,
+        } = options;
         // libgit2 doesn't support reftable, split index, or SHA-256 repositories.
         // TODO: remove reftable fallback logic when libgit2 supports it as part of https://github.com/libgit2/libgit2/issues/5352
         // TODO: remove split index fallback logic when libgit2 supports it as part of https://github.com/libgit2/libgit2/issues/6132
@@ -427,6 +426,7 @@ impl VcsBackend for GitBackend {
 mod tests {
     use super::*;
     use crate::forge::{resolve_remote_repository, traits::ForgeRepository};
+    use crate::vcs::DiffWhitespaceMode;
     use git2::Repository;
     use std::fs;
     use tempfile::tempdir;
@@ -454,8 +454,7 @@ mod tests {
 
         for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
             let backend =
-                GitBackend::discover_from(&nested, preference, DiffWhitespaceMode::Normal, true)
-                    .unwrap();
+                GitBackend::discover_from(&nested, preference, VcsDiffOptions::default()).unwrap();
             assert_eq!(
                 resolve_remote_repository(&backend, "staging-upstream").unwrap(),
                 ForgeRepository::github("github.com", "org", "repo-staging")
@@ -478,8 +477,7 @@ mod tests {
         let backend = GitBackend::discover_from(
             dir.path(),
             GitBackendPreference::Libgit2,
-            DiffWhitespaceMode::Normal,
-            true,
+            VcsDiffOptions::default(),
         )
         .unwrap();
 
@@ -497,8 +495,7 @@ mod tests {
         let backend = GitBackend::discover_from(
             dir.path(),
             GitBackendPreference::Libgit2,
-            DiffWhitespaceMode::Normal,
-            true,
+            VcsDiffOptions::default(),
         )
         .unwrap();
         for name in ["missing", "invalid", "--all"] {
@@ -554,8 +551,7 @@ mod tests {
         let backend = GitBackend::discover_from(
             root,
             GitBackendPreference::Libgit2,
-            DiffWhitespaceMode::Normal,
-            true,
+            VcsDiffOptions::default(),
         )
         .expect("failed to discover backend");
 
@@ -580,8 +576,7 @@ mod tests {
         let backend = GitBackend::discover_from(
             root,
             GitBackendPreference::Libgit2,
-            DiffWhitespaceMode::Normal,
-            true,
+            VcsDiffOptions::default(),
         )
         .expect("failed to discover backend");
 
@@ -604,8 +599,7 @@ mod tests {
         let backend = GitBackend::discover_from(
             root,
             GitBackendPreference::Libgit2,
-            DiffWhitespaceMode::Normal,
-            true,
+            VcsDiffOptions::default(),
         )
         .expect("reftable repo should open via CLI fallback");
 
@@ -626,8 +620,7 @@ mod tests {
         let backend: GitBackend = GitBackend::discover_from(
             root,
             GitBackendPreference::Libgit2,
-            DiffWhitespaceMode::Normal,
-            true,
+            VcsDiffOptions::default(),
         )
         .expect("split-index repo should open via CLI fallback");
 
@@ -651,8 +644,7 @@ mod tests {
             let backend = GitBackend::discover_from(
                 &path,
                 GitBackendPreference::Libgit2,
-                DiffWhitespaceMode::Normal,
-                true,
+                VcsDiffOptions::default(),
             )
             .expect("SHA-256 repositories should open via the Git CLI");
             assert!(matches!(backend, GitBackend::Cli(_)));
@@ -666,8 +658,7 @@ mod tests {
             let backend = GitBackend::discover_from(
                 dir.path(),
                 GitBackendPreference::Cli,
-                DiffWhitespaceMode::Normal,
-                true,
+                VcsDiffOptions::default(),
             )
             .unwrap();
             let highlighter = SyntaxHighlighter::default();
@@ -718,8 +709,7 @@ mod tests {
         let backend = GitBackend::discover_from(
             root,
             GitBackendPreference::Libgit2,
-            DiffWhitespaceMode::Normal,
-            true,
+            VcsDiffOptions::default(),
         )
         .unwrap();
         let highlighter = SyntaxHighlighter::default();
@@ -781,6 +771,33 @@ mod tests {
     }
 
     #[test]
+    fn default_diff_options_keep_normal_whitespace_and_untracked_files() {
+        assert_eq!(
+            VcsDiffOptions::default(),
+            VcsDiffOptions {
+                whitespace_mode: DiffWhitespaceMode::Normal,
+                include_untracked: true,
+            }
+        );
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        setup_standard_repo(root);
+        fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
+        let highlighter = SyntaxHighlighter::plain();
+        for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+            let backend =
+                GitBackend::discover_from(root, preference, VcsDiffOptions::default()).unwrap();
+            let files = backend.get_unstaged_diff(&highlighter).unwrap();
+            assert!(
+                files
+                    .iter()
+                    .any(|file| file.display_path() == Path::new("untracked.txt")),
+                "{preference:?}"
+            );
+        }
+    }
+
+    #[test]
     fn untracked_option_matches_across_backends_and_worktree_views() {
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -799,8 +816,10 @@ mod tests {
                 let backend = GitBackend::discover_from(
                     root,
                     preference,
-                    DiffWhitespaceMode::Normal,
-                    include_untracked,
+                    VcsDiffOptions {
+                        include_untracked,
+                        ..VcsDiffOptions::default()
+                    },
                 )
                 .unwrap();
                 for files in [

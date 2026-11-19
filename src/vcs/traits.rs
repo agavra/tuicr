@@ -125,6 +125,26 @@ impl DiffWhitespaceMode {
     }
 }
 
+/// Diff options a backend is opened with by `detect_vcs` and
+/// `GitBackend::discover`.
+///
+/// The default compares whitespace normally and includes untracked files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VcsDiffOptions {
+    pub whitespace_mode: DiffWhitespaceMode,
+    /// Whether untracked files appear in Git unstaged and working-tree diffs.
+    pub include_untracked: bool,
+}
+
+impl Default for VcsDiffOptions {
+    fn default() -> Self {
+        Self {
+            whitespace_mode: DiffWhitespaceMode::Normal,
+            include_untracked: true,
+        }
+    }
+}
+
 /// Commit information for commit selection UI
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitInfo {

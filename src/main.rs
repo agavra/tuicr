@@ -206,8 +206,10 @@ fn main() -> anyhow::Result<()> {
         Some(name) => {
             let vcs = tuicr::vcs::GitBackend::discover(
                 git_backend_preference,
-                diff_whitespace_mode.clone(),
-                include_untracked,
+                tuicr::vcs::VcsDiffOptions {
+                    whitespace_mode: diff_whitespace_mode.clone(),
+                    include_untracked,
+                },
             )?;
             Some(tuicr::forge::resolve_remote_repository(&vcs, name)?)
         }

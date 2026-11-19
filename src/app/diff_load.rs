@@ -1152,8 +1152,7 @@ impl App {
     ) -> Result<DiffWatchFetched> {
         let vcs = detect_vcs(
             vcs_open_options.git_backend_preference,
-            vcs_open_options.diff_whitespace_mode,
-            vcs_open_options.include_untracked,
+            vcs_open_options.diff_options(),
         )?;
         let root_path = &vcs.info().root_path;
         let fetch_source = Self::narrowed_fetch_source(
@@ -1945,8 +1944,7 @@ mod tests {
             let vcs = crate::vcs::GitBackend::discover_from(
                 root,
                 preference,
-                DiffWhitespaceMode::Normal,
-                true,
+                crate::vcs::VcsDiffOptions::default(),
             )
             .unwrap();
             for revisions in ["main...feature", "main..feature"] {
@@ -1978,8 +1976,7 @@ mod tests {
         let vcs = crate::vcs::GitBackend::discover_from(
             root,
             GitBackendPreference::Libgit2,
-            DiffWhitespaceMode::Normal,
-            true,
+            crate::vcs::VcsDiffOptions::default(),
         )
         .unwrap();
         let range = vcs.resolve_revision_range("main...feature").unwrap();
