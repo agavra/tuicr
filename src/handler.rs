@@ -468,8 +468,7 @@ fn handle_copy_pr_url(app: &mut App) {
         app.clipboard_override.as_deref(),
         app.clipboard_command.as_deref(),
     ) {
-        Ok(true) => app.set_message("PR URL copied to clipboard (via terminal)"),
-        Ok(false) => app.set_message("PR URL copied to clipboard"),
+        Ok(copy) => app.set_copy_status(&copy, copy.message("PR URL")),
         Err(e) => app.set_warning(format!("Failed to copy PR URL: {e}")),
     }
 }
@@ -504,7 +503,7 @@ fn handle_export(app: &mut App) {
             app.clipboard_override.as_deref(),
             app.clipboard_command.as_deref(),
         ) {
-            Ok(msg) => app.set_message(msg),
+            Ok(copy) => app.set_copy_status(&copy, copy.message("Review")),
             Err(e) => app.set_warning(format!("{e}")),
         }
     }
@@ -568,8 +567,7 @@ fn handle_copy_comment_at_cursor(app: &mut App) {
         app.clipboard_override.as_deref(),
         app.clipboard_command.as_deref(),
     ) {
-        Ok(true) => app.set_message("Comment copied to clipboard (via terminal)"),
-        Ok(false) => app.set_message("Comment copied to clipboard"),
+        Ok(copy) => app.set_copy_status(&copy, copy.message("Comment")),
         Err(e) => app.set_warning(format!("{e}")),
     }
 }
@@ -1423,7 +1421,8 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         app.clipboard_override.as_deref(),
                         app.clipboard_command.as_deref(),
                     ) {
-                        Ok(msg) => app.set_message(msg),
+                        // tuicr quits next, so the status bar would never show it.
+                        Ok(copy) => app.pending_exit_warning = copy.fallback_warning,
                         Err(e) => app.set_warning(format!("{e}")),
                     }
                 }
@@ -1639,8 +1638,9 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
         }
         Action::ExportToClipboard => {
             match app.copy_visual_selection() {
-                Ok(0) => app.set_message("Nothing to copy"),
-                Ok(n) => app.set_message(format!("Copied {n} chars")),
+                Ok((0, _)) => app.set_message("Nothing to copy"),
+                Ok((_, Some(warning))) => app.set_warning(warning),
+                Ok((n, None)) => app.set_message(format!("Copied {n} chars")),
                 Err(e) => app.set_warning(format!("{e}")),
             }
             app.exit_visual_mode();

@@ -936,6 +936,9 @@ fn main() -> anyhow::Result<()> {
     if let Err(e) = app.clear_active_session_marker() {
         eprintln!("Warning: failed to clear active review session marker: {e}");
     }
+    if let Some(warning) = &app.pending_exit_warning {
+        eprintln!("Warning: {warning}");
+    }
 
     // Always report how the review ended, even with zero comments, so a
     // human or agent watching the pane can tell "reviewed everything, had

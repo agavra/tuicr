@@ -266,7 +266,8 @@ pub struct AppConfig {
     /// automatic detection; an invalid or empty list also falls back to it.
     pub clipboard: Option<Vec<String>>,
     /// Shell command that receives copied text on stdin, tried before
-    /// `clipboard`. A failing command falls back to the normal order.
+    /// `clipboard`. A command that fails or runs past 5 seconds is killed and
+    /// tuicr falls back to the normal order with a status-bar warning.
     pub clipboard_command: Option<String>,
     /// `[forge]` section settings. Always present; `None` means "no override"
     /// and downstream code should treat it as `ForgeConfig::default()`.

@@ -1,9 +1,11 @@
 use super::*;
 
 impl App {
-    pub fn copy_visual_selection(&mut self) -> Result<usize> {
+    /// Copy the selection; returns the character count and, when
+    /// `clipboard_command` failed, the fallback warning.
+    pub fn copy_visual_selection(&mut self) -> Result<(usize, Option<String>)> {
         let Some(sel) = self.visual_selection else {
-            return Ok(0);
+            return Ok((0, None));
         };
         let (start, end) = sel.ordered();
         let side = sel.anchor.side;
@@ -26,16 +28,16 @@ impl App {
             emitted += 1;
         }
         if out.is_empty() {
-            return Ok(0);
+            return Ok((0, None));
         }
         let count = out.chars().count();
-        crate::output::copy_text_to_clipboard_with(
+        let copy = crate::output::copy_text_to_clipboard_with(
             &out,
             self.clipboard_override.as_deref(),
             self.clipboard_command.as_deref(),
         )
         .map_err(|e| TuicrError::Clipboard(format!("{e}")))?;
-        Ok(count)
+        Ok((count, copy.fallback_warning))
     }
 
     pub fn enter_visual_mode_at_cursor(&mut self) {

@@ -1485,6 +1485,8 @@ pub struct App {
     pub output_to_stdout: bool,
     /// Pending output to print to stdout after TUI exits
     pub pending_stdout_output: Option<String>,
+    /// Warning raised as the TUI quits, printed to stderr after teardown.
+    pub pending_exit_warning: Option<String>,
     /// Calculated screen position for comment input cursor (col, row) for IME positioning.
     /// Set during render when in Comment mode, None otherwise.
     pub comment_cursor_screen_pos: Option<(u16, u16)>,

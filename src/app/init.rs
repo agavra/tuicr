@@ -616,6 +616,7 @@ impl App {
             colored_hunks: HashSet::new(),
             output_to_stdout,
             pending_stdout_output: None,
+            pending_exit_warning: None,
             comment_cursor_screen_pos: None,
             comment_input_annotation_offset: None,
             update_info: None,

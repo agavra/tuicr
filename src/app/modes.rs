@@ -9,6 +9,19 @@ impl App {
         self.set_message_inner(msg, MessageType::Warning, Some(MESSAGE_TTL_WARNING));
     }
 
+    /// Show `success` after a copy, or a warning when `clipboard_command`
+    /// failed and another method copied the text instead.
+    pub(crate) fn set_copy_status(
+        &mut self,
+        copy: &crate::output::markdown::ClipboardCopy,
+        success: impl Into<String>,
+    ) {
+        match &copy.fallback_warning {
+            Some(warning) => self.set_warning(warning.clone()),
+            None => self.set_message(success),
+        }
+    }
+
     pub fn set_error(&mut self, msg: impl Into<String>) {
         self.set_message_inner(msg, MessageType::Error, None);
     }
