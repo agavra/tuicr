@@ -232,13 +232,16 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         let style = base_style;
                         // A commit message is prose, not code: render it without
                         // line numbers, matching the side-by-side view.
-                        let mut line_num_str = crate::ui::diff_view::unified_line_number_field(
-                            diff_line,
+                        let line_num_str = crate::ui::diff_view::line_number_cell(
+                            crate::ui::diff_view::unified_display_lineno(
+                                diff_line,
+                                app.relative_line_numbers,
+                                line_idx,
+                                current_line_idx,
+                                file.is_commit_message,
+                            ),
                             lw,
-                            app.relative_line_numbers,
-                            line_idx,
-                            current_line_idx,
-                            file.is_commit_message,
+                            crate::ui::diff_view::stage_cell(diff_line),
                         );
                         let prefix = crate::ui::diff_view::unified_line_origin_marker(diff_line);
 
@@ -246,8 +249,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
                         let line_num_style = styles::dim_style(&app.theme);
 
-                        line_num_str.pop();
-                        line_num_str.push(crate::ui::diff_view::stage_cell(diff_line));
                         let mut line_spans = vec![
                             Span::styled(
                                 indicator,

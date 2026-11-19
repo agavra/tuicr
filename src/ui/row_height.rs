@@ -325,13 +325,16 @@ fn full_row_text(app: &App, idx: usize, annotation: &AnnotatedLine) -> String {
                 .and_then(|h| h.lines.get(*line_idx));
             match dl {
                 Some(dl) => {
-                    let lineno = diff_view::unified_line_number_field(
-                        dl,
+                    let lineno = diff_view::line_number_cell(
+                        diff_view::unified_display_lineno(
+                            dl,
+                            app.relative_line_numbers,
+                            idx,
+                            app.diff_state.cursor_line,
+                            app.diff_files[*file_idx].is_commit_message,
+                        ),
                         lw,
-                        app.relative_line_numbers,
-                        idx,
-                        app.diff_state.cursor_line,
-                        app.diff_files[*file_idx].is_commit_message,
+                        diff_view::stage_cell(dl),
                     );
                     let prefix = diff_view::unified_line_origin_marker(dl);
                     format!("{indicator}{lineno}{prefix} {}", dl.content)
@@ -894,6 +897,92 @@ mod tests {
             app.expanded_top.remove(&eof);
             let without = expanded_rows_built(&mut app, mode, 400);
             assert_eq!(with_stale, without, "{mode:?}");
+        }
+    }
+
+    /// The unified gutter cell is built once (`line_number_cell`), so the row
+    /// text measured for wrapping carries the same stage marker the renderer
+    /// draws, under absolute and relative numbering.
+    #[test]
+    fn should_measure_unified_rows_with_the_rendered_stage_marker() {
+        use crate::model::StageState;
+        for relative in [false, true] {
+            let mut app = make_app();
+            let code_idx = app
+                .diff_files
+                .iter()
+                .position(|f| f.display_path().as_path() == Path::new("src/lib.rs"))
+                .expect("code file present");
+            for line in app.diff_files[code_idx]
+                .hunks
+                .iter_mut()
+                .flat_map(|hunk| hunk.lines.iter_mut())
+            {
+                line.stage = match line.origin {
+                    LineOrigin::Deletion => Some(StageState::Staged),
+                    LineOrigin::Addition => Some(StageState::Unstaged),
+                    LineOrigin::Context => None,
+                };
+            }
+            // A comment box's connector is drawn over the gutter of its line;
+            // drop the fixture's line-31 threads to compare plain rows.
+            app.forge_review_threads.clear();
+            app.session
+                .get_file_mut(&PathBuf::from("src/lib.rs"))
+                .expect("file registered")
+                .line_comments
+                .clear();
+            app.relative_line_numbers = relative;
+            app.diff_view_mode = DiffViewMode::Unified;
+            app.rebuild_annotations();
+
+            let (w, h) = (240, 60);
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal
+                .draw(|frame| {
+                    crate::ui::diff_unified::render_unified_diff(
+                        frame,
+                        &mut app,
+                        Rect::new(0, 0, w, h),
+                    );
+                })
+                .expect("draw");
+            let buffer = terminal.backend().buffer();
+            let rows: Vec<String> = (0..h)
+                .map(|y| (0..w).map(|x| buffer[(x, y)].symbol()).collect())
+                .collect();
+
+            let mut checked = 0;
+            for (idx, annotation) in app.line_annotations.iter().enumerate() {
+                let AnnotatedLine::DiffLine {
+                    file_idx,
+                    hunk_idx,
+                    line_idx,
+                    ..
+                } = annotation
+                else {
+                    continue;
+                };
+                let dl = &app.diff_files[*file_idx].hunks[*hunk_idx].lines[*line_idx];
+                if *file_idx != code_idx || dl.origin == LineOrigin::Context {
+                    continue;
+                }
+                let marker = match dl.origin {
+                    LineOrigin::Deletion => '●',
+                    _ => '○',
+                };
+                let measured = full_row_text(&app, idx, annotation);
+                assert!(
+                    measured.contains(&format!("{marker}▌ ")),
+                    "relative={relative}: {measured:?}"
+                );
+                assert!(
+                    rows.iter().any(|row| row.contains(measured.trim_end())),
+                    "relative={relative}: measured {measured:?} not rendered in {rows:#?}"
+                );
+                checked += 1;
+            }
+            assert_eq!(checked, 3, "relative={relative}");
         }
     }
 

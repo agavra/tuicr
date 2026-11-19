@@ -15,7 +15,7 @@ use crate::ui::comment_panel;
 use crate::ui::diff_view::{
     FileBody, append_eof_gap, append_file_preamble, append_gap_and_hunk_header,
     apply_horizontal_scroll, comment_box_row, comment_type_presentation, cursor_indicator,
-    diff_stat_title, paint_cursor_line_highlight, paint_visual_selection_overlay,
+    diff_stat_title, line_number_cell, paint_cursor_line_highlight, paint_visual_selection_overlay,
     populate_row_to_annotation, scroll_comment_input_into_view, skip_comment_box, stage_cell,
 };
 use crate::ui::styles;
@@ -225,23 +225,14 @@ fn sbs_row_prefixes(
     lw: usize,
 ) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
     let dim = styles::dim_style(theme);
-    let old_num = left
-        .lineno
-        .map(|n| format!("{n:>lw$}"))
-        .unwrap_or_else(|| " ".repeat(lw));
-    let new_num = right
-        .lineno
-        .map(|n| format!("{n:>lw$}"))
-        .unwrap_or_else(|| " ".repeat(lw));
-
     let left_prefix = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
-        Span::styled(format!("{old_num}{}", left.stage), dim),
+        Span::styled(line_number_cell(left.lineno, lw, left.stage), dim),
         Span::styled(left.marker.to_string(), left.marker_style),
     ];
     let right_prefix = vec![
         Span::styled(" │ ", dim),
-        Span::styled(format!("{new_num}{}", right.stage), dim),
+        Span::styled(line_number_cell(right.lineno, lw, right.stage), dim),
         Span::styled(right.marker.to_string(), right.marker_style),
     ];
     (left_prefix, right_prefix)
@@ -1454,12 +1445,8 @@ fn add_deletion_spans(
     display_lineno: Option<u32>,
     search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) {
-    let line_num = display_lineno
-        .map(|n| format!("{n:>lw$}"))
-        .unwrap_or_else(|| " ".repeat(lw));
-
     spans.push(Span::styled(
-        format!("{line_num}{}", stage_cell(diff_line)),
+        line_number_cell(display_lineno, lw, stage_cell(diff_line)),
         styles::dim_style(theme),
     ));
     spans.push(Span::styled(
@@ -1505,12 +1492,8 @@ fn add_addition_spans(
     display_lineno: Option<u32>,
     search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) {
-    let line_num = display_lineno
-        .map(|n| format!("{n:>lw$}"))
-        .unwrap_or_else(|| " ".repeat(lw));
-
     spans.push(Span::styled(
-        format!("{line_num}{}", stage_cell(diff_line)),
+        line_number_cell(display_lineno, lw, stage_cell(diff_line)),
         styles::dim_style(theme),
     ));
     spans.push(Span::styled(
