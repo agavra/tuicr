@@ -163,35 +163,44 @@ impl App {
             diff_files
         };
         let mut diff_files = Self::require_non_empty_diff_files(diff_files)?;
-        Self::mark_staged_lines(vcs, &mut diff_files);
+        if let Some((staged, unstaged)) = Self::stage_mark_side_diffs(vcs, repo_root, path_filter) {
+            crate::vcs::stage_marks::apply_stage_marks(&mut diff_files, &staged, &unstaged);
+        }
         Ok(diff_files)
     }
 
-    /// Marks lines staged or unstaged (`crate::vcs::stage_marks`). Every caller
-    /// of `get_working_tree_diff_with_ignore` loads a staged-plus-unstaged
-    /// review. Backends without an index (jj, Mercurial), or a failed fetch,
-    /// leave lines unmarked.
-    fn mark_staged_lines(vcs: &dyn VcsBackend, diff_files: &mut [DiffFile]) {
+    /// The staged and unstaged diffs that decide the stage marks
+    /// (`crate::vcs::stage_marks`), filtered by `.tuicrignore` and the path
+    /// filter exactly like the reviewed diff, so excluded files never reach the
+    /// marker pass. Every caller of `get_working_tree_diff_with_ignore` loads a
+    /// staged-plus-unstaged review. Backends without an index (jj, Mercurial),
+    /// or a failed fetch, return `None` and leave lines unmarked.
+    pub(in crate::app) fn stage_mark_side_diffs(
+        vcs: &dyn VcsBackend,
+        repo_root: &Path,
+        path_filter: Option<&str>,
+    ) -> Option<(Vec<DiffFile>, Vec<DiffFile>)> {
         let side = |result: Result<Vec<DiffFile>>| match result {
             Ok(files) => Some(files),
             Err(TuicrError::NoChanges) => Some(Vec::new()),
             Err(_) => None,
         };
-        let Some(staged) = side(crate::profile::time_with(
-            "diff.load_stage_marks_staged",
-            || vcs.get_staged_diff(probe_highlighter()),
-            profile_diff_result,
-        )) else {
-            return;
-        };
-        let Some(unstaged) = side(crate::profile::time_with(
-            "diff.load_stage_marks_unstaged",
-            || vcs.get_unstaged_diff(probe_highlighter()),
-            profile_diff_result,
-        )) else {
-            return;
-        };
-        crate::vcs::stage_marks::apply_stage_marks(diff_files, &staged, &unstaged);
+        // Staged first: a backend without an index fails here, before
+        // `get_unstaged_diff_with_ignore` could fall back to the whole working
+        // tree and mark every line unstaged.
+        let staged = side(Self::get_staged_diff_with_ignore(
+            vcs,
+            repo_root,
+            probe_highlighter(),
+            path_filter,
+        ))?;
+        let unstaged = side(Self::get_unstaged_diff_with_ignore(
+            vcs,
+            repo_root,
+            probe_highlighter(),
+            path_filter,
+        ))?;
+        Some((staged, unstaged))
     }
 
     pub(in crate::app) fn get_staged_diff_with_ignore(
