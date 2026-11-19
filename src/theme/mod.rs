@@ -1396,7 +1396,7 @@ fn tokyo_night_day_syntax_theme() -> syntect::highlighting::Theme {
         .expect("bundled tokyo-night-day.tmTheme must parse")
 }
 
-fn blend(base: Color, accent: Color, accent_percent: u8) -> Color {
+pub(crate) fn blend(base: Color, accent: Color, accent_percent: u8) -> Color {
     debug_assert!(accent_percent <= 100);
     match (base, accent) {
         (Color::Rgb(br, bg, bb), Color::Rgb(ar, ag, ab)) => {
