@@ -34,7 +34,7 @@ use crate::forge::submit::{GhSide, InlineComment, SubmitEvent};
 use crate::forge::traits::{
     CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
     GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
-    PullRequestListQuery, PullRequestListScope, PullRequestTarget,
+    PullRequestListQuery, PullRequestListScope, PullRequestTarget, single_branch_match,
 };
 use crate::forge::{forge_path, percent_encode_component};
 use crate::model::FilePatch;
@@ -586,6 +586,42 @@ impl ForgeBackend for GerritBackend {
         })
     }
 
+    /// Gerrit ties a change to the `Change-Id` trailer of the commit, not to a
+    /// branch name (`head_ref_name` is `refs/changes/..`), so the lookup reads
+    /// the trailer from the checkout's `HEAD`.
+    fn find_pull_request_for_branch(
+        &self,
+        repository: &ForgeRepository,
+        branch: &str,
+    ) -> Result<u64> {
+        let root = self
+            .local_checkout
+            .as_deref()
+            .ok_or_else(missing_checkout)?;
+        let message =
+            run_command_output("git", Some(root), ["log", "-1", "--format=%B"]).map_err(|err| {
+                TuicrError::Forge(format!(
+                    "Cannot read the HEAD commit: {}",
+                    err.stderr.trim()
+                ))
+            })?;
+        let change_id = change_id_from_message(&message).ok_or_else(|| {
+            TuicrError::Forge(
+                "The HEAD commit has no Change-Id trailer, so its Gerrit change cannot be \
+                 found. Pass a target: tuicr pr <number>."
+                    .to_string(),
+            )
+        })?;
+        let project = gerrit_project(repository);
+        let path = format!(
+            "/changes/?q=change:{change_id}+project:{}+status:open&n=10",
+            encode_query_term(&project)
+        );
+        let changes: Vec<GerritChange> = self.get_json(repository, &path)?;
+        let numbers = changes.into_iter().map(|change| change.number).collect();
+        single_branch_match(repository, branch, numbers)
+    }
+
     fn get_pull_request(&self, target: PullRequestTarget) -> Result<PullRequestDetails> {
         let repository = self.resolve_repository(&target)?;
         let change = self.fetch_change(&repository, target.number)?;
@@ -865,6 +901,25 @@ fn revision_present(root: &Path, pr: &PullRequestDetails) -> bool {
 }
 
 /// Name of the remote in `root` that points at `repo`, preferring `origin`.
+/// The `Change-Id` trailer Gerrit's commit-msg hook adds: `I` plus 40 hex
+/// digits. The last trailer wins, and anything else is rejected because the
+/// value goes into a query string.
+fn change_id_from_message(message: &str) -> Option<String> {
+    message
+        .lines()
+        .rev()
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.trim()
+                .eq_ignore_ascii_case("Change-Id")
+                .then(|| value.trim())
+        })
+        .filter(|id| {
+            id.len() == 41 && id.starts_with('I') && id[1..].bytes().all(|b| b.is_ascii_hexdigit())
+        })
+        .map(str::to_string)
+}
+
 fn remote_for_repository(root: &Path, repo: &ForgeRepository) -> Option<String> {
     crate::forge::remotes(root)
         .into_iter()
@@ -2196,5 +2251,116 @@ mod tests {
             forge_path(Path::new("src/a\\b.rs")),
             "src/a\\b.rs".to_string()
         );
+    }
+
+    // ---- tuicr pr with no target ----
+
+    const CHANGE_ID: &str = "I8473b95934b5732ac55d26311a706c9c2bde9940";
+
+    #[test]
+    fn should_read_the_last_change_id_trailer() {
+        let message = format!(
+            "Fix it\n\nbody\n\nChange-Id: Iaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nChange-Id: {CHANGE_ID}\n"
+        );
+        assert_eq!(change_id_from_message(&message).as_deref(), Some(CHANGE_ID));
+    }
+
+    #[test]
+    fn should_reject_missing_or_malformed_change_ids() {
+        for message in [
+            "Fix it\n",
+            "Fix it\n\nChange-Id: nope\n",
+            "Fix it\n\nChange-Id: I8473b95934b5732ac55d26311a706c9c2bde994\n",
+            "Fix it\n\nChange-Id: I8473b95934b5732ac55d26311a706c9c2bde99zz+x\n",
+        ] {
+            assert_eq!(change_id_from_message(message), None, "{message:?}");
+        }
+    }
+
+    fn checkout_with_head_message(message: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec![
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                message,
+            ],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(dir.path())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        }
+        dir
+    }
+
+    #[test]
+    fn should_find_the_change_for_the_head_change_id() {
+        let checkout = checkout_with_head_message(&format!("Fix it\n\nChange-Id: {CHANGE_ID}"));
+        let (backend, fake) = backend_with(true, vec![r#"[{"_number": 3965}]"#]);
+        let backend = backend.with_local_checkout(Some(checkout.path().to_path_buf()));
+
+        let number = backend
+            .find_pull_request_for_branch(&gerrit_repo(), "topic")
+            .unwrap();
+
+        assert_eq!(number, 3965);
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0].1.contains(&format!(
+                "/changes/?q=change:{CHANGE_ID}+project:platform/base+status:open"
+            )),
+            "{}",
+            calls[0].1
+        );
+    }
+
+    #[test]
+    fn should_error_when_no_open_change_has_the_head_change_id() {
+        let checkout = checkout_with_head_message(&format!("Fix it\n\nChange-Id: {CHANGE_ID}"));
+        let (backend, _fake) = backend_with(true, vec!["[]"]);
+        let backend = backend.with_local_checkout(Some(checkout.path().to_path_buf()));
+
+        let err = backend
+            .find_pull_request_for_branch(&gerrit_repo(), "topic")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("No open pull request found"), "{err}");
+    }
+
+    #[test]
+    fn should_explain_a_head_commit_without_a_change_id() {
+        let checkout = checkout_with_head_message("No trailer here");
+        let (backend, fake) = backend_with(true, vec![]);
+        let backend = backend.with_local_checkout(Some(checkout.path().to_path_buf()));
+
+        let err = backend
+            .find_pull_request_for_branch(&gerrit_repo(), "topic")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no Change-Id trailer"), "{err}");
+        assert!(fake.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn should_need_a_checkout_to_find_the_change() {
+        let (backend, _fake) = backend_with(true, vec![]);
+        let err = backend
+            .find_pull_request_for_branch(&gerrit_repo(), "topic")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("local clone"), "{err}");
     }
 }
