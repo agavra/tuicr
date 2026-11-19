@@ -409,6 +409,11 @@ fn main() -> anyhow::Result<()> {
         if let Some(scroll_offset) = cfg.scroll_offset {
             app.scroll_offset = scroll_offset;
         }
+        match cfg.hunk_jump_align.as_deref() {
+            Some("top") => app.hunk_jump_align = app::HunkJumpAlign::Top,
+            Some("center") => app.hunk_jump_align = app::HunkJumpAlign::Center,
+            _ => {}
+        }
         if let Some(lines) = cfg.mouse_scroll_lines {
             app.mouse_scroll_lines = lines;
         }

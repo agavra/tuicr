@@ -50,6 +50,7 @@ cursor_line = true
 search_highlight = true
 transparent_background = true
 scroll_offset = 5
+hunk_jump_align = "visible"
 no_update_check = false
 review_watch_interval_ms = 1000
 single_file_view = false
@@ -119,6 +120,7 @@ session_header = true
 | `search_highlight`         | `true`       | Highlight `/` search matches in the diff view. Clear at runtime with `Esc`; `n` / `N` re-enable.                                                           |
 | `transparent_background`   | `true`       | Let the terminal background show through panels. `false` paints the theme's `panel_bg`.                                                                    |
 | `scroll_offset`            | `0`          | Minimum lines visible above and below the cursor when scrolling (like Vim's `scrolloff`).                                                                  |
+| `hunk_jump_align`          | `visible`    | Where `]`/`[` hunk jumps and `}`/`{` file jumps leave their target: `visible` scrolls only as far as needed to show it, `top` puts it at the top and `center` centers it. `top` and `center` leave `scroll_offset` lines above the target when the diff has them. |
 | `no_update_check`          | `false`      | Skip startup update check when `true`.                                                                                                                     |
 | `review_watch_interval_ms` | `1000`       | Poll interval for persisted review-session changes. Set to `0` to disable automatic local-session reloads.                                                 |
 | `single_file_view`         | `false`      | Start in single-file view for supported review targets. Pristine `--all-files` mode always starts in single-file view.                                     |
