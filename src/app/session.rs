@@ -291,6 +291,7 @@ impl App {
             || self.pr_range_reload_rx.is_some()
             || self.pr_threads_rx.is_some()
             || self.pr_submit_rx.is_some()
+            || self.pr_draft_delete_rx.is_some()
     }
 
     /// Merge external edits to the persisted session. Returns how many

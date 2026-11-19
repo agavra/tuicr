@@ -560,6 +560,8 @@ impl App {
             forge_review_summaries: Vec::new(),
             forge_review_threads_loading: false,
             pr_threads_rx: None,
+            pending_draft_delete: None,
+            pr_draft_delete_rx: None,
             forge_config: crate::config::ForgeConfig::default(),
             username: crate::model::comment::DEFAULT_AUTHOR.to_string(),
             submit_state: None,

@@ -727,13 +727,15 @@ pub enum ConfirmAction {
     /// Delete the session under the cursor on the Sessions tab. Unlike
     /// `CopyAndQuit` this returns to the selector instead of quitting.
     DeleteSession,
+    /// Delete the remote draft comment under the cursor on the forge.
+    DeleteRemoteDraft,
 }
 
 impl ConfirmAction {
     /// Mode to return to once the prompt is answered either way.
     pub fn return_mode(self) -> InputMode {
         match self {
-            ConfirmAction::CopyAndQuit => InputMode::Normal,
+            ConfirmAction::CopyAndQuit | ConfirmAction::DeleteRemoteDraft => InputMode::Normal,
             ConfirmAction::DeleteSession => InputMode::CommitSelect,
         }
     }
@@ -743,6 +745,7 @@ impl ConfirmAction {
         match self {
             ConfirmAction::CopyAndQuit => "Copy review to clipboard?",
             ConfirmAction::DeleteSession => "Delete this saved review?",
+            ConfirmAction::DeleteRemoteDraft => "Delete this draft comment?",
         }
     }
 }
@@ -1036,6 +1039,19 @@ pub enum PrThreadsEvent {
             std::result::Result<Vec<crate::forge::remote_comments::RemoteReviewThread>, String>,
         summaries:
             std::result::Result<Vec<crate::forge::remote_comments::RemoteReviewSummary>, String>,
+    },
+}
+
+/// Result delivered from the remote draft deletion background thread.
+#[derive(Debug)]
+pub enum PrDraftDeleteEvent {
+    Done {
+        /// Forge identity for the request; a result for a PR the user has
+        /// since left is dropped.
+        repository: crate::forge::traits::ForgeRepository,
+        pr_number: u64,
+        head_sha: String,
+        result: std::result::Result<(), String>,
     },
 }
 
@@ -1342,6 +1358,12 @@ pub struct App {
     /// Background-thread channel that delivers remote-thread fetch results.
     /// `Receiver` is only present while a fetch is in flight.
     pub pr_threads_rx: Option<std::sync::mpsc::Receiver<PrThreadsEvent>>,
+    /// Id of the remote draft comment `dd` asked to delete, while the
+    /// confirmation prompt is open.
+    pub pending_draft_delete: Option<String>,
+    /// Background-thread channel that delivers the result of a remote draft
+    /// deletion. `Receiver` is only present while one is in flight.
+    pub pr_draft_delete_rx: Option<std::sync::mpsc::Receiver<PrDraftDeleteEvent>>,
 
     /// `[forge]` section settings resolved at startup. Drives the body/footer
     /// formatting on submit. Defaults to `ForgeConfig::default()` when the

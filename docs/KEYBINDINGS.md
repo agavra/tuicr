@@ -172,7 +172,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `C` | Add file comment |
 | `<leader>c` | Add review comment |
 | `v` / `V` | Enter visual mode for range comments |
-| `dd` | Delete comment at cursor |
+| `dd` | Delete comment at cursor; on your own Gerrit draft, asks to confirm and deletes it from Gerrit |
 | `i` | Edit comment at cursor (vim: text cursor at start) |
 | `A` | Edit comment at cursor with text cursor at end (vim mode only) |
 | `e` | Open focused file in `$EDITOR` |

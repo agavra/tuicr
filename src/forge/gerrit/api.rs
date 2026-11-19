@@ -166,6 +166,7 @@ impl GerritHttp for HttpsGerrit {
         // the body-carrying methods share one arm and GET gets its own.
         let result = match method.to_ascii_uppercase().as_str() {
             "GET" => self.authorized(self.agent.get(url)).call(),
+            "DELETE" => self.authorized(self.agent.delete(url)).call(),
             verb @ ("POST" | "PUT") => {
                 let builder = match verb {
                     "POST" => self.agent.post(url),
@@ -677,6 +678,46 @@ impl ForgeBackend for GerritBackend {
 
     fn list_review_summaries(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewSummary>> {
         Ok(summaries_from_drafts(self.fetch_drafts(pr)?, &pr.url))
+    }
+
+    fn can_delete_draft_comments(&self) -> bool {
+        true
+    }
+
+    fn delete_draft_comment(&self, pr: &PullRequestDetails, comment_id: &str) -> Result<()> {
+        if !self.http.is_authenticated() {
+            return Err(TuicrError::Forge(format!(
+                "Deleting a Gerrit draft needs credentials. Set {USER_ENV_VAR} and \
+                 {PASSWORD_ENV_VAR} (Settings → HTTP Credentials in Gerrit)."
+            )));
+        }
+        // Gerrit addresses a draft by the patch set it was written on, which
+        // can be older than the one on screen. Reading it back from the
+        // caller's own drafts also means a published comment's id, or a draft
+        // that is already gone, stops here instead of reaching the DELETE.
+        let drafts = self.fetch_drafts(pr)?;
+        let draft = drafts
+            .values()
+            .flatten()
+            .find(|comment| comment.id == comment_id)
+            .ok_or_else(|| {
+                TuicrError::Forge(format!(
+                    "Gerrit has no draft comment {comment_id} on change {}. \
+                     It may already be deleted or published; reload with :e.",
+                    pr.number
+                ))
+            })?;
+        let revision = match draft.patch_set {
+            0 => pr.head_sha.clone(),
+            patch_set => patch_set.to_string(),
+        };
+        let path = format!(
+            "/changes/{}/revisions/{revision}/drafts/{}",
+            pr.number,
+            encode_path(comment_id)
+        );
+        self.send(&pr.repository, "DELETE", &path, "")?;
+        Ok(())
     }
 
     fn list_pull_request_commits(&self, pr: &PullRequestDetails) -> Result<Vec<PullRequestCommit>> {
@@ -1963,6 +2004,106 @@ mod tests {
         assert!(fresh.is_active(), "an unresolved draft shows by default");
         assert!(fresh.comments[0].is_draft);
         assert_eq!(fresh.comments[0].author.as_deref(), Some("me"));
+    }
+
+    const TWO_DRAFTS: &str = r#")]}'
+        {"src/main.rs": [
+            {"id": "older", "line": 7, "message": "nit", "patch_set": 1,
+             "updated": "2013-02-21 12:00:00.000000000"},
+            {"id": "a/b c", "line": 12, "message": "[ISSUE] looks wrong", "patch_set": 2,
+             "updated": "2013-02-21 12:30:00.000000000"}
+        ]}"#;
+
+    #[test]
+    fn should_delete_a_draft_on_the_patch_set_it_was_written_on() {
+        // given — the caller has two drafts, one on an earlier patch set
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let (backend, http) = backend_with(true, vec![TWO_DRAFTS, ""]);
+        // when
+        backend
+            .delete_draft_comment(&details(), "older")
+            .expect("delete");
+        // then — the drafts are read once, then the draft is deleted by its own
+        // patch set number, not the head
+        let calls = http.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "GET");
+        assert_eq!(
+            calls[0].1,
+            "https://gerrit.example.com/a/changes/3965/drafts"
+        );
+        assert_eq!(calls[1].0, "DELETE");
+        assert_eq!(
+            calls[1].1,
+            "https://gerrit.example.com/a/changes/3965/revisions/1/drafts/older"
+        );
+    }
+
+    #[test]
+    fn should_percent_encode_the_draft_id_in_the_delete_url() {
+        // given
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let (backend, http) = backend_with(true, vec![TWO_DRAFTS, ""]);
+        // when
+        backend
+            .delete_draft_comment(&details(), "a/b c")
+            .expect("delete");
+        // then
+        assert_eq!(
+            http.calls()[1].1,
+            "https://gerrit.example.com/a/changes/3965/revisions/2/drafts/a%2Fb%20c"
+        );
+    }
+
+    #[test]
+    fn should_not_delete_an_id_that_is_not_one_of_the_callers_drafts() {
+        // given — a published comment's id is not in the drafts listing
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let (backend, http) = backend_with(true, vec![TWO_DRAFTS]);
+        // when
+        let err = backend
+            .delete_draft_comment(&details(), "published")
+            .expect_err("a published comment is not deletable");
+        // then — nothing but the read went out
+        assert!(err.to_string().contains("no draft comment published"));
+        assert_eq!(http.calls().len(), 1);
+        assert_eq!(http.calls()[0].0, "GET");
+    }
+
+    #[test]
+    fn should_ask_for_credentials_before_deleting_a_draft_anonymously() {
+        // given
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let (backend, http) = backend_with(false, vec![]);
+        // when
+        let err = backend
+            .delete_draft_comment(&details(), "older")
+            .expect_err("anonymous");
+        // then
+        assert!(err.to_string().contains(USER_ENV_VAR));
+        assert!(http.calls().is_empty());
+    }
+
+    #[test]
+    fn should_surface_a_failed_delete_and_report_the_capability() {
+        // given — the DELETE itself is refused after the drafts were read
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let fake = Arc::new(FakeHttp::failing_after(true, 1));
+        fake.responses.lock().unwrap().push(TWO_DRAFTS.to_string());
+        let backend =
+            GerritBackend::with_transport(Some(gerrit_repo()), Box::new(Arc::clone(&fake)));
+        // when
+        let err = backend
+            .delete_draft_comment(&details(), "older")
+            .expect_err("delete fails");
+        // then
+        assert!(err.to_string().contains("connection closed"));
+        assert!(backend.can_delete_draft_comments());
     }
 
     #[test]

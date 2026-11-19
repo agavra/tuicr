@@ -2257,3 +2257,220 @@ fn should_let_request_changes_retry_bare_on_bitbucket_and_azure() {
         assert_eq!(app.input_mode, InputMode::SubmitConfirm, "{kind:?}");
     }
 }
+
+/// A backend that, like Gerrit, lets the signed-in user delete a draft.
+struct DraftDeletingBackend {
+    can_delete: bool,
+}
+
+impl crate::forge::traits::ForgeBackend for DraftDeletingBackend {
+    fn list_pull_requests(
+        &self,
+        _: crate::forge::traits::PullRequestListQuery,
+    ) -> Result<crate::forge::traits::PagedPullRequests> {
+        unimplemented!()
+    }
+    fn get_pull_request(
+        &self,
+        _: crate::forge::traits::PullRequestTarget,
+    ) -> Result<PullRequestDetails> {
+        unimplemented!()
+    }
+    fn get_pull_request_diff(
+        &self,
+        _: &PullRequestDetails,
+    ) -> Result<Vec<crate::model::FilePatch>> {
+        unimplemented!()
+    }
+    fn list_review_threads(
+        &self,
+        _: &PullRequestDetails,
+    ) -> Result<Vec<crate::forge::remote_comments::RemoteReviewThread>> {
+        unimplemented!()
+    }
+    fn list_pull_request_commits(
+        &self,
+        _: &PullRequestDetails,
+    ) -> Result<Vec<crate::forge::traits::PullRequestCommit>> {
+        unimplemented!()
+    }
+    fn get_pull_request_commit_range_diff(
+        &self,
+        _: &PullRequestDetails,
+        _: &str,
+        _: &str,
+    ) -> Result<Vec<crate::model::FilePatch>> {
+        unimplemented!()
+    }
+    fn create_review(
+        &self,
+        _: &PullRequestDetails,
+        _: crate::forge::traits::CreateReviewRequest<'_>,
+    ) -> Result<crate::forge::traits::GhCreateReviewResponse> {
+        unimplemented!()
+    }
+    fn can_delete_draft_comments(&self) -> bool {
+        self.can_delete
+    }
+}
+
+/// A PR app with one published remote comment and one draft reply, the cursor
+/// parked on the row of comment `comment_idx`.
+fn app_with_remote_draft(can_delete: bool, comment_idx: usize) -> App {
+    use crate::forge::remote_comments::{
+        RemoteCommentSide, RemoteReviewComment, RemoteReviewThread,
+    };
+
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.forge_backend = Some(Box::new(DraftDeletingBackend { can_delete }));
+    app.forge_review_threads = vec![RemoteReviewThread {
+        id: "thread-1".into(),
+        path: "src/lib.rs".into(),
+        line: Some(10),
+        side: RemoteCommentSide::Right,
+        is_resolved: false,
+        is_outdated: false,
+        comments: vec![
+            RemoteReviewComment {
+                id: "published-1".into(),
+                author: Some("alice".into()),
+                body: "why?".into(),
+                ..Default::default()
+            },
+            RemoteReviewComment {
+                id: "draft-1".into(),
+                author: Some("me".into()),
+                body: "because".into(),
+                in_reply_to: Some("published-1".into()),
+                is_draft: true,
+                ..Default::default()
+            },
+        ],
+    }];
+    app.rebuild_annotations();
+    app.diff_state.cursor_line = app
+        .line_annotations
+        .iter()
+        .position(|annotation| {
+            matches!(
+                annotation,
+                AnnotatedLine::RemoteThreadLine { comment_idx: idx, .. } if *idx == comment_idx
+            )
+        })
+        .expect("expected the remote comment row");
+    app
+}
+
+#[test]
+fn should_ask_before_deleting_a_remote_draft() {
+    // given the cursor on the draft reply of a forge that can delete drafts
+    let mut app = app_with_remote_draft(true, 1);
+    // when dd is pressed
+    let asked = app.begin_remote_draft_delete();
+    // then the prompt is up and names the draft; nothing is sent yet
+    assert!(asked);
+    assert_eq!(app.input_mode, InputMode::Confirm);
+    assert_eq!(app.pending_confirm, Some(ConfirmAction::DeleteRemoteDraft));
+    assert_eq!(app.pending_draft_delete.as_deref(), Some("draft-1"));
+    assert!(app.pr_draft_delete_rx.is_none());
+}
+
+#[test]
+fn should_leave_a_published_remote_comment_read_only() {
+    let mut app = app_with_remote_draft(true, 0);
+    assert!(!app.begin_remote_draft_delete());
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.pending_draft_delete.is_none());
+}
+
+#[test]
+fn should_leave_a_draft_read_only_when_the_forge_cannot_delete_it() {
+    let mut app = app_with_remote_draft(false, 1);
+    assert!(!app.begin_remote_draft_delete());
+    assert_eq!(app.input_mode, InputMode::Normal);
+}
+
+#[test]
+fn should_keep_the_remote_draft_and_stay_open_when_the_prompt_is_declined() {
+    // given the prompt is up
+    let mut app = app_with_remote_draft(true, 1);
+    assert!(app.begin_remote_draft_delete());
+    // when the user answers no
+    crate::handler::handle_confirm_action(&mut app, crate::input::Action::ConfirmNo);
+    // then nothing is deleted, the app keeps running, and the id is dropped
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(!app.should_quit);
+    assert!(app.pending_draft_delete.is_none());
+    assert!(app.pr_draft_delete_rx.is_none());
+    assert_eq!(app.forge_review_threads[0].comments.len(), 2);
+}
+
+#[test]
+fn should_warn_and_keep_the_draft_when_the_forge_refuses_the_delete() {
+    // given a deletion that has failed on the forge
+    let mut app = app_with_remote_draft(true, 1);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_draft_delete_rx = Some(rx);
+    let DiffSource::PullRequest(pr) = &app.diff_source else {
+        panic!("expected PR mode");
+    };
+    tx.send(PrDraftDeleteEvent::Done {
+        repository: pr.key.repository.clone(),
+        pr_number: pr.key.number,
+        head_sha: pr.key.head_sha.clone(),
+        result: Err("HTTP 409".to_string()),
+    })
+    .unwrap();
+    // when the result is applied
+    app.poll_pr_draft_delete_events();
+    // then the user is told, and the local view is left as it was
+    let message = app.message.as_ref().expect("a warning");
+    assert_eq!(message.message_type, MessageType::Warning);
+    assert!(message.content.contains("HTTP 409"), "{}", message.content);
+    assert!(app.pr_draft_delete_rx.is_none());
+    assert_eq!(app.forge_review_threads[0].comments.len(), 2);
+    assert!(app.pr_threads_rx.is_none(), "no refetch after a failure");
+}
+
+#[test]
+fn should_drop_a_delete_result_for_a_pr_that_is_no_longer_open() {
+    let mut app = app_with_remote_draft(true, 1);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_draft_delete_rx = Some(rx);
+    tx.send(PrDraftDeleteEvent::Done {
+        repository: ForgeRepository::github("github.com", "agavra", "other"),
+        pr_number: 7,
+        head_sha: "abcdef0123".to_string(),
+        result: Err("boom".to_string()),
+    })
+    .unwrap();
+    app.poll_pr_draft_delete_events();
+    assert!(app.pr_draft_delete_rx.is_none());
+    assert!(app.message.is_none());
+}
+
+#[test]
+fn should_refetch_the_threads_once_the_forge_has_deleted_the_draft() {
+    // given a deletion that succeeded, on a Gerrit change whose host refuses
+    // connections so the refetch it starts stays off the network
+    let mut app = app_with_remote_draft(true, 1);
+    set_forge(&mut app, ForgeRepository::gerrit("127.0.0.1:9", "proj"));
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_draft_delete_rx = Some(rx);
+    let DiffSource::PullRequest(pr) = &app.diff_source else {
+        panic!("expected PR mode");
+    };
+    tx.send(PrDraftDeleteEvent::Done {
+        repository: pr.key.repository.clone(),
+        pr_number: pr.key.number,
+        head_sha: pr.key.head_sha.clone(),
+        result: Ok(()),
+    })
+    .unwrap();
+    // when the result is applied
+    app.poll_pr_draft_delete_events();
+    // then the threads are being fetched again rather than edited locally
+    assert!(app.pr_draft_delete_rx.is_none());
+    assert!(app.pr_threads_rx.is_some());
+    assert!(app.forge_review_threads_loading);
+}
