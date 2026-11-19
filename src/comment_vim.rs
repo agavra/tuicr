@@ -5,7 +5,7 @@
 //! conversions bridge tuicr's UTF-8 byte offset and edtui's `Index2` (row +
 //! char-col), both UTF-8 aware.
 
-use crossterm::event::{Event, KeyCode, KeyEvent};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use edtui::{EditorEventHandler, EditorMode, EditorState, Index2, Lines};
 
 /// Key codes edtui can convert; anything else makes it panic.
@@ -72,10 +72,65 @@ impl CommentVimEditor {
         // edtui panics on keys it cannot map (BackTab, F-keys, Insert, ...), so
         // only forward the ones it understands. Normal-mode comment type
         // cycling is handled by the caller.
-        if edtui_handles(key.code) {
+        // edtui's vim keymap has no Insert-mode `^W` (only its emacs keymap does),
+        // and its word-delete overshoots at column 0, so handle it here.
+        if self.state.mode == EditorMode::Insert
+            && key.code == KeyCode::Char('w')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.delete_word_backward();
+        } else if edtui_handles(key.code) {
             self.events.on_key_event(key, &mut self.state);
         }
         self.text_and_cursor()
+    }
+
+    /// Vim's Insert-mode `^W`: delete the whitespace and then the run of
+    /// same-class characters (word vs punctuation) before the cursor. At the
+    /// start of a line it joins with the previous line, like Backspace.
+    fn delete_word_backward(&mut self) {
+        let (text, cursor) = self.text_and_cursor();
+        if cursor == 0 {
+            return;
+        }
+        let before = &text[..cursor];
+        let class = |c: char| {
+            if c.is_whitespace() {
+                0
+            } else if c.is_alphanumeric() || c == '_' {
+                1
+            } else {
+                2
+            }
+        };
+        let mut start = cursor;
+        let mut chars = before.char_indices().rev().peekable();
+        if let Some(&(_, '\n')) = chars.peek() {
+            start = cursor - 1;
+        } else {
+            while let Some(&(i, c)) = chars.peek() {
+                if c == '\n' || class(c) != 0 {
+                    break;
+                }
+                start = i;
+                chars.next();
+            }
+            if let Some(&(_, c)) = chars.peek() {
+                let k = class(c);
+                if c != '\n' && k != 0 {
+                    while let Some(&(i, c)) = chars.peek() {
+                        if class(c) != k || c == '\n' {
+                            break;
+                        }
+                        start = i;
+                        chars.next();
+                    }
+                }
+            }
+        }
+        let new_text = format!("{}{}", &text[..start], &text[cursor..]);
+        self.state.lines = Lines::from(new_text.as_str());
+        self.state.cursor = byte_to_index2(&new_text, start);
     }
 
     /// Feed a bracketed-paste payload, returning the synced `(text, byte_cursor)`.
@@ -177,6 +232,42 @@ mod tests {
         assert_eq!(editor.label(), "NORMAL");
         let r = editor.feed_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
         assert_eq!(r.0, "hello");
+    }
+
+    #[test]
+    fn insert_mode_ctrl_w_deletes_previous_word() {
+        let mut editor = CommentVimEditor::from_buffer("hello world", 11);
+        let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(editor.feed_key(ctrl_w), ("hello ".to_string(), 6));
+        assert_eq!(editor.label(), "INSERT");
+    }
+
+    #[test]
+    fn insert_mode_ctrl_w_stops_at_punctuation() {
+        let mut editor = CommentVimEditor::from_buffer(".word", 5);
+        let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(editor.feed_key(ctrl_w), (".".to_string(), 1));
+    }
+
+    #[test]
+    fn insert_mode_ctrl_w_mid_word_deletes_up_to_cursor() {
+        let mut editor = CommentVimEditor::from_buffer("hello world", 9);
+        let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(editor.feed_key(ctrl_w), ("hello ld".to_string(), 6));
+    }
+
+    #[test]
+    fn insert_mode_ctrl_w_skips_trailing_whitespace() {
+        let mut editor = CommentVimEditor::from_buffer("hello world   ", 14);
+        let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(editor.feed_key(ctrl_w), ("hello ".to_string(), 6));
+    }
+
+    #[test]
+    fn insert_mode_ctrl_w_at_word_start_deletes_previous_word_and_space() {
+        let mut editor = CommentVimEditor::from_buffer("hello world", 6);
+        let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(editor.feed_key(ctrl_w), ("world".to_string(), 0));
     }
 
     #[test]
