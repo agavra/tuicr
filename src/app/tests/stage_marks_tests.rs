@@ -205,3 +205,60 @@ fn should_leave_lines_unmarked_on_backends_without_an_index() {
             .all(|(_, _, stage)| stage.is_none())
     );
 }
+
+fn display_paths(files: &[DiffFile]) -> Vec<String> {
+    let mut paths: Vec<_> = files
+        .iter()
+        .map(|file| file.display_path().to_string_lossy().into_owned())
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// The extra staged and unstaged diffs go through the same `.tuicrignore` and
+/// path filtering as the reviewed diff, so excluded files never reach the
+/// marker pass.
+#[test]
+fn should_filter_the_marker_diffs_like_the_reviewed_diff() {
+    use StageState::{Staged as S, Unstaged as U};
+    let dir = fixture();
+    let root = dir.path();
+    fs::write(root.join(".tuicrignore"), "staged.txt\nuntracked.txt\n").unwrap();
+
+    for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+        let vcs = GitBackend::discover_from(root, preference, DiffWhitespaceMode::Normal).unwrap();
+
+        let (staged, unstaged) =
+            App::stage_mark_side_diffs(&vcs, root, None).expect("git has an index");
+        assert_eq!(display_paths(&staged), ["mixed.txt"], "{preference:?}");
+        assert_eq!(
+            display_paths(&unstaged),
+            [".tuicrignore", "dropped.txt", "mixed.txt"],
+            "{preference:?}"
+        );
+
+        let (staged, unstaged) =
+            App::stage_mark_side_diffs(&vcs, root, Some("mixed.txt")).expect("git has an index");
+        assert_eq!(display_paths(&staged), ["mixed.txt"], "{preference:?}");
+        assert_eq!(display_paths(&unstaged), ["mixed.txt"], "{preference:?}");
+
+        let files = App::get_working_tree_diff_with_ignore(
+            &vcs,
+            root,
+            &SyntaxHighlighter::default(),
+            Some("mixed.txt"),
+        )
+        .unwrap();
+        let expected: Marks = [(
+            "mixed.txt".to_string(),
+            vec![
+                ('-', "b".to_string(), Some(S)),
+                ('+', "B".to_string(), Some(S)),
+                ('+', "E".to_string(), Some(U)),
+            ],
+        )]
+        .into_iter()
+        .collect();
+        assert_eq!(marks(&files), expected, "{preference:?}");
+    }
+}
