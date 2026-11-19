@@ -223,12 +223,26 @@ fn delete_session_if_empty_unlocked(path: &Path, reviews_dir: &Path) -> Result<b
 /// Whether a live tuicr has `path` open. The caller must hold the reviews-dir
 /// lock, which [`mark_session_active_in_dir`] also takes.
 fn is_session_active_unlocked(reviews_dir: &Path, path: &Path) -> bool {
+    is_session_active_for_other_pid_unlocked(reviews_dir, path, None)
+}
+
+/// Whether a live tuicr *other than* `own_pid` has `path` open. `None` counts
+/// every live process.
+fn is_session_active_for_other_pid_unlocked(
+    reviews_dir: &Path,
+    path: &Path,
+    own_pid: Option<u32>,
+) -> bool {
     let target = normalize_active_path(path);
     load_active_sessions_unlocked(reviews_dir)
         .unwrap_or_default()
         .sessions
         .iter()
-        .any(|entry| entry.is_fresh() && normalize_active_path(&entry.path) == target)
+        .any(|entry| {
+            entry.is_fresh()
+                && Some(entry.pid) != own_pid
+                && normalize_active_path(&entry.path) == target
+        })
 }
 
 /// Delete a session file and its manifest entry, even one with reviewed-file
@@ -276,9 +290,29 @@ pub(crate) fn delete_inactive_session_in_dir(
     path: &Path,
     reviews_dir: &Path,
 ) -> Result<DeleteOutcome> {
+    delete_inactive_session_except_pid_in_dir(path, reviews_dir, None)
+}
+
+/// Like [`delete_inactive_session_in_dir`], but a registration owned by this
+/// very process does not block the delete. The owning TUI calls this from its
+/// Sessions tab after dropping its in-memory copy of the review: without it,
+/// the review the TUI itself loaded could never be deleted. Other live tuicr
+/// processes still block.
+pub(crate) fn delete_inactive_session_except_own_pid_in_dir(
+    path: &Path,
+    reviews_dir: &Path,
+) -> Result<DeleteOutcome> {
+    delete_inactive_session_except_pid_in_dir(path, reviews_dir, Some(std::process::id()))
+}
+
+fn delete_inactive_session_except_pid_in_dir(
+    path: &Path,
+    reviews_dir: &Path,
+    own_pid: Option<u32>,
+) -> Result<DeleteOutcome> {
     maybe_migrate(reviews_dir)?;
     with_reviews_dir_lock(reviews_dir, || {
-        if is_session_active_unlocked(reviews_dir, path) {
+        if is_session_active_for_other_pid_unlocked(reviews_dir, path, own_pid) {
             return Ok(DeleteOutcome::Active);
         }
         Ok(if delete_session_unlocked(path, reviews_dir)? {
@@ -339,13 +373,33 @@ pub(crate) fn mark_session_active_in_dir(
     path: &Path,
     reviews_dir: &Path,
 ) -> Result<()> {
+    mark_session_active_as_in_dir(std::process::id(), session, path, reviews_dir)
+}
+
+/// [`mark_session_active_in_dir`] for an explicit owner pid. Tests use it to
+/// stand in for another live tuicr process.
+#[cfg(test)]
+pub(crate) fn mark_session_active_for_pid_in_dir(
+    session: &ReviewSession,
+    path: &Path,
+    reviews_dir: &Path,
+    pid: u32,
+) -> Result<()> {
+    mark_session_active_as_in_dir(pid, session, path, reviews_dir)
+}
+
+fn mark_session_active_as_in_dir(
+    pid: u32,
+    session: &ReviewSession,
+    path: &Path,
+    reviews_dir: &Path,
+) -> Result<()> {
     maybe_migrate(reviews_dir)?;
     let slug = session_marker_slug(session)?;
     let path = normalize_active_path(path);
     with_reviews_dir_lock(reviews_dir, || {
         let mut active = load_active_sessions_unlocked(reviews_dir).unwrap_or_default();
         active.prune_stale();
-        let pid = std::process::id();
         // Only this process's own entry: another live tuicr may have the same
         // session open, and its entry is what keeps a delete from running.
         active.sessions.retain(|entry| entry.pid != pid);
@@ -1675,6 +1729,48 @@ mod tests {
         let outcome = delete_inactive_session_in_dir(&path, &reviews_dir).unwrap();
         assert_eq!(outcome, DeleteOutcome::Deleted);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn should_delete_a_session_this_process_has_open() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        mark_session_active_in_dir(&session, &path, &reviews_dir).unwrap();
+
+        let outcome = delete_inactive_session_except_own_pid_in_dir(&path, &reviews_dir).unwrap();
+
+        assert_eq!(outcome, DeleteOutcome::Deleted);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn should_refuse_own_pid_delete_while_another_process_has_it_open() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        mark_session_active_in_dir(&session, &path, &reviews_dir).unwrap();
+        // A second, live tuicr: pid 1 is running wherever this suite runs.
+        mark_session_active_for_pid_in_dir(&session, &path, &reviews_dir, 1).unwrap();
+
+        let outcome = delete_inactive_session_except_own_pid_in_dir(&path, &reviews_dir).unwrap();
+
+        assert_eq!(outcome, DeleteOutcome::Active);
+        assert!(path.exists());
     }
 
     #[test]
