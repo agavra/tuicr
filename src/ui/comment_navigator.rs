@@ -132,6 +132,123 @@ fn comment_location(item: &CommentNavigatorItem) -> String {
 #[cfg(test)]
 mod tests {
     use super::navigator_title;
+    use crate::app::{App, DiffSource, FocusedPanel, InputMode};
+    use crate::model::{
+        Comment, CommentType, DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource,
+    };
+    use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::path::PathBuf;
+
+    struct StubVcs(VcsInfo);
+    impl VcsBackend for StubVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.0
+        }
+        fn get_working_tree_diff(
+            &self,
+            _hl: &crate::syntax::SyntaxHighlighter,
+        ) -> crate::error::Result<Vec<DiffFile>> {
+            Ok(Vec::new())
+        }
+        fn fetch_context_lines(
+            &self,
+            _path: &std::path::Path,
+            _status: FileStatus,
+            _ref_commit: Option<&str>,
+            _start: u32,
+            _end: u32,
+        ) -> crate::error::Result<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+        fn file_line_count(
+            &self,
+            _path: &std::path::Path,
+            _status: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> crate::error::Result<u32> {
+            Ok(0)
+        }
+    }
+
+    /// An app over `paths` with one file-level comment on each, so the
+    /// navigator lists one row per file.
+    fn app_with_file_comments(paths: &[&str]) -> App {
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "head".into(),
+            branch_name: Some("main".into()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+        let files = paths
+            .iter()
+            .map(|path| DiffFile {
+                old_path: None,
+                new_path: Some(PathBuf::from(path)),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                is_binary: false,
+                is_too_large: false,
+                is_commit_message: false,
+                content_hash: 0,
+            })
+            .collect();
+        let mut app = App::build(
+            Box::new(StubVcs(vcs_info.clone())),
+            vcs_info,
+            crate::theme::Theme::dark(),
+            None,
+            false,
+            files,
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("build app");
+        for path in paths {
+            app.session
+                .files
+                .get_mut(&PathBuf::from(path))
+                .expect("file registered in the session")
+                .file_comments
+                .push(Comment::new(
+                    format!("note on {path}"),
+                    CommentType::from_id("note"),
+                    None,
+                ));
+        }
+        app.rebuild_annotations();
+        app
+    }
+
+    #[test]
+    fn should_title_the_navigator_with_the_selected_comment_position() {
+        let mut app = app_with_file_comments(&["a.rs", "b.rs", "c.rs"]);
+        app.focused_panel = FocusedPanel::Comments;
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut screen = |app: &mut App| {
+            terminal
+                .draw(|frame| crate::ui::render(frame, app))
+                .unwrap();
+            terminal.backend().to_string()
+        };
+
+        assert!(screen(&mut app).contains("Comments · 1/3"));
+        app.comment_navigator_down(1);
+        assert!(screen(&mut app).contains("Comments · 2/3"));
+        app.comment_navigator_down(5);
+        assert!(screen(&mut app).contains("Comments · 3/3"));
+    }
 
     #[test]
     fn should_show_the_selected_position_before_the_total() {

@@ -1576,43 +1576,6 @@ fn jump_to_selected_comment_uses_comment_annotation_target() {
 }
 
 #[test]
-fn should_title_the_navigator_with_the_selected_comment_position() {
-    use ratatui::{Terminal, backend::TestBackend};
-
-    let file = make_file_with_hunks("a.rs", vec![make_hunk(1, 3)]);
-    let mut app = build_app_with_files(vec![file], 10);
-    let comments = &mut app
-        .session
-        .files
-        .get_mut(&PathBuf::from("a.rs"))
-        .unwrap()
-        .line_comments;
-    for line in 1..=3 {
-        comments.entry(line).or_default().push(Comment::new(
-            format!("comment {line}"),
-            CommentType::from_id("note"),
-            Some(LineSide::New),
-        ));
-    }
-    app.rebuild_annotations();
-    app.focused_panel = FocusedPanel::Comments;
-
-    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    let mut screen = |app: &mut App| {
-        terminal
-            .draw(|frame| crate::ui::render(frame, app))
-            .unwrap();
-        terminal.backend().to_string()
-    };
-
-    assert!(screen(&mut app).contains("Comments · 1/3"));
-    app.comment_navigator_down(1);
-    assert!(screen(&mut app).contains("Comments · 2/3"));
-    app.comment_navigator_down(5);
-    assert!(screen(&mut app).contains("Comments · 3/3"));
-}
-
-#[test]
 fn should_update_current_file_when_navigating_to_remote_comment() {
     use crate::forge::remote_comments::{
         RemoteCommentSide, RemoteReviewComment, RemoteReviewThread,
