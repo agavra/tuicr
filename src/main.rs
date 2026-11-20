@@ -419,6 +419,8 @@ fn main() -> anyhow::Result<()> {
             app.apply_minimal_ui_start();
         }
         app.export = cfg.resolved_export();
+        startup_warnings.extend(app.apply_clipboard_config(cfg.clipboard.as_deref()));
+        app.clipboard_command = cfg.clipboard_command.clone();
         if cfg.cursor_line == Some(false) {
             app.cursor_line_highlight = false;
         }
@@ -933,6 +935,9 @@ fn main() -> anyhow::Result<()> {
     }
     if let Err(e) = app.clear_active_session_marker() {
         eprintln!("Warning: failed to clear active review session marker: {e}");
+    }
+    if let Some(warning) = &app.pending_exit_warning {
+        eprintln!("Warning: {warning}");
     }
 
     // Always report how the review ended, even with zero comments, so a

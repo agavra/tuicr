@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::fmt::Write;
 use std::io::Write as IoWrite;
+use std::time::{Duration, Instant};
 
 use arboard::Clipboard;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -23,6 +24,120 @@ type CommentEntry<'a> = (
     &'a str,
     Option<&'a str>,
 );
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum CopyMethod {
+    // macOS system pasteboard
+    Pbcopy,
+    // xclip / wl-copy — direct Wayland/X11 clipboard
+    SubProcess,
+    // library clipboard
+    Arboard,
+    // tmux load-buffer -w / OSC 52
+    TerminalRelay,
+}
+
+impl CopyMethod {
+    pub(crate) fn from_config_name(name: &str) -> Option<Self> {
+        match name {
+            "pbcopy" => Some(Self::Pbcopy),
+            "subprocess" => Some(Self::SubProcess),
+            "arboard" => Some(Self::Arboard),
+            "osc52" => Some(Self::TerminalRelay),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn config_name(self) -> &'static str {
+        match self {
+            Self::Pbcopy => "pbcopy",
+            Self::SubProcess => "subprocess",
+            Self::Arboard => "arboard",
+            Self::TerminalRelay => "osc52",
+        }
+    }
+}
+
+pub(crate) const CLIPBOARD_MECHANISMS: &[&str] = &["arboard", "pbcopy", "subprocess", "osc52"];
+
+/// Whether a forced mechanism cannot work on the given platform. Used to warn
+/// (not block) at startup; the `TerminalRelay` backstop still guarantees a copy.
+pub(crate) fn mechanism_unsupported(method: CopyMethod, is_macos: bool) -> bool {
+    match method {
+        CopyMethod::Pbcopy => !is_macos,
+        CopyMethod::SubProcess => is_macos,
+        CopyMethod::Arboard | CopyMethod::TerminalRelay => false,
+    }
+}
+
+pub(crate) fn resolve_clipboard_override(names: Option<&[String]>) -> Option<Vec<CopyMethod>> {
+    let methods: Vec<CopyMethod> = names?
+        .iter()
+        .filter_map(|name| CopyMethod::from_config_name(name))
+        .collect();
+    if methods.is_empty() {
+        None
+    } else {
+        Some(methods)
+    }
+}
+
+/// Environment inputs that decide clipboard strategy.
+struct ClipboardEnv {
+    is_macos: bool,
+    ssh: bool,
+    tmux: bool,
+    zellij: bool,
+    rex: bool,
+}
+
+impl ClipboardEnv {
+    fn detect() -> Self {
+        Self {
+            is_macos: cfg!(target_os = "macos"),
+            ssh: std::env::var_os("SSH_TTY").is_some()
+                || std::env::var_os("SSH_CONNECTION").is_some(),
+            tmux: std::env::var_os("TMUX").is_some(),
+            zellij: std::env::var_os("ZELLIJ").is_some(),
+            rex: std::env::var_os("REX_SESSION").is_some()
+                || std::env::var("TERM_PROGRAM").is_ok_and(|program| program == "rex"),
+        }
+    }
+}
+
+fn copy_method_order(env: &ClipboardEnv, override_order: Option<&[CopyMethod]>) -> Vec<CopyMethod> {
+    if let Some(methods) = override_order {
+        return with_terminal_backstop(methods);
+    }
+    if env.is_macos {
+        return vec![
+            CopyMethod::Pbcopy,
+            CopyMethod::Arboard,
+            CopyMethod::TerminalRelay,
+        ];
+    }
+    // Local tools would copy on the remote host, not the user's machine.
+    if env.ssh || env.rex {
+        return vec![CopyMethod::TerminalRelay];
+    }
+    if env.tmux || env.zellij {
+        return vec![CopyMethod::SubProcess, CopyMethod::TerminalRelay];
+    }
+    vec![
+        CopyMethod::SubProcess,
+        CopyMethod::Arboard,
+        CopyMethod::TerminalRelay,
+    ]
+}
+
+/// Append the terminal fallback when the configured order omits it.
+fn with_terminal_backstop(methods: &[CopyMethod]) -> Vec<CopyMethod> {
+    let mut order = methods.to_vec();
+    if !order.contains(&CopyMethod::TerminalRelay) {
+        order.push(CopyMethod::TerminalRelay);
+    }
+    order
+}
 
 /// Generate markdown content from the review session.
 /// Returns the markdown string or an error if there are no comments.
@@ -60,6 +175,31 @@ pub fn export_to_clipboard(
     remote_threads: &[RemoteReviewThread],
     session_slug: Option<&str>,
 ) -> Result<String> {
+    export_to_clipboard_with(
+        session,
+        diff_source,
+        comment_types,
+        export,
+        remote_threads,
+        session_slug,
+        None,
+        None,
+    )
+    .map(|copy| copy.message("Review"))
+}
+
+/// Export using the configured command and copy order.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn export_to_clipboard_with(
+    session: &ReviewSession,
+    diff_source: &DiffSource,
+    comment_types: &[CommentTypeDefinition],
+    export: &ExportConfig,
+    remote_threads: &[RemoteReviewThread],
+    session_slug: Option<&str>,
+    clipboard_override: Option<&[CopyMethod]>,
+    clipboard_command: Option<&str>,
+) -> Result<ClipboardCopy> {
     let content = generate_export_content(
         session,
         diff_source,
@@ -68,12 +208,7 @@ pub fn export_to_clipboard(
         remote_threads,
         session_slug,
     )?;
-    let via_terminal = copy_text_to_clipboard(&content)?;
-    Ok(if via_terminal {
-        "Review copied to clipboard (via terminal)".to_string()
-    } else {
-        "Review copied to clipboard".to_string()
-    })
+    copy_text_to_clipboard_with(&content, clipboard_override, clipboard_command)
 }
 
 /// Write the same review `:clip` copies to `path`, replacing any file there.
@@ -99,47 +234,200 @@ pub fn export_to_file(
 }
 
 /// Copy arbitrary text to the system clipboard. Returns `Ok(true)` if the
-/// terminal-based fallback (tmux/OSC 52) was used, `Ok(false)` if the
-/// platform clipboard handled it.
+/// terminal relay (tmux / OSC 52) was used, `Ok(false)` if a direct system
+/// clipboard handled it.
 pub fn copy_text_to_clipboard(text: &str) -> Result<bool> {
-    // On macOS, pbcopy writes straight to the system pasteboard and works even
-    // inside tmux/SSH. OSC 52 (preferred below) instead relies on the outer
-    // terminal honoring the escape, which Terminal.app does not, so the copy
-    // would only reach the tmux buffer. Prefer pbcopy unconditionally here.
-    if cfg!(target_os = "macos") && try_clipboard_cmd("pbcopy", &[], text) {
-        return Ok(false);
-    }
-    if should_prefer_osc52() {
-        copy_osc52(text)?;
-        return Ok(true);
-    }
-    if try_copy_via_subprocess(text) {
-        return Ok(false);
-    }
-    match Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
-        Ok(_) => Ok(false),
-        Err(_) => {
-            copy_osc52(text)?;
-            Ok(true)
+    copy_text_to_clipboard_with(text, None, None).map(|copy| copy.via_terminal)
+}
+
+/// Copy using `clipboard_command`, then the configured order (automatic
+/// detection for `None`).
+pub(crate) fn copy_text_to_clipboard_with(
+    text: &str,
+    clipboard_override: Option<&[CopyMethod]>,
+    clipboard_command: Option<&str>,
+) -> Result<ClipboardCopy> {
+    copy_with_command(text, clipboard_command, CLIPBOARD_COMMAND_TIMEOUT, |text| {
+        copy_with_method_order(text, clipboard_override)
+    })
+}
+
+/// How long `clipboard_command` may run before it is killed. It bounds how
+/// long a stuck command freezes the TUI.
+pub(crate) const CLIPBOARD_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+
+const VIA_TMUX: &str = "tmux load-buffer";
+const VIA_OSC52: &str = "OSC 52";
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ClipboardCopy {
+    /// The terminal relay (tmux / OSC 52) copied the text.
+    pub(crate) via_terminal: bool,
+    /// Set when `clipboard_command` failed: the failure and the method that
+    /// copied instead.
+    pub(crate) fallback_warning: Option<String>,
+}
+
+impl ClipboardCopy {
+    pub(crate) fn message(&self, what: &str) -> String {
+        if self.via_terminal {
+            format!("{what} copied to clipboard (via terminal)")
+        } else {
+            format!("{what} copied to clipboard")
         }
     }
 }
 
-/// Try xclip (X11) then wl-copy (Wayland). Returns true if either succeeds.
-fn try_copy_via_subprocess(text: &str) -> bool {
+/// Try `command`, then `fallback` (which returns the method that copied).
+fn copy_with_command(
+    text: &str,
+    command: Option<&str>,
+    timeout: Duration,
+    fallback: impl FnOnce(&str) -> Result<&'static str>,
+) -> Result<ClipboardCopy> {
+    let failure = match command.map(|command| run_clipboard_command(command, text, timeout)) {
+        Some(Ok(())) => {
+            return Ok(ClipboardCopy {
+                via_terminal: false,
+                fallback_warning: None,
+            });
+        }
+        Some(Err(failure)) => Some(failure),
+        None => None,
+    };
+    let via = fallback(text).map_err(|e| match &failure {
+        Some(failure) => TuicrError::Clipboard(format!("{failure}; fallback failed: {e}")),
+        None => e,
+    })?;
+    Ok(ClipboardCopy {
+        via_terminal: via == VIA_TMUX || via == VIA_OSC52,
+        fallback_warning: failure.map(|failure| format!("{failure}; copied via {via}")),
+    })
+}
+
+fn copy_with_method_order(
+    text: &str,
+    clipboard_override: Option<&[CopyMethod]>,
+) -> Result<&'static str> {
+    for method in copy_method_order(&ClipboardEnv::detect(), clipboard_override) {
+        match method {
+            CopyMethod::Pbcopy if try_clipboard_cmd("pbcopy", &[], text) => return Ok("pbcopy"),
+            CopyMethod::SubProcess => {
+                if let Some(tool) = try_copy_via_subprocess(text) {
+                    return Ok(tool);
+                }
+            }
+            CopyMethod::Arboard
+                if Clipboard::new()
+                    .and_then(|mut cb| cb.set_text(text))
+                    .is_ok() =>
+            {
+                return Ok("arboard");
+            }
+            CopyMethod::TerminalRelay => return copy_osc52(text),
+            _ => {}
+        }
+    }
+    // Breaks loudly if a future branch forgets to add it
+    unreachable!("copy_method_order must end with TerminalRelay")
+}
+
+/// Run the user's `clipboard_command` through the shell with the text on
+/// stdin. Success needs the whole text written and exit 0 within `timeout`.
+fn run_clipboard_command(
+    command: &str,
+    text: &str,
+    timeout: Duration,
+) -> std::result::Result<(), String> {
+    use std::process::{Command, Stdio};
+    let (shell, flag) = if cfg!(windows) {
+        ("cmd", "/C")
+    } else {
+        ("sh", "-c")
+    };
+    let mut cmd = Command::new(shell);
+    cmd.args([flag, command])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // Own process group, so a timeout also kills what the shell started.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("clipboard_command could not start ({e})"))?;
+    let deadline = Instant::now() + timeout;
+    let timed_out = || format!("clipboard_command timed out after {timeout:?}");
+
+    // Written from a thread so a command that never reads cannot outlast the
+    // timeout. A stdin holder that escapes the group (Windows, setsid) leaves
+    // this detached thread blocked until it exits: at most one per copy.
+    let (written_tx, written_rx) = std::sync::mpsc::channel();
+    let stdin = child.stdin.take();
+    let input = text.to_owned();
+    std::thread::spawn(move || {
+        let written = stdin.is_some_and(|mut stdin| stdin.write_all(input.as_bytes()).is_ok());
+        let _ = written_tx.send(written);
+    });
+
+    let mut poll = Duration::from_millis(1);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(poll);
+                poll = (poll * 2).min(Duration::from_millis(20));
+            }
+            waited => {
+                kill_and_reap(&mut child);
+                return Err(match waited {
+                    Err(e) => format!("clipboard_command failed ({e})"),
+                    _ => timed_out(),
+                });
+            }
+        }
+    };
+    if !status.success() {
+        return Err(format!("clipboard_command failed ({status})"));
+    }
+    // The child is reaped and its group id may be reused, so signal nothing.
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match written_rx.recv_timeout(remaining.max(Duration::from_millis(50))) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("clipboard_command did not read all copied text".to_string()),
+        Err(_) => Err(timed_out()),
+    }
+}
+
+/// Kill the unreaped `child` and its process group, then reap it.
+fn kill_and_reap(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: plain syscall; the child is not reaped yet, so the group
+        // `process_group(0)` created still belongs to it.
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Try xclip (X11) then wl-copy (Wayland). Returns the tool that succeeded.
+fn try_copy_via_subprocess(text: &str) -> Option<&'static str> {
     let session = std::env::var("XDG_SESSION_TYPE");
     if session.is_err() {
         // Session not specified
-        return false;
+        return None;
     }
     let session = session.unwrap();
     if session == "wayland" {
-        try_clipboard_cmd("wl-copy", &[], text)
+        try_clipboard_cmd("wl-copy", &[], text).then_some("wl-copy")
     } else if session == "x11" {
-        try_clipboard_cmd("xclip", &["-selection", "clipboard"], text)
+        try_clipboard_cmd("xclip", &["-selection", "clipboard"], text).then_some("xclip")
     } else {
         // Session type unsupported
-        false
+        None
     }
 }
 
@@ -156,38 +444,44 @@ fn try_clipboard_cmd(program: &str, args: &[&str], text: &str) -> bool {
     else {
         return false;
     };
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = std::io::Write::write_all(&mut stdin, text.as_bytes());
-    }
-    matches!(child.wait(), Ok(s) if s.success())
-}
-
-/// Returns true if we should prefer OSC 52 over the system clipboard.
-///
-/// In tmux, SSH, Zellij, or Rex sessions, native clipboard tools may "succeed"
-/// but copy to the server's clipboard instead of the terminal client's.
-fn should_prefer_osc52() -> bool {
-    std::env::var("TMUX").is_ok()
-        || std::env::var("SSH_TTY").is_ok()
-        || std::env::var("ZELLIJ").is_ok()
-        || std::env::var("REX_SESSION").is_ok()
-        || std::env::var("TERM_PROGRAM").is_ok_and(|program| program == "rex")
+    let written = child
+        .stdin
+        .take()
+        .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+    matches!(child.wait(), Ok(s) if s.success()) && written
 }
 
 /// Copy text to clipboard using OSC 52 escape sequence.
 /// In tmux, raw OSC 52 is intercepted and may not reach the outer terminal.
 /// We use `tmux load-buffer -w` which tells tmux to handle the clipboard copy itself.
-fn copy_osc52(text: &str) -> Result<()> {
+fn copy_osc52(text: &str) -> Result<&'static str> {
     if std::env::var("TMUX").is_ok() {
-        copy_via_tmux(text)
+        copy_via_tmux(text).map(|()| VIA_TMUX)
     } else {
         let mut stdout = std::io::stdout().lock();
-        write_osc52(&mut stdout, text)
+        write_osc52(&mut stdout, text).map(|()| VIA_OSC52)
     }
 }
 
 /// Copy text to the system clipboard via `tmux load-buffer -w -`.
-/// The `-w` flag tells tmux to also forward to the outer terminal's clipboard via OSC 52.
+///
+/// The `-w` flag stores the text in tmux's buffer and forwards it to the outer
+/// terminal's clipboard via OSC 52. If any of the following is missing, the copy
+/// only reaches tmux's buffer — the usual cause of "clipboard empty inside tmux":
+///
+/// 1. `set -g set-clipboard on` in `~/.tmux.conf`. `external` and `off` both
+///    stop the outward OSC 52 and the copy fails.
+/// 2. tmux must know the terminal supports the `Ms` clipboard capability. In
+///    tmux 3.2+, add `set -as terminal-features ',*:clipboard'`. Without it,
+///    tmux drops the passthrough even with `set-clipboard on`.
+/// 3. The outer terminal must allow OSC 52 writes. On by default in kitty,
+///    WezTerm, iTerm2, and foot; off or opt-in in many VTE terminals and xterm.
+///
+/// Some terminals cap OSC 52 payload size, so large reviews can truncate silently.
+///
+/// On a local Linux desktop this relay is unnecessary: xclip/wl-copy write to
+/// the display server directly. See `copy_method_order`; the relay is the
+/// fallback and the preferred path only for SSH.
 fn copy_via_tmux(text: &str) -> Result<()> {
     use std::process::{Command, Stdio};
 
@@ -218,8 +512,12 @@ fn copy_via_tmux(text: &str) -> Result<()> {
     Ok(())
 }
 
-/// Write OSC 52 escape sequence to the given writer.
-/// Separated for testability.
+/// Write the OSC 52 clipboard escape sequence to `writer`.
+///
+/// The direct (non-tmux) relay: the escape travels the terminal stream and the
+/// outer terminal sets the clipboard. Only works when that terminal allows OSC 52
+/// writes (see `copy_via_tmux` for which terminals do). Separated from I/O for
+/// testability.
 fn write_osc52<W: IoWrite>(writer: &mut W, text: &str) -> Result<()> {
     let encoded = BASE64.encode(text);
     write!(writer, "\x1b]52;c;{encoded}\x07")
@@ -2154,5 +2452,338 @@ mod tests {
 
         assert!(markdown.contains("Comment types: QUESTION (ask for clarification)"));
         assert!(!markdown.contains("ISSUE"));
+    }
+
+    /// `copy_with_command` with a fake fallback reporting `via`; returns the
+    /// outcome and the text the fallback received.
+    fn copy_with_fake_fallback(
+        command: Option<&str>,
+        text: &str,
+        timeout: Duration,
+        via: &'static str,
+    ) -> (ClipboardCopy, Option<String>) {
+        let mut received = None;
+        let copy = copy_with_command(text, command, timeout, |text| {
+            received = Some(text.to_string());
+            Ok(via)
+        })
+        .unwrap();
+        (copy, received)
+    }
+
+    #[cfg(unix)]
+    const TEST_TIMEOUT: Duration = Duration::from_secs(2);
+
+    /// Waits for the pid `command` wrote, once the copy has returned.
+    #[cfg(unix)]
+    fn read_pid(path: &std::path::Path) -> libc::pid_t {
+        std::fs::read_to_string(path)
+            .expect("command wrote no pid before the timeout")
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_command_receives_text_on_stdin() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.txt");
+        let command = format!("cat > '{}'", out.display());
+        let (copy, fallback) =
+            copy_with_fake_fallback(Some(&command), "hello\nworld", TEST_TIMEOUT, "xclip");
+        assert_eq!(copy.fallback_warning, None);
+        assert_eq!(fallback, None, "fallback ran after the command succeeded");
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "hello\nworld");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_command_timeout_kills_reaps_and_falls_back_with_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let command = format!("echo $$ > '{}'; exec sleep 60", pid_file.display());
+        let started = Instant::now();
+        let (copy, fallback) =
+            copy_with_fake_fallback(Some(&command), "hello", TEST_TIMEOUT, "xclip");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(
+            copy.fallback_warning.as_deref(),
+            Some("clipboard_command timed out after 2s; copied via xclip")
+        );
+        assert_eq!(fallback.as_deref(), Some("hello"));
+        let pid = read_pid(&pid_file);
+        // SAFETY: signal 0 only probes the pid; a zombie would still succeed.
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "{pid} not killed and reaped"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_command_timeout_holds_when_command_never_reads_stdin() {
+        // More than a pipe buffer, so the write itself blocks.
+        let text = "x".repeat(4 * 1024 * 1024);
+        let started = Instant::now();
+        let (copy, _) = copy_with_fake_fallback(Some("sleep 60"), &text, TEST_TIMEOUT, VIA_OSC52);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(copy.via_terminal);
+        assert_eq!(
+            copy.fallback_warning.as_deref(),
+            Some("clipboard_command timed out after 2s; copied via OSC 52")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_command_timeout_kills_processes_the_shell_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let command = format!("sleep 60 & echo $! > '{}'; wait", pid_file.display());
+        let (copy, _) = copy_with_fake_fallback(Some(&command), "hello", TEST_TIMEOUT, "arboard");
+        assert!(copy.fallback_warning.is_some());
+        let pid = read_pid(&pid_file).to_string();
+        // init reaps the orphan, so poll until it is gone or a zombie.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let ps = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid])
+                .output()
+                .unwrap();
+            let stat = String::from_utf8_lossy(&ps.stdout);
+            if stat.trim().is_empty() || stat.trim().starts_with('Z') {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{pid} survived the timeout");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_command_partial_stdin_falls_back_with_warning() {
+        let text = "x".repeat(1_000_000);
+        let (copy, fallback) =
+            copy_with_fake_fallback(Some("head -c 1 >/dev/null"), &text, TEST_TIMEOUT, VIA_TMUX);
+        assert!(copy.via_terminal);
+        assert_eq!(
+            copy.fallback_warning.as_deref(),
+            Some("clipboard_command did not read all copied text; copied via tmux load-buffer")
+        );
+        assert_eq!(fallback, Some(text));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_command_nonzero_exit_falls_back_with_warning() {
+        for (command, status) in [("exit 3", 3), ("no-such-tuicr-command", 127)] {
+            let (copy, fallback) =
+                copy_with_fake_fallback(Some(command), "hello", TEST_TIMEOUT, "arboard");
+            assert_eq!(
+                copy.fallback_warning,
+                Some(format!(
+                    "clipboard_command failed (exit status: {status}); copied via arboard"
+                ))
+            );
+            assert_eq!(fallback.as_deref(), Some("hello"));
+        }
+    }
+
+    #[test]
+    fn clipboard_without_command_uses_fallback_without_warning() {
+        for (via, via_terminal) in [("xclip", false), (VIA_TMUX, true)] {
+            let (copy, fallback) =
+                copy_with_fake_fallback(None, "hello", CLIPBOARD_COMMAND_TIMEOUT, via);
+            assert_eq!(
+                copy,
+                ClipboardCopy {
+                    via_terminal,
+                    fallback_warning: None,
+                }
+            );
+            assert_eq!(fallback.as_deref(), Some("hello"));
+        }
+    }
+
+    #[test]
+    fn should_map_config_name_to_copy_method() {
+        assert_eq!(
+            CopyMethod::from_config_name("arboard"),
+            Some(CopyMethod::Arboard)
+        );
+        assert_eq!(
+            CopyMethod::from_config_name("pbcopy"),
+            Some(CopyMethod::Pbcopy)
+        );
+        assert_eq!(
+            CopyMethod::from_config_name("subprocess"),
+            Some(CopyMethod::SubProcess)
+        );
+        assert_eq!(
+            CopyMethod::from_config_name("osc52"),
+            Some(CopyMethod::TerminalRelay)
+        );
+        assert_eq!(CopyMethod::from_config_name("nope"), None);
+    }
+
+    fn env(is_macos: bool, ssh: bool, tmux: bool, zellij: bool) -> ClipboardEnv {
+        ClipboardEnv {
+            is_macos,
+            ssh,
+            tmux,
+            zellij,
+            rex: false,
+        }
+    }
+
+    #[test]
+    fn should_keep_auto_order_when_override_is_none() {
+        // Automatic order covers each environment, including remote-session precedence.
+        let cases = [
+            (
+                env(true, false, false, false),
+                vec![
+                    CopyMethod::Pbcopy,
+                    CopyMethod::Arboard,
+                    CopyMethod::TerminalRelay,
+                ],
+            ),
+            (
+                env(false, true, false, false),
+                vec![CopyMethod::TerminalRelay],
+            ),
+            (
+                env(false, false, true, false),
+                vec![CopyMethod::SubProcess, CopyMethod::TerminalRelay],
+            ),
+            (
+                env(false, false, false, true),
+                vec![CopyMethod::SubProcess, CopyMethod::TerminalRelay],
+            ),
+            (
+                ClipboardEnv {
+                    rex: true,
+                    ..env(false, false, true, false)
+                },
+                vec![CopyMethod::TerminalRelay],
+            ),
+            (
+                env(true, true, true, false),
+                vec![
+                    CopyMethod::Pbcopy,
+                    CopyMethod::Arboard,
+                    CopyMethod::TerminalRelay,
+                ],
+            ),
+            (
+                env(false, true, true, false),
+                vec![CopyMethod::TerminalRelay],
+            ),
+            (
+                env(false, false, false, false),
+                vec![
+                    CopyMethod::SubProcess,
+                    CopyMethod::Arboard,
+                    CopyMethod::TerminalRelay,
+                ],
+            ),
+        ];
+        for (e, want) in cases {
+            assert_eq!(copy_method_order(&e, None), want);
+        }
+    }
+
+    #[test]
+    fn should_prioritize_override_over_environment() {
+        let order = copy_method_order(&env(true, false, true, false), Some(&[CopyMethod::Arboard]));
+        assert_eq!(order[0], CopyMethod::Arboard);
+    }
+
+    #[test]
+    fn should_append_terminal_relay_backstop_when_override_omits_it() {
+        let order = copy_method_order(
+            &env(false, false, false, false),
+            Some(&[CopyMethod::Arboard]),
+        );
+        assert_eq!(order, vec![CopyMethod::Arboard, CopyMethod::TerminalRelay]);
+        assert_eq!(*order.last().unwrap(), CopyMethod::TerminalRelay);
+    }
+
+    #[test]
+    fn should_not_duplicate_terminal_relay_when_override_includes_it() {
+        let order = copy_method_order(
+            &env(false, false, false, false),
+            Some(&[CopyMethod::SubProcess, CopyMethod::TerminalRelay]),
+        );
+        assert_eq!(
+            order,
+            vec![CopyMethod::SubProcess, CopyMethod::TerminalRelay]
+        );
+        assert_eq!(
+            order
+                .iter()
+                .filter(|m| **m == CopyMethod::TerminalRelay)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn should_honor_single_terminal_relay_override() {
+        let order = copy_method_order(
+            &env(false, false, false, false),
+            Some(&[CopyMethod::TerminalRelay]),
+        );
+        assert_eq!(order, vec![CopyMethod::TerminalRelay]);
+    }
+
+    #[test]
+    fn should_resolve_config_names_to_ordered_methods() {
+        let names = vec!["arboard".to_string(), "osc52".to_string()];
+        assert_eq!(
+            resolve_clipboard_override(Some(&names)),
+            Some(vec![CopyMethod::Arboard, CopyMethod::TerminalRelay])
+        );
+        assert_eq!(resolve_clipboard_override(None), None);
+        let empty: Vec<String> = Vec::new();
+        assert_eq!(resolve_clipboard_override(Some(&empty)), None);
+    }
+
+    #[test]
+    fn should_flag_platform_unsupported_mechanisms() {
+        assert!(mechanism_unsupported(CopyMethod::SubProcess, true));
+        assert!(!mechanism_unsupported(CopyMethod::Pbcopy, true));
+        assert!(mechanism_unsupported(CopyMethod::Pbcopy, false));
+        assert!(!mechanism_unsupported(CopyMethod::SubProcess, false));
+        for is_macos in [true, false] {
+            assert!(!mechanism_unsupported(CopyMethod::Arboard, is_macos));
+            assert!(!mechanism_unsupported(CopyMethod::TerminalRelay, is_macos));
+        }
+    }
+
+    #[test]
+    fn config_mechanisms_match_mapping_domain() {
+        use std::collections::HashSet;
+        for name in CLIPBOARD_MECHANISMS {
+            let method = CopyMethod::from_config_name(name)
+                .unwrap_or_else(|| panic!("config mechanism {name} has no CopyMethod mapping"));
+            assert_eq!(
+                method.config_name(),
+                *name,
+                "round-trip mismatch for {name}"
+            );
+        }
+        // Distinct methods, so validation and translation cannot silently diverge.
+        let mapped: HashSet<CopyMethod> = CLIPBOARD_MECHANISMS
+            .iter()
+            .filter_map(|n| CopyMethod::from_config_name(n))
+            .collect();
+        assert_eq!(
+            mapped.len(),
+            CLIPBOARD_MECHANISMS.len(),
+            "every config mechanism must map to a distinct CopyMethod"
+        );
     }
 }

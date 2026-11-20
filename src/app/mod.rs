@@ -1207,6 +1207,11 @@ pub struct App {
     /// new/right). Drives the `▶` caret placement and the side a new line
     /// comment attaches to. Ignored in unified view. Defaults to `New`.
     pub cursor_side: LineSide,
+    /// Ordered clipboard-mechanism override from the `clipboard` config key
+    /// (`None` = automatic detection). Set by [`App::apply_clipboard_config`].
+    pub(crate) clipboard_override: Option<Vec<crate::output::markdown::CopyMethod>>,
+    /// `clipboard_command` config key, tried before any other method.
+    pub clipboard_command: Option<String>,
 
     pub file_list_state: FileListState,
     pub comment_navigator_state: CommentNavigatorState,
@@ -1480,6 +1485,8 @@ pub struct App {
     pub output_to_stdout: bool,
     /// Pending output to print to stdout after TUI exits
     pub pending_stdout_output: Option<String>,
+    /// Warning raised as the TUI quits, printed to stderr after teardown.
+    pub pending_exit_warning: Option<String>,
     /// Calculated screen position for comment input cursor (col, row) for IME positioning.
     /// Set during render when in Comment mode, None otherwise.
     pub comment_cursor_screen_pos: Option<(u16, u16)>,
