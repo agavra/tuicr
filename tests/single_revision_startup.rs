@@ -62,6 +62,7 @@ fn should_select_the_only_commit_when_started_with_one_revision() {
             pr_comments_visibility: None,
             git_backend_preference: GitBackendPreference::Libgit2,
             diff_whitespace_mode: DiffWhitespaceMode::default(),
+            include_untracked: true,
             commit_selection: CommitSelectionStart::All,
             pr_target: None,
             pr_current_branch: false,

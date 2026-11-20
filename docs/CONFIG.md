@@ -28,6 +28,7 @@ diff_view = "side-by-side"
 ignore_whitespace = "auto" # or true / false; omitted defaults to false
 commit_order = "descending"
 initial_commit_selection = "all"
+include_untracked = true
 show_file_list = true
 file_list_position = "left"
 compact_folders = false
@@ -97,6 +98,7 @@ session_header = true
 | `initial_commit_selection` | `all`        | Which commits are selected when a multi-commit review first opens: `all`, or `oldest` to start on just the oldest commit and walk forward with `(` / `)`.  |
 | `ignore_whitespace`        | `false`      | Whitespace comparison for local Git, jj, and hg diffs: `false` compares normally, `true` ignores all whitespace, and `"auto"` chooses by file extension. PR diffs are unchanged. See [Whitespace comparison](#whitespace-comparison). |
 | `ignore_whitespace_overrides` | (none)    | Table of extension-to-boolean overrides, used only with `ignore_whitespace = "auto"`. `true` ignores whitespace; `false` compares normally. |
+| `include_untracked`        | `true`       | Include untracked files in local Git working-tree and unstaged reviews, including `-r ... -w` and selector status checks. Set `false` to skip the untracked-file scan; tracked and staged changes remain visible. |
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
 | `file_list_position`       | `left`       | `left` or `right`: which side of the diff the file list and comment navigator sit on. `<leader>h` / `<leader>l` move focus toward the pane on that side. |
 | `compact_folders` | `false` | Join single-child directory chains into one file-tree row. Restart tuicr after changing this setting. |

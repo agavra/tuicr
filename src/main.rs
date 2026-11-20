@@ -196,11 +196,20 @@ fn main() -> anyhow::Result<()> {
         None => DiffWhitespaceMode::Normal,
     };
 
+    let include_untracked = config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.include_untracked)
+        .unwrap_or(true);
+
     let repo_url_override = match cli_args.remote.as_deref() {
         Some(name) => {
             let vcs = tuicr::vcs::GitBackend::discover(
                 git_backend_preference,
-                diff_whitespace_mode.clone(),
+                tuicr::vcs::VcsDiffOptions {
+                    whitespace_mode: diff_whitespace_mode.clone(),
+                    include_untracked,
+                },
             )?;
             Some(tuicr::forge::resolve_remote_repository(&vcs, name)?)
         }
@@ -263,6 +272,7 @@ fn main() -> anyhow::Result<()> {
                 pr_comments_visibility,
                 git_backend_preference,
                 diff_whitespace_mode,
+                include_untracked,
                 commit_selection,
                 pr_target: cli_args.pr_target.as_deref(),
                 pr_current_branch: cli_args.pr_current_branch,

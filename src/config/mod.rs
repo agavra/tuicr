@@ -216,6 +216,7 @@ pub struct AppConfig {
     /// `ignore_whitespace = "auto"`. Keys are stored already normalized
     /// (ASCII lowercase, no leading dot).
     pub ignore_whitespace_overrides: BTreeMap<String, bool>,
+    pub include_untracked: Option<bool>,
     pub wrap: Option<bool>,
     /// Where wrapped unified diff rows continue: `"flow"` (the default) or
     /// `"gutter"`.
@@ -300,6 +301,7 @@ const KNOWN_KEYS: &[&str] = &[
     "initial_commit_selection",
     "ignore_whitespace",
     "ignore_whitespace_overrides",
+    "include_untracked",
     "wrap",
     "wrap_style",
     "relative_line_numbers",
@@ -676,6 +678,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         ),
         ignore_whitespace,
         ignore_whitespace_overrides,
+        include_untracked: read_bool(table, "include_untracked", &mut warnings),
         wrap: read_bool(table, "wrap", &mut warnings),
         wrap_style: read_enum(table, "wrap_style", &["flow", "gutter"], &mut warnings),
         export_legend: read_bool(table, "export_legend", &mut warnings),
@@ -1690,6 +1693,51 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'ignore_whitespace' must be true, false, or \"auto\"; got \"yes\", ignoring"
+        );
+    }
+
+    // include_untracked
+
+    #[test]
+    fn should_parse_include_untracked_true() {
+        let outcome = parse_config("include_untracked = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.include_untracked),
+            Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_include_untracked_false() {
+        let outcome = parse_config("include_untracked = false\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.include_untracked),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_include_untracked_with_invalid_type() {
+        let outcome = parse_config("include_untracked = \"yes\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.include_untracked),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'include_untracked' must be a boolean; ignoring value"
         );
     }
 

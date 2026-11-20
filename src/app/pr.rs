@@ -139,11 +139,11 @@ impl App {
         }
         let local = self.parked_vcs.take().or_else(|| {
             let root = self.local_repo_root.as_deref()?;
-            let options = self.vcs_open_options.clone();
+            let options = &self.vcs_open_options;
             let vcs = crate::vcs::detect_vcs_in(
                 root,
                 options.git_backend_preference,
-                options.diff_whitespace_mode,
+                options.diff_options(),
             )
             .ok()?;
             let info = vcs.info().clone();
