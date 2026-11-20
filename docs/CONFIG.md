@@ -30,6 +30,7 @@ commit_order = "descending"
 initial_commit_selection = "all"
 include_untracked = true
 show_file_list = true
+minimal_ui = false
 file_list_position = "left"
 compact_folders = false
 show_pr_checks = false
@@ -100,6 +101,7 @@ session_header = true
 | `ignore_whitespace_overrides` | (none)    | Table of extension-to-boolean overrides, used only with `ignore_whitespace = "auto"`. `true` ignores whitespace; `false` compares normally. |
 | `include_untracked`        | `true`       | Include untracked files in local Git working-tree and unstaged reviews, including `-r ... -w` and selector status checks. Set `false` to skip the untracked-file scan; tracked and staged changes remain visible. |
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
+| `minimal_ui`               | `false`      | Diff-focused presentation: hides the brand header, the diff panel frame, and the status footer's contents while idle (the row stays reserved for commands and messages), and opens on the first file instead of the overview. Toggle with `:set minimal!`. |
 | `file_list_position`       | `left`       | `left` or `right`: which side of the diff the file list and comment navigator sit on. `<leader>h` / `<leader>l` move focus toward the pane on that side. |
 | `compact_folders` | `false` | Join single-child directory chains into one file-tree row. Restart tuicr after changing this setting. |
 | `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |

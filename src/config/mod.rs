@@ -181,6 +181,9 @@ pub struct AppConfig {
     pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
+    /// Hide the brand header, idle status footer, and diff frame, and open
+    /// on the first file. Defaults to false, which keeps the current UI.
+    pub minimal_ui: Option<bool>,
     /// Which side of the diff the file list sits on: `"left"` (the default)
     /// or `"right"`.
     pub file_list_position: Option<String>,
@@ -289,6 +292,7 @@ const KNOWN_KEYS: &[&str] = &[
     "backend",
     "comment_types",
     "show_file_list",
+    "minimal_ui",
     "file_list_position",
     "compact_folders",
     "show_pr_checks",
@@ -640,6 +644,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .get("comment_types")
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
+        minimal_ui: read_bool(table, "minimal_ui", &mut warnings),
         file_list_position: read_enum(
             table,
             "file_list_position",
@@ -1165,6 +1170,26 @@ mod tests {
             None
         );
         assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    #[test]
+    fn should_parse_minimal_ui() {
+        let absent = parse_config("mouse = true\n");
+        assert_eq!(absent.config.unwrap().minimal_ui, None);
+        assert!(absent.warnings.is_empty());
+
+        for value in [true, false] {
+            let outcome = parse_config(&format!("minimal_ui = {value}\n"));
+            assert_eq!(outcome.config.unwrap().minimal_ui, Some(value));
+            assert!(outcome.warnings.is_empty());
+        }
+
+        let outcome = parse_config("minimal_ui = \"yes\"\n");
+        assert_eq!(outcome.config.unwrap().minimal_ui, None);
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Config key 'minimal_ui' must be a boolean; ignoring value"]
+        );
     }
 
     // file_list_position
