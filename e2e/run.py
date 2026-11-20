@@ -65,6 +65,13 @@ def discover(scen_dir: Path, filters: list[str]) -> list[str]:
     return [n for n in names if not filters or any(f in n for f in filters)]
 
 
+def undocumented_areas(scen_dir: Path) -> list[str]:
+    """Scenario directories with no `| `<area>` |` row in COVERAGE.md."""
+    table = (HERE / "COVERAGE.md").read_text()
+    areas = sorted(p.name for p in scen_dir.iterdir() if p.is_dir() and any(p.glob("*.py")))
+    return [a for a in areas if f"| `{a}` |" not in table]
+
+
 def run_scenario(script: Path, timeout: float, log: Path) -> int:
     with open(log, "wb") as out:
         proc = subprocess.Popen(
@@ -107,6 +114,9 @@ def main(argv: list[str]) -> int:
     if list_only:
         print("\n".join(selected))
         return 0
+    if scen_dir == (HERE / "scenarios").resolve() and (missing := undocumented_areas(scen_dir)):
+        print(f"e2e: add a row to e2e/COVERAGE.md for scenario area(s): {', '.join(missing)}", file=sys.stderr)
+        return 2
 
     tuicr_bin = os.environ.get("TUICR_BIN")
     if not tuicr_bin:

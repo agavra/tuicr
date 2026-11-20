@@ -16,7 +16,7 @@ Run a single test by name:
 cargo test test_name_fragment   # matches any test whose name contains the fragment
 ```
 
-End-to-end tests (real binary in tmux, fake forges): `TUICR_BIN=target/release/tuicr uv run --python 3.12 e2e/run.py` after `cargo build --release`. Every user-visible bug fix or behaviour change adds or updates `e2e/scenarios/<area>/<behaviour>.py` (fails on the parent, passes with the change) and `e2e/COVERAGE.md`; never use a real forge. See `e2e/README.md`.
+End-to-end tests (real binary in tmux, fake forges): `TUICR_BIN=target/release/tuicr uv run --python 3.12 e2e/run.py` after `cargo build --release`. Every user-visible bug fix or behaviour change adds or updates `e2e/scenarios/<area>/<behaviour>.py` (fails on the parent, passes with the change); a new area also needs a row in `e2e/COVERAGE.md`; never use a real forge. See `e2e/README.md`.
 
 ## Architecture
 

@@ -15,7 +15,7 @@ Repository-managed agent integration: `skills/tuicr/` (shared skill bundle that 
 - Before committing Python changes run `uvx ruff@0.15.16 format --check`, `uvx ruff@0.15.16 check` and `uvx ty@0.0.44 check` with `e2e/pyproject.toml` (exact commands and pinned versions as in CI: `CONTRIBUTING.md#python-checks`).
 - Scenarios are Python on the stdlib library `e2e/lib/e2e/` (`from e2e import scenario`); all scenarios are `.py`, never add a `.sh`. A known failure declares a module-level `QUARANTINE = "<reason>"`. Harness self-test: `uv run --python 3.12 e2e/selftest/run.py`.
 - Forges are always faked (`e2e/fakeforge/`, `e2e/bin/{gh,glab,tea,bkt}`, fake Gerrit). Never call a real forge, network or credentials from a scenario.
-- Adding a scenario: update `e2e/COVERAGE.md`.
+- `e2e/COVERAGE.md` maps areas to workflows and lists known gaps; it does not list scenarios. A new `e2e/scenarios/<area>/` needs a row there (`e2e/run.py` refuses to run without one).
 
 ## Key types and invariants
 
@@ -98,7 +98,7 @@ configuration options in `docs/CONFIG.md` only.
 | `docs/KEYBINDINGS.md`  | Any keybinding or `:` command: add a row to the pane's key table and the `:` command table, plus prose for new behavior  |
 | `AGENTS.md`            | Key types, invariants, non-obvious behavior, general gotchas, repo-managed agent integrations (forge detail goes in `docs/FORGES.md`) |
 | `docs/FORGES.md`       | Forge backend contracts, detection, session/submit rules, F*/G* gotchas (new forge-specific gotchas go here)             |
-| `e2e/COVERAGE.md`      | Adding, renaming or removing an e2e scenario, or closing a listed gap (authoring rules stay in `e2e/README.md`)         |
+| `e2e/COVERAGE.md`      | Adding an e2e scenario area, or closing a listed gap (authoring rules stay in `e2e/README.md`)                           |
 | `docs/CONFIG.md`       | Any `config.toml` key: add a row to the Options table and a line to the Full example block                               |
 
 ---
