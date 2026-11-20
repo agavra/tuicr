@@ -528,6 +528,7 @@ mod tests {
         let mut files = get_working_tree_diff(
             &repo,
             &DiffWhitespaceMode::Normal,
+            true,
             &SyntaxHighlighter::default(),
         )
         .unwrap();
