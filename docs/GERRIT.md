@@ -126,9 +126,10 @@ Gerrit's magic paths (`/COMMIT_MSG`, `/MERGE_LIST`, `/PATCHSET_LEVEL`) have no l
 diff and are not rendered.
 
 With credentials set, your own unpublished drafts are fetched too, so a Draft submit's comments
-stay on screen afterwards. They render like other remote comments, read-only, with a `draft`
+stay on screen afterwards. They render like other remote comments, with a `draft`
 marker in the header (`[gerrit @you draft]`); a draft reply to a published comment joins that
-thread. A draft left on an earlier patch set is outdated, so like other outdated threads it shows
+thread. Your own drafts are the one exception to read-only: `dd` on one asks for confirmation and
+then deletes it from Gerrit. Comments by others stay read-only. A draft left on an earlier patch set is outdated, so like other outdated threads it shows
 only under `:comments all`; a status message says when there are any. Your review-level draft on
 `/PATCHSET_LEVEL` shows at the top of the diff as a `pending` review.
 
@@ -156,7 +157,8 @@ This is the first Gerrit slice. Not yet supported:
   commit selector shows exactly one entry.
 - **The `Code-Review` label is assumed.** Installs that rename it, or that need a different label
   (`Verified`, a custom gate), cannot vote from tuicr yet.
-- **Replying to a thread.** Existing comments are read-only in tuicr, as on every other forge.
+- **Replying to a thread.** Existing comments are read-only in tuicr, as on every other forge —
+  except your own Gerrit drafts, which `dd` deletes from the server after a Y/N prompt.
 - **SSH transport.** Only the REST API is used; `ssh -p 29418 host gerrit review` is not called.
 - **Gerrit 3.3+ for the `r` toggle.** The attention set was introduced in Gerrit 3.3; an older
   server rejects `attention:self` outright. The rest of the backend has no such floor.
