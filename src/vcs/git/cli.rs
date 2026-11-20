@@ -35,7 +35,8 @@ use super::{
 // content is not parsed: they are likely logs, dumps, or build artefacts.
 const MAX_UNTRACKED_FILE_SIZE: u64 = 10 * 1_024 * 1_024;
 
-const COMMIT_FORMAT: &str = "--format=%H%x00%h%x00%an%x00%ct%x00%B%x1e";
+// `%H` id, `%h` short id, `%aN` author name (respects `.mailmap`), `%ct` timestamp, `%B` body.
+const COMMIT_FORMAT: &str = "--format=%H%x00%h%x00%aN%x00%ct%x00%B%x1e";
 
 #[derive(Debug)]
 pub struct GitCliBackend {
@@ -1387,6 +1388,47 @@ mod tests {
         let objects = read_git_objects(root, requests).expect("read objects");
         // then
         assert_eq!(objects.len(), 3000);
+    }
+
+    #[test]
+    fn git_log_format_respects_mailmap() {
+        // given a commit authored as "Raw Author <raw@example.test>" and a
+        // worktree `.mailmap` rewriting that identity to "Mapped <mapped@example.invalid>"
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+
+        git(root, &["init", "--quiet"]);
+        fs::write(root.join("a.txt"), "a\n").expect("failed to write file");
+        git(root, &["add", "a.txt"]);
+        git(
+            root,
+            &[
+                "-c",
+                "user.name=Raw Author",
+                "-c",
+                "user.email=raw@example.test",
+                "commit",
+                "--quiet",
+                "-m",
+                "first",
+            ],
+        );
+        fs::write(
+            root.join(".mailmap"),
+            "Mapped <mapped@example.invalid> Raw Author <raw@example.test>\n",
+        )
+        .expect("failed to write mailmap");
+
+        // when running git log with the same format tuicr uses (%aN respects .mailmap)
+        let output = run_git_command_args(root, ["log", "--max-count=1", COMMIT_FORMAT])
+            .expect("failed to run git log");
+
+        let commits = parse_commit_records(&output, &HashMap::new());
+
+        // then the mapped author name is used, not the raw one
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].author, "Mapped");
+        assert_ne!(commits[0].author, "Raw Author");
     }
 
     #[test]
