@@ -34,13 +34,6 @@ impl<'a> SubmitContext<'a> {
         }
     }
 
-    /// Resolved `[TYPE]` text, or an empty string for `None` so callers omit
-    /// the tag.
-    #[cfg(test)]
-    fn type_label(&self, comment_type: &CommentType) -> String {
-        resolve_comment_type_label(comment_type, self.comment_types)
-    }
-
     /// The type prefix rendered through `forge.comment_type_format`, or an
     /// empty string for `None`. Independent of `comment_type_prefix` so the
     /// submit modals can preview it.
@@ -1122,7 +1115,7 @@ mod tests {
         let types = test_comment_types();
         let config = default_config();
         let ctx = ctx_of(&config, &types);
-        assert_eq!(ctx.type_label(&CommentType::None), "");
+        assert_eq!(ctx.type_tag(&CommentType::None), "");
         let custom = vec![CommentTypeDefinition {
             id: "issue".into(),
             label: "bug".into(),
@@ -1130,8 +1123,8 @@ mod tests {
             color: None,
         }];
         let ctx = ctx_of(&config, &custom);
-        assert_eq!(ctx.type_label(&CommentType::from_id("issue")), "BUG");
-        assert_eq!(ctx.type_label(&CommentType::from_id("note")), "NOTE");
+        assert_eq!(ctx.type_tag(&CommentType::from_id("issue")), "[BUG] ");
+        assert_eq!(ctx.type_tag(&CommentType::from_id("note")), "[NOTE] ");
     }
 
     // File-level mapping
