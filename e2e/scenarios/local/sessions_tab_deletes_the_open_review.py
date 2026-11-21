@@ -12,8 +12,7 @@ def main(s: Scenario) -> None:
     tui = s.start(cwd=repo)
     tui.wait_for("Unstaged changes").keys("Enter")
     tui.wait_for("unstaged line").cursor_on("unstaged line")
-    tui.keys("c").wait_for("COMMENT")
-    tui.keys("delete me").keys("Enter").wait_for("delete me")
+    tui.comment("delete me")
     tui.quit()
     tui = s.start(cwd=repo, keep=True)
     tui.wait_for("Unstaged changes")
@@ -24,11 +23,7 @@ def main(s: Scenario) -> None:
     assert not s.session_has("delete me", allow_missing=True), "dd left the session this TUI has open"
     # A later save starts a new review: the deleted comments must not return.
     tui.keys("Tab").wait_for("Unstaged changes").keys("Enter")
-    tui.wait_for("unstaged line").cursor_on("unstaged line")
-    tui.keys("c").wait_for("COMMENT")
-    tui.keys("new comment").keys("Enter")
-    tui.wait_gone("COMMENT")  # the box closes only after the autosave lands
-
-    assert s.session_has("new comment"), "the fresh comment was not saved"
-    assert not s.session_has("delete me"), "the deleted review came back"
+    tui.wait_for("unstaged line").reject("delete me")  # the deleted comment is not shown either
+    tui.cursor_on("unstaged line").comment("new comment")
+    assert s.session_comments() == ["new comment"], f"saved comments: {s.session_comments()}"
     tui.quit()

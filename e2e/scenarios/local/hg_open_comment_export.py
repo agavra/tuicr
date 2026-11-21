@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # Mercurial journey end to end: open the uncommitted changes, comment on an added line, export with --stdout. The
-# markdown
-# anchors the comment to the right file:line. The fixture changes two files of one status class (modified) on purpose:
-# mixed status classes are covered by local/hg_hunks_under_own_files. Needs real Mercurial (SKIP without it, FAIL with
-# E2E_REQUIRE_HG=1).
+# markdown anchors the comment to the right file:line. The fixture changes two files of one status class (modified) on
+# purpose: mixed status classes are covered by local/hg_hunks_under_own_files. Needs real Mercurial (SKIP without it,
+# FAIL with E2E_REQUIRE_HG=1).
 import re
 
 from e2e import TUICR_BIN, Scenario, grep, repos, scenario
@@ -34,8 +33,7 @@ def main(s: Scenario) -> None:
     )
     tui.wait_for("Unstaged changes").keys("Enter")
     tui.wait_for("Files · 0/2").keys("Escape").cursor_on("1 ▌ z_new")
-    tui.keys("c").wait_for("COMMENT")
-    tui.keys("hg exported note").keys("Enter").wait_for("hg exported note")
+    tui.comment("hg exported note")
     tui.cmd("clip").wait_exit()
     text, errtext = out.read_bytes().decode(), err.read_bytes().decode()
     assert grep(r"^I reviewed your code", text), f"export lacks the intro\n{text}"
