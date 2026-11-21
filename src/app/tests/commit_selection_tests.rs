@@ -1124,3 +1124,68 @@ fn should_keep_wrap_preference_when_narrowing_the_commit_pane() {
 
     assert!(app.diff_state.wrap_lines, "inline narrowing reset wrap");
 }
+
+fn two_commit_selector_app() -> App {
+    build_app_with_range_diff(
+        vec![normal_commit("c2"), normal_commit("c1")],
+        vec![commit_only_file(
+            &PathBuf::from("src/only_in_commit.rs"),
+            vec![one_line_hunk()],
+        )],
+    )
+}
+
+#[test]
+fn should_show_the_commit_pane_for_a_multi_commit_selection_by_default() {
+    let mut app = two_commit_selector_app();
+    app.commit_selection_range = Some((0, 1));
+
+    app.confirm_commit_selection().unwrap();
+
+    assert!(app.show_commit_selector);
+    assert!(app.has_inline_commit_selector());
+}
+
+#[test]
+fn should_keep_the_commit_pane_hidden_for_a_selector_review_when_show_commits_is_false() {
+    // given `show_commits = false`
+    let mut app = two_commit_selector_app();
+    app.apply_show_commits_config(false);
+    app.commit_selection_range = Some((0, 1));
+
+    // when a multi-commit review opens from the selector
+    app.confirm_commit_selection().unwrap();
+
+    // then the pane stays hidden while `(` / `)` can still cycle commits
+    assert!(!app.show_commit_selector);
+    assert!(!app.has_inline_commit_selector());
+    assert!(app.has_review_commits());
+    assert_ne!(app.focused_panel, FocusedPanel::CommitSelector);
+}
+
+#[test]
+fn should_let_the_user_reveal_the_commit_pane_without_changing_the_show_commits_preference() {
+    let mut app = two_commit_selector_app();
+    app.apply_show_commits_config(false);
+    app.commit_selection_range = Some((0, 1));
+    app.confirm_commit_selection().unwrap();
+
+    // when the user toggles the pane on for this review
+    app.toggle_commit_selector();
+
+    // then it shows, and the configured preference is unchanged
+    assert!(app.has_inline_commit_selector());
+    assert!(!app.show_commits_on_open);
+}
+
+#[test]
+fn should_hide_the_current_commit_pane_and_drop_its_focus_when_show_commits_is_false() {
+    let mut app = build_app(vec![normal_commit("a"), normal_commit("b")]);
+    app.show_commit_selector = true;
+    app.focused_panel = FocusedPanel::CommitSelector;
+
+    app.apply_show_commits_config(false);
+
+    assert!(!app.show_commit_selector);
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+}
