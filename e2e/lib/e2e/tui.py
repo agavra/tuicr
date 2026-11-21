@@ -11,11 +11,17 @@ tui.cmd("theme").wait_for("Switch Theme").keys("Enter").
 from __future__ import annotations
 
 import contextlib
+import fcntl
+import itertools
 import json
 import math
+import os
 import re
+import select
 import shutil
+import struct
 import subprocess
+import termios
 import time
 import zlib
 from collections.abc import Callable
@@ -23,7 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .core import (
-    E2E_DIR,
+    FAKE_BIN,
     OUT,
     REJECT_WINDOW,
     ROOT,
@@ -99,14 +105,134 @@ def read_forge_log(path: Path) -> list[Call]:
     return out
 
 
+_TMUX = ["tmux", "-L", SOCKET, "-f", "/dev/null", "-u"]
+# Commands the control client runs; anything else (new-session's long argv, set-option -g...) is exec'ed.
+_CONTROL_COMMANDS = frozenset(
+    {"capture-pane", "display-message", "send-keys", "has-session", "kill-session", "set-buffer", "paste-buffer"}
+    | {"resize-window"}
+)
+
+
+class _Control:
+    """One tmux control-mode client (`tmux -C attach`, output notifications off) per scenario process: each command
+    is a line written to it, answered by a `%begin <time> <n> <flags>` ... `%end|%error <time> <n> <flags>` block, so a
+    capture or a key costs no process launch. Commands are tmux-quoted; an argument the line syntax cannot carry
+    (a newline, or a trailing `;` that tmux's argv parsing reads as a separator) is exec'ed instead. When the client
+    cannot be started, dies or stalls, the command is exec'ed, so the answer is the same as without it."""
+
+    def __init__(self) -> None:
+        self.proc: subprocess.Popen[bytes] | None = None
+        self.enabled = False  # set once this process made sure the anchor session exists
+        self.buf = b""
+
+    @staticmethod
+    def line(args: tuple[str, ...]) -> tuple[str, int] | None:
+        """(command line, number of commands) for args, or None when it must be exec'ed."""
+        words, count, first = [], 1, True
+        for a in args:
+            if a == ";":
+                words.append(";")
+                count, first = count + 1, True
+                continue
+            if first and a not in _CONTROL_COMMANDS:
+                return None
+            if any(c in a for c in "\n\r\0") or a.endswith(";"):
+                return None
+            words.append("'" + a.replace("'", "'\\''") + "'")
+            first = False
+        return " ".join(words), count
+
+    def _open(self) -> subprocess.Popen[bytes] | None:
+        if self.proc is not None and self.proc.poll() is None:
+            return self.proc
+        self.proc, self.buf = None, b""
+        try:
+            p = subprocess.Popen(
+                [*_TMUX, "-C", "attach-session", "-t", "e2e-anchor"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            self.enabled = False
+            return None
+        self.proc = p
+        if self._send("refresh-client -f no-output", 1) is None:  # also proves the client attached
+            self.enabled = False
+            return None
+        return p
+
+    def _readline(self, p: subprocess.Popen[bytes], deadline: float) -> str | None:
+        assert p.stdout is not None
+        while b"\n" not in self.buf:
+            left = deadline - time.monotonic()
+            if left <= 0 or not select.select([p.stdout], [], [], left)[0]:
+                return None
+            chunk = os.read(p.stdout.fileno(), 65536)
+            if not chunk:
+                return None
+            self.buf += chunk
+        ln, self.buf = self.buf.split(b"\n", 1)
+        return ln.decode("utf-8", errors="replace")
+
+    def _send(self, line: str, count: int) -> tuple[int, str, str] | None:
+        """Run one command line; (status, stdout, stderr) like an exec'ed tmux, or None (the client is closed)."""
+        p = self.proc
+        assert p is not None and p.stdin is not None
+        deadline = time.monotonic() + 2 * TIMEOUT
+        out: list[str] = []
+        try:
+            p.stdin.write(line.encode() + b"\n")
+            p.stdin.flush()
+            while count:
+                block: list[str] | None = None
+                tag, mine, tail = [""], False, [""]
+                while True:
+                    ln = self._readline(p, deadline)
+                    if ln is None:
+                        raise OSError("tmux control client closed or stalled")
+                    if block is None:
+                        head = ln.split(" ")
+                        if head[0] == "%begin" and len(head) == 4:
+                            block, tag, mine = [], head[1:3], head[3] == "1"
+                        continue  # a notification between blocks
+                    tail = ln.split(" ")
+                    if len(tail) == 4 and tail[0] in ("%end", "%error") and tail[1:3] == tag:
+                        break
+                    block.append(ln)
+                if not mine:  # a block of a command this client did not send (the attach itself)
+                    continue
+                count -= 1
+                if tail[0] == "%error":  # tmux stops a command list at its first error
+                    return 1, "".join(x + "\n" for x in out), "".join(x + "\n" for x in block)
+                out += block
+        except OSError:
+            p.kill()
+            p.wait()
+            self.proc = None
+            return None
+        return 0, "".join(x + "\n" for x in out), ""
+
+    def run(self, args: tuple[str, ...]) -> tuple[int, str, str] | None:
+        if not self.enabled or (parsed := self.line(args)) is None or self._open() is None:
+            return None
+        return self._send(*parsed)
+
+
+_control = _Control()
+# How long input waits after a bare Escape before checking that the pane has read it (see Tui._input): by then the
+# Escape has crossed the pty into the pane's input queue. Exec'ing tmux per key used to leave a gap of a process launch.
+ESCAPE_GAP = 0.05
+
+
 def tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    """Run tmux on the scenario's private server (socket $E2E_SOCKET, no config, UTF-8)."""
-    p = subprocess.run(
-        ["tmux", "-L", SOCKET, "-f", "/dev/null", "-u", *args],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-    )
+    """Run tmux on the scenario's private server (socket $E2E_SOCKET, no config, UTF-8), through the control client
+    when it can carry the command (see _Control), else as its own process."""
+    res = _control.run(args)
+    if res is not None:
+        p = subprocess.CompletedProcess([*_TMUX, *args], *res)
+    else:
+        p = subprocess.run([*_TMUX, *args], stdin=subprocess.DEVNULL, capture_output=True, text=True)
     if check and p.returncode != 0:
         raise Failure(f"tmux {' '.join(args)} failed: {p.stderr.strip()}")
     return p
@@ -114,11 +240,14 @@ def tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
 
 def _anchor(cols: int, rows: int) -> None:
     """An idle session keeps one tmux server alive for the whole run (a new-session sent to a server that is shutting
-    down is lost); remain-on-exit is server-wide so even an instantly dying program leaves its pane and exit status."""
-    if tmux("has-session", "-t", "e2e-anchor", check=False).returncode == 0:
+    down is lost); remain-on-exit is server-wide so even an instantly dying program leaves its pane and exit status.
+    The control client attaches to it."""
+    if _control.enabled and _control.proc is not None and _control.proc.poll() is None:
         return
-    tmux("new-session", "-d", "-x", str(cols), "-y", str(rows), "-s", "e2e-anchor", "--", "sleep", "86400")
-    tmux("set-option", "-g", "remain-on-exit", "on")
+    if tmux("has-session", "-t", "e2e-anchor", check=False).returncode != 0:
+        tmux("new-session", "-d", "-x", str(cols), "-y", str(rows), "-s", "e2e-anchor", "--", "sleep", "86400")
+        tmux("set-option", "-g", "remain-on-exit", "on")
+    _control.enabled = True
 
 
 class Tui:
@@ -128,6 +257,7 @@ class Tui:
         self.forge_log = self.dir / "forge.log"
         self.exit_ok = False  # a wait_exit accepted the process's exit (screen checks of the dead pane are fine then)
         self.retired = False  # a restart under the same name took over the pane
+        self.escape_at = -math.inf  # when the last input sent ended in a bare Escape (see _input)
 
     @classmethod
     def start(
@@ -156,7 +286,7 @@ class Tui:
         if exit_file.exists():
             exit_file.unlink()
         s.forge_logs.append(t.forge_log)
-        path = ":".join([*s.pre_path, f"{E2E_DIR}/bin", TOOL_PATH])
+        path = ":".join([*s.pre_path, FAKE_BIN, TOOL_PATH])
         cenv = child_env(
             d,
             path,
@@ -201,14 +331,55 @@ class Tui:
         return t
 
     # ---- input -----------------------------------------------------------------------------------------------------
+    def _input(self, *args: str, escape: bool = False) -> None:
+        """Send input to the pane. A bare Escape and the next input must not reach tuicr in one read: the terminal
+        parser takes ESC followed by a key as Alt+key (`Escape` then `r` arrives as Alt-r, which nothing binds). The
+        control client sends back to back, so input after an Escape waits ESCAPE_GAP, then until the pane's tty has no
+        unread input (a busy tuicr reads late; a fixed gap alone would let the next key pile up behind the Escape)."""
+        wait = self.escape_at + ESCAPE_GAP - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        if self.escape_at > -math.inf:
+            self._wait_input_read()
+        tmux(*args)
+        self.escape_at = time.monotonic() if escape else -math.inf
+
+    def _wait_input_read(self) -> None:
+        """Wait (up to TIMEOUT) until the program in the pane has read all input queued on its tty (FIONREAD on the
+        pane's tty). Gives up early when the tty cannot be queried or the pane's process has exited."""
+        p = tmux("display-message", "-p", "-t", self.session, "#{pane_tty}", check=False)
+        tty = p.stdout.strip()
+        if p.returncode != 0 or not tty:
+            return
+        try:
+            fd = os.open(tty, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+        except OSError:
+            return
+        try:
+            deadline = time.monotonic() + TIMEOUT
+            for i in itertools.count():
+                if not struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0\0\0\0"))[0]:
+                    return
+                if time.monotonic() > deadline or (i % 20 == 19 and not self._running()):
+                    return
+                time.sleep(0.005)
+        except OSError:
+            return
+        finally:
+            os.close(fd)
+
+    def _running(self) -> bool:
+        p = tmux("display-message", "-p", "-t", self.session, "#{pane_dead}", check=False)
+        return p.returncode == 0 and p.stdout.strip() == "0"
+
     def keys(self, *keys: str) -> Tui:
         """tmux send-keys: key names (Enter, Escape, C-c, Tab...) or text; several arguments are sent in order."""
-        tmux("send-keys", "-t", self.session, *keys)
+        self._input("send-keys", "-t", self.session, *keys, escape=bool(keys) and keys[-1] in ("Escape", "Esc", "C-["))
         return self
 
     def type(self, text: str) -> Tui:
         """tmux send-keys -l: text sent literally, never parsed as key names (escape sequences, ';e')."""
-        tmux("send-keys", "-t", self.session, "-l", text)
+        self._input("send-keys", "-t", self.session, "-l", text, escape=text.endswith("\x1b"))
         return self
 
     def click(self, col: int, row: int, button: int = 0) -> Tui:
@@ -218,7 +389,7 @@ class Tui:
     def paste(self, text: str) -> Tui:
         """Bracketed paste, through a tmux buffer."""
         tmux("set-buffer", "-b", "e2e", text)
-        tmux("paste-buffer", "-p", "-b", "e2e", "-t", self.session)
+        self._input("paste-buffer", "-p", "-b", "e2e", "-t", self.session)
         return self
 
     def resize(self, cols: int, rows: int) -> Tui:
@@ -462,12 +633,14 @@ class Tui:
             if grep(pattern, cur):
                 return self
             self.keys("j")
-            try:  # the cursor moving redraws; at the end of the diff it cannot move, so stop waiting after 0.5 s
-                self.wait_screen_change(scr, 0.5, allow_dead)
+            # The cursor moving redraws. No redraw within the window means it cannot move (the end of the diff): stop
+            # pressing, since a j sent while a slow app still handles the last one would skip a row.
+            try:
+                self.wait_screen_change(scr, 0.2 * TIMEOUT, allow_dead)
             except (NoPane, DeadPane):
                 raise
             except Failure:
-                pass
+                break
             self.settle(0.1, allow_dead=allow_dead)  # the first changed frame can be partial: judge a settled screen
             scr = self._live(what, allow_dead)
         raise Failure(f"cursor never reached /{pattern}/", scr)

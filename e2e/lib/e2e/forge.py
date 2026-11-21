@@ -112,19 +112,24 @@ def gerrit_serve(
     if log.exists():  # a second serve wipes the dir: keep what the first one flagged
         s.forge_unexpected += [ln for ln in log.read_text().splitlines() if UNEXPECTED_MARK in ln]
     shutil.rmtree(gd, ignore_errors=True)
-    r = repos._fresh_git(r)
     gd.mkdir(parents=True)
-    base = ""
-    if kind == "threads":
-        repos.write(r / "a.txt", "base one\nbase two\n")
+
+    def build(r: Path) -> list[str]:
+        r = repos._fresh_git(r)
+        base = ""
+        if kind == "threads":
+            repos.write(r / "a.txt", "base one\nbase two\n")
+            repos.git(r, "add", "-A")
+            repos.git(r, "commit", "-qm", "base")  # noqa: E702
+            base = repos.git(r, "rev-parse", "HEAD")
+        repos.write(r / "a.txt", "line one\nline two\nline three\n")
         repos.git(r, "add", "-A")
-        repos.git(r, "commit", "-qm", "base")  # noqa: E702
-        base = repos.git(r, "rev-parse", "HEAD")
-    repos.write(r / "a.txt", "line one\nline two\nline three\n")
-    repos.git(r, "add", "-A")
-    repos.git(r, "commit", "-qm", "Add a.txt")  # noqa: E702
-    head = repos.git(r, "rev-parse", "HEAD")
-    repos.git(r, "remote", "add", "origin", f"ssh://{host}:29418/{project}")
+        repos.git(r, "commit", "-qm", "Add a.txt")  # noqa: E702
+        head = repos.git(r, "rev-parse", "HEAD")
+        repos.git(r, "remote", "add", "origin", f"ssh://{host}:29418/{project}")
+        return [base, head]
+
+    base, head = repos.cached_fixture(r, f"gerrit:{kind}:{host}:{project}", build)
     parents = f'[{{"commit": "{base}"}}]' if base else "[]"
     tpl = (E2E_DIR / "data/gerrit/change.json.tpl").read_text()
     (gd / "change.json").write_text(
