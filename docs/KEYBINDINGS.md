@@ -26,7 +26,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `n` / `N` | Next / previous search match (wraps around) |
 | `Esc` | Clear search-match highlighting; the pattern is kept so `n` / `N` still work |
 | `Enter` | Expand or collapse hidden context between hunks |
-| `Shift-Enter` | Expand or collapse all hidden context between hunks at once |
+| `Shift-Enter` | Expand the whole gap at the cursor at once (or collapse it) |
 | `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |
 | `zb` | Scroll cursor to bottom of screen |

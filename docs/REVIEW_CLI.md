@@ -196,7 +196,7 @@ Target types:
 - `line`
 - `line_range` or `range`
 
-`kind` is accepted as an alias for `type`, and `-` is read as `_`, so
+Inside `target`, `kind` is accepted as an alias for `type`, and `-` is read as `_`, so
 `"kind": "line-range"` works. When `type` is omitted it is inferred from the
 fields present: no `file` means `review`, `file` alone means `file`, a `line` or
 `start_line` means `line`, and an added `end_line` means `line_range`.
