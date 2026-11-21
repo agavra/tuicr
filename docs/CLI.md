@@ -45,6 +45,19 @@ no `latest` keyword; omit the argument to get the newest release. Pinning a
 version works only for Cargo and direct-binary installs; for a Homebrew, Mise or
 Nix install it fails with exit code 1.
 
+It updates through the manager that owns the executable. Homebrew upgrades the
+formula named in the keg's `INSTALL_RECEIPT.json` (`tuicr` for homebrew-core,
+`<tap>/tuicr` for a tap). When the receipt is unreadable or names no tap, it
+still runs `brew upgrade tuicr` and prints a one-line stderr warning that the tap
+could not be determined. These installs are refused with exit code `1` and a
+hint naming the right command:
+
+| Install | Detected by | Update with |
+| --- | --- | --- |
+| pacman / AUR | listed in the pacman local database | `sudo pacman -Syu` (or an AUR helper) |
+| Home Manager | linked from a Home Manager generation under `$XDG_STATE_HOME` (default `~/.local/state`) or `/nix/var/nix/{profiles,gcroots}/per-user/$USER` | `home-manager switch` (or `nixos-rebuild` / `darwin-rebuild switch` for the system module) |
+| Declarative Nix profile | linked from `/etc/profiles/per-user/$USER` (`users.users.<name>.packages`, Home Manager `useUserPackages`) or `/run/current-system/sw/bin` (`environment.systemPackages`) | `home-manager switch`, `nixos-rebuild switch`, or `darwin-rebuild switch` |
+
 There is no `tuicr help` subcommand. Use `-h` / `--help`, which also works per
 command (`tuicr review add --help`).
 
