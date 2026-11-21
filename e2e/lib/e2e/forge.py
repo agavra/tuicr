@@ -64,10 +64,11 @@ def pr_editor_snapshot(s: Scenario, url: str = "https://github.com/octo/demo.git
     if not grep("pr1-2{40}/", file):
         raise Failure(f"snapshot dir is not keyed by the full head sha: {file}")
     first_dir = next((ln for ln in text.splitlines() if ln.startswith("DIR ")), None)
-    if first_dir is not None:  # the base directory: `DIR <path> <mode> uid=<n> me=<n>`
-        _, path, mode, uid, me = first_dir.split()
-        if not (mode == "700" and uid[len("uid=") :] == me[len("me=") :]):
-            raise Failure(f"snapshot base {path} is not private (mode {mode} {uid} {me})")
+    if first_dir is None:  # the fake editor writes one per directory from `snapshots` down: none means no such dir
+        raise Failure(f"snapshot is not under a `snapshots` base directory: {file}", text)
+    _, path, mode, uid, me = first_dir.split()  # the base directory: `DIR <path> <mode> uid=<n> me=<n>`
+    if not (mode == "700" and uid[len("uid=") :] == me[len("me=") :]):
+        raise Failure(f"snapshot base {path} is not private (mode {mode} {uid} {me})")
     if not any(ln.startswith("FILEMODE 4") for ln in text.splitlines()):
         raise Failure("snapshot file is not read-only")
     return t
