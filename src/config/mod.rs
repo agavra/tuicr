@@ -252,6 +252,9 @@ pub struct AppConfig {
     pub editor: Option<String>,
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
+    /// Where `]`/`[` hunk jumps and `}`/`{` file jumps leave their target:
+    /// `"visible"` (the default, minimal scroll), `"top"`, or `"center"`.
+    pub hunk_jump_align: Option<String>,
     pub review_watch_interval_ms: Option<usize>,
     /// Disabled by default, and `0` disables it too. Ignored for
     /// pull-request reviews and `--all-files` mode.
@@ -337,6 +340,7 @@ const KNOWN_KEYS: &[&str] = &[
     "editor",
     "transparent_background",
     "scroll_offset",
+    "hunk_jump_align",
     "review_watch_interval_ms",
     "diff_watch_interval_ms",
     "no_update_check",
@@ -758,6 +762,12 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         editor: read_string(table, "editor", &mut warnings),
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
+        hunk_jump_align: read_enum(
+            table,
+            "hunk_jump_align",
+            &["visible", "top", "center"],
+            &mut warnings,
+        ),
         review_watch_interval_ms: read_usize(table, "review_watch_interval_ms", &mut warnings),
         diff_watch_interval_ms: read_usize(table, "diff_watch_interval_ms", &mut warnings),
         no_update_check: read_bool(table, "no_update_check", &mut warnings),
@@ -2275,6 +2285,49 @@ mod tests {
         let outcome = parse_config("scroll_offset = \"four\"\n");
         assert_eq!(
             outcome.config.as_ref().and_then(|cfg| cfg.scroll_offset),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    // hunk_jump_align
+
+    #[test]
+    fn should_parse_hunk_jump_align() {
+        for value in ["visible", "top", "center"] {
+            let outcome = parse_config(&format!("hunk_jump_align = \"{value}\"\n"));
+            assert_eq!(
+                outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.hunk_jump_align.as_deref()),
+                Some(value)
+            );
+            assert!(outcome.warnings.is_empty());
+        }
+    }
+
+    #[test]
+    fn should_warn_and_ignore_hunk_jump_align_with_invalid_value() {
+        let outcome = parse_config("hunk_jump_align = \"middle\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.hunk_jump_align.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    #[test]
+    fn should_warn_and_ignore_hunk_jump_align_with_invalid_type() {
+        let outcome = parse_config("hunk_jump_align = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.hunk_jump_align.as_deref()),
             None
         );
         assert_eq!(outcome.warnings.len(), 1);

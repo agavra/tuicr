@@ -379,6 +379,27 @@ impl App {
         }
     }
 
+    /// Position the viewport after a deliberate `]`/`[` hunk jump, according
+    /// to `hunk_jump_align`. `Top` and `Center` reuse the existing `zt`/`zz`
+    /// helpers, so both honour the `scroll_offset` margin and the end-of-diff
+    /// clamping.
+    fn align_after_jump(&mut self) {
+        match self.hunk_jump_align {
+            HunkJumpAlign::Visible => self.ensure_cursor_visible(),
+            HunkJumpAlign::Top => self.cursor_to_top(),
+            HunkJumpAlign::Center => self.center_cursor(),
+        }
+    }
+
+    /// `jump_to_file` already puts the new file's header at the top, so
+    /// `visible` keeps that placement instead of letting `scroll_offset` push
+    /// the header down. `top`/`center` re-align from there.
+    fn align_after_file_jump(&mut self) {
+        if self.hunk_jump_align != HunkJumpAlign::Visible {
+            self.align_after_jump();
+        }
+    }
+
     pub(in crate::app) fn scroll_offset_for_rows_above(
         &self,
         anchor: usize,
@@ -910,6 +931,7 @@ impl App {
         if self.diff_state.cursor_line < self.review_comments_render_height() {
             if !self.diff_files.is_empty() {
                 self.jump_to_file(0);
+                self.align_after_file_jump();
             }
             return;
         }
@@ -921,6 +943,7 @@ impl App {
                 && *file_idx > current_file_idx
             {
                 self.jump_to_file(*file_idx);
+                self.align_after_file_jump();
                 return;
             }
         }
@@ -935,6 +958,7 @@ impl App {
                 && *file_idx < current_file_idx
             {
                 self.jump_to_file(*file_idx);
+                self.align_after_file_jump();
                 return;
             }
         }
@@ -976,7 +1000,7 @@ impl App {
         for pos in self.hunk_positions() {
             if pos > self.diff_state.cursor_line {
                 self.diff_state.cursor_line = pos;
-                self.ensure_cursor_visible();
+                self.align_after_jump();
                 self.update_current_file_from_cursor();
                 return;
             }
@@ -993,7 +1017,7 @@ impl App {
                 self.jump_to_file(next_idx);
                 if let Some(&first) = self.hunk_positions().first() {
                     self.diff_state.cursor_line = first;
-                    self.ensure_cursor_visible();
+                    self.align_after_jump();
                     self.update_current_file_from_cursor();
                 }
             }
@@ -1009,7 +1033,7 @@ impl App {
         for &pos in positions.iter().rev() {
             if pos < self.diff_state.cursor_line {
                 self.diff_state.cursor_line = pos;
-                self.ensure_cursor_visible();
+                self.align_after_jump();
                 self.update_current_file_from_cursor();
                 return;
             }
@@ -1025,13 +1049,13 @@ impl App {
             self.jump_to_file(prev_idx);
             if let Some(&last) = self.hunk_positions().last() {
                 self.diff_state.cursor_line = last;
-                self.ensure_cursor_visible();
+                self.align_after_jump();
                 self.update_current_file_from_cursor();
                 return;
             }
         }
         self.diff_state.cursor_line = 0;
-        self.ensure_cursor_visible();
+        self.align_after_jump();
         self.update_current_file_from_cursor();
     }
 

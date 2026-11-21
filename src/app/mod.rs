@@ -1080,6 +1080,20 @@ pub enum WrapStyle {
     Gutter,
 }
 
+/// Where `]`/`[` hunk jumps and `}`/`{` file jumps put their target in the
+/// viewport (config `hunk_jump_align`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HunkJumpAlign {
+    /// Scroll only as far as needed to bring the target into view.
+    #[default]
+    Visible,
+    /// Put the target at the top, leaving `scroll_offset` rows above it when
+    /// the diff has them.
+    Top,
+    /// Center the target in the viewport.
+    Center,
+}
+
 /// Display order for the inline commit selector. The stored `review_commits`
 /// list is always newest-first; this only flips presentation (render + input
 /// mapping), never the underlying data model.
@@ -1472,6 +1486,9 @@ pub struct App {
     pub cursor_line_highlight: bool,
     pub leader_key: char,
     pub scroll_offset: usize,
+    /// Where `]`/`[` and `}`/`{` leave their target in the viewport (config
+    /// `hunk_jump_align`, default `Visible`).
+    pub hunk_jump_align: HunkJumpAlign,
     /// Lines scrolled per vertical mouse wheel tick (config
     /// `mouse_scroll_lines`, default 3).
     pub mouse_scroll_lines: usize,

@@ -601,6 +601,7 @@ impl App {
             cursor_line_highlight: true,
             leader_key: crate::config::DEFAULT_LEADER_KEY,
             scroll_offset: 0,
+            hunk_jump_align: HunkJumpAlign::Visible,
             mouse_scroll_lines: crate::config::DEFAULT_MOUSE_SCROLL_LINES,
             file_list_area: None,
             comment_navigator_area: None,
