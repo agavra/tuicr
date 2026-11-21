@@ -14,7 +14,7 @@ Related references: [CONFIG.md](CONFIG.md) for the config file and themes,
 |---|---|
 | `tuicr` | Open the TUI on the review target selector |
 | `tuicr tui` | Same TUI, explicit subcommand |
-| `tuicr pr [target]` (`tuicr mr`) | Review a pull request / merge request |
+| `tuicr pr [target]` (`tuicr mr`) | Review a pull request, merge request, or Gerrit change |
 | `tuicr tui pr [target]` (`tuicr tui mr`) | Same, under the explicit TUI subcommand |
 | `tuicr review list` | List persisted review sessions |
 | `tuicr review add` | Add a local draft comment to a session |
