@@ -4515,7 +4515,7 @@ fn should_list_local_commits_after_entering_pr_mode() {
 
     // then the checkout's commits are listed
     assert_eq!(app.input_mode, InputMode::CommitSelect);
-    assert_eq!(app.commit_list.len(), 2);
+    assert_eq!(app.commit_list.len(), 4);
     // and the PR stays active behind the selector
     assert!(
         app.vcs_info
@@ -4554,7 +4554,7 @@ fn should_keep_the_pr_backend_when_a_local_load_finds_nothing() {
     );
     // and the checkout is still reachable afterwards
     app.enter_target_selector(TargetTab::Local).unwrap();
-    assert_eq!(app.commit_list.len(), 2);
+    assert_eq!(app.commit_list.len(), 4);
     drop(dir);
 }
 
@@ -4642,7 +4642,7 @@ fn should_page_local_history_after_entering_pr_mode() {
     // given a PR opened from a checkout with 25 commits
     let (mut app, _dir, _reviews) = app_in_pr_mode_with_commits(25);
     app.enter_target_selector(TargetTab::Local).unwrap();
-    assert_eq!(app.commit_list.len(), VISIBLE_COMMIT_COUNT);
+    assert_eq!(app.commit_list.len(), VISIBLE_COMMIT_COUNT + 2);
     assert!(app.has_more_commit);
 
     // when the list is expanded past the first page
@@ -4651,7 +4651,7 @@ fn should_page_local_history_after_entering_pr_mode() {
 
     // then older commits were fetched and the PR backend is back in place
     assert!(app.commit_list.len() > VISIBLE_COMMIT_COUNT);
-    assert_eq!(app.commit_list[VISIBLE_COMMIT_COUNT].id, "c10");
+    assert_eq!(app.commit_list[VISIBLE_COMMIT_COUNT + 2].id, "c10");
     assert!(
         app.vcs_info
             .root_path

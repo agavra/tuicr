@@ -40,8 +40,14 @@ pub struct CommitRowSpec<'a> {
     pub is_cursor: bool,
     pub is_selected: bool,
     pub is_reviewed: bool,
+    /// A "Staged changes" or "Unstaged changes" row whose side is empty. Git
+    /// lists both rows anyway, so an empty one is dimmed and hinted.
+    pub is_empty: bool,
     pub theme: &'a Theme,
 }
+
+/// Hint after an empty working-tree row's summary.
+pub const EMPTY_ROW_HINT: &str = "  (no changes)";
 
 pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
     let theme = spec.theme;
@@ -102,8 +108,16 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
         } else {
             " \u{00b7} unstaged \u{00b7} "
         };
-        spans.push(Span::styled(tag, styles::pseudo_commit_tag_style(theme)));
-        spans.push(Span::styled(spec.commit.summary.clone(), row_text_style));
+        if spec.is_empty {
+            // The cursor keeps its highlight, so only the colour dims.
+            let dim = row_text_style.fg(theme.fg_dim);
+            spans.push(Span::styled(tag, dim));
+            spans.push(Span::styled(spec.commit.summary.clone(), dim));
+            spans.push(Span::styled(EMPTY_ROW_HINT, dim));
+        } else {
+            spans.push(Span::styled(tag, styles::pseudo_commit_tag_style(theme)));
+            spans.push(Span::styled(spec.commit.summary.clone(), row_text_style));
+        }
         return Line::from(spans);
     }
 
@@ -259,6 +273,7 @@ mod tests {
                 is_cursor: false,
                 is_selected: false,
                 is_reviewed: false,
+                is_empty: false,
                 theme: &theme,
             }));
 
@@ -279,6 +294,7 @@ mod tests {
             is_cursor: true,
             is_selected: false,
             is_reviewed: false,
+            is_empty: false,
             theme: &theme,
         });
         // then
@@ -298,6 +314,7 @@ mod tests {
             is_cursor: false,
             is_selected: true,
             is_reviewed: false,
+            is_empty: false,
             theme: &theme,
         });
         // then
@@ -318,6 +335,7 @@ mod tests {
             is_cursor: false,
             is_selected: false,
             is_reviewed: false,
+            is_empty: false,
             theme: &theme,
         });
         // then
@@ -338,6 +356,7 @@ mod tests {
             is_cursor: false,
             is_selected: false,
             is_reviewed: true,
+            is_empty: false,
             theme: &theme,
         });
         // then
@@ -357,6 +376,7 @@ mod tests {
             is_cursor: false,
             is_selected: false,
             is_reviewed: false,
+            is_empty: false,
             theme: &theme,
         });
         // then
@@ -378,6 +398,7 @@ mod tests {
             is_cursor: false,
             is_selected: false,
             is_reviewed: false,
+            is_empty: false,
             theme: &theme,
         });
         // then
@@ -405,6 +426,7 @@ mod tests {
                         is_cursor: false,
                         is_selected: false,
                         is_reviewed: false,
+                        is_empty: false,
                         theme: &theme,
                     }))
                 };
@@ -433,6 +455,7 @@ mod tests {
             is_cursor: true,
             is_selected: true,
             is_reviewed: true,
+            is_empty: false,
             theme: &theme,
         }));
         // then
@@ -472,6 +495,7 @@ mod tests {
             is_cursor: false,
             is_selected: false,
             is_reviewed: false,
+            is_empty: false,
             theme: &theme,
         }));
         let beta = line_text(&render_commit_row(&CommitRowSpec {
@@ -480,6 +504,7 @@ mod tests {
             is_cursor: false,
             is_selected: false,
             is_reviewed: false,
+            is_empty: false,
             theme: &theme,
         }));
         // then
@@ -503,6 +528,7 @@ mod tests {
             is_cursor: false,
             is_selected: false,
             is_reviewed: false,
+            is_empty: false,
             theme: &theme,
         }));
         let without_branch = line_text(&render_commit_row(&CommitRowSpec {
@@ -511,6 +537,7 @@ mod tests {
             is_cursor: false,
             is_selected: false,
             is_reviewed: false,
+            is_empty: false,
             theme: &theme,
         }));
         // then
@@ -532,6 +559,7 @@ mod tests {
             is_cursor: false,
             is_selected: false,
             is_reviewed: false,
+            is_empty: false,
             theme: &theme,
         });
         // then
@@ -554,6 +582,7 @@ mod tests {
                 is_cursor: false,
                 is_selected: false,
                 is_reviewed: false,
+                is_empty: false,
                 theme: &theme,
             }));
             let wide = line_text(&render_commit_row(&CommitRowSpec {
@@ -562,6 +591,7 @@ mod tests {
                 is_cursor: false,
                 is_selected: false,
                 is_reviewed: false,
+                is_empty: false,
                 theme: &theme,
             }));
             // then
