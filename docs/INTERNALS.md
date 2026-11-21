@@ -38,6 +38,7 @@ Subsystem invariants, loaded on demand from `AGENTS.md`. Cross-cutting rules and
 
 ## Diff watch and reloads
 
+- **Stage marks**: in a Git staged + unstaged review, `App::get_working_tree_diff_with_ignore` sets `DiffLine::stage` via `vcs::stage_marks` (`●`/`○` after the line number, built by `ui::diff_view::line_number_cell` in both layouts). `App::stage_mark_side_diffs` uses the same loaders as the main diff so `.tuicrignore` and `--path` apply. The diff-watch fingerprint includes stage marks because staging can change them without changing the diff text.
 - `diff_watch_interval_ms` reloads leave a `DiffSource::CommitRange` pane alone; `StagedUnstagedAndCommits` (`-r -w`) keeps its range and refreshes only the two working-tree rows.
 - Reloads of a `-r` range (watch ticks, `:e`) diff from the base resolved at startup (`App::revision_range`, used only while the fetched commit list matches), so `A...B` keeps its merge base.
 
