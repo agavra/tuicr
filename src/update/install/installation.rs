@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
@@ -9,8 +10,11 @@ pub enum InstallMethod {
     Nix,
     /// Owned by the Arch Linux package database (official repo or AUR).
     Pacman,
-    /// Linked from a Home Manager generation or a declarative per-user profile.
+    /// Linked from a Home Manager generation.
     HomeManager,
+    /// A NixOS / nix-darwin system or per-user package (`environment.systemPackages`,
+    /// `users.users.<name>.packages`, or Home Manager's `useUserPackages`).
+    DeclarativeNix,
     Direct,
 }
 
@@ -23,6 +27,7 @@ impl fmt::Display for InstallMethod {
             Self::Nix => "Nix",
             Self::Pacman => "pacman",
             Self::HomeManager => "Home Manager",
+            Self::DeclarativeNix => "a declarative Nix profile",
             Self::Direct => "direct binary",
         })
     }
@@ -37,6 +42,10 @@ impl InstallMethod {
                 "`home-manager switch` (or `nixos-rebuild switch` / `darwin-rebuild switch` \
                  when Home Manager runs as a system module)",
             ),
+            Self::DeclarativeNix => Some(
+                "`home-manager switch`, `nixos-rebuild switch`, or `darwin-rebuild switch`, \
+                 whichever owns this profile",
+            ),
             _ => None,
         }
     }
@@ -45,23 +54,39 @@ impl InstallMethod {
 pub(super) struct ManagerCommand {
     pub program: &'static str,
     pub args: Vec<String>,
+    /// One line to print before running the command.
+    pub warning: Option<&'static str>,
 }
 
+pub(super) const HOMEBREW_TAP_UNKNOWN: &str = "warning: could not determine the Homebrew tap \
+     from tuicr's INSTALL_RECEIPT.json; running `brew upgrade tuicr`";
+
 pub(super) fn manager_command(method: InstallMethod, executable: &Path) -> Option<ManagerCommand> {
+    let mut warning = None;
     let (program, args): (_, Vec<String>) = match method {
-        InstallMethod::Homebrew => (
-            "brew",
-            vec!["upgrade".to_string(), homebrew_formula(executable)],
-        ),
+        InstallMethod::Homebrew => {
+            let formula = homebrew_formula(executable).unwrap_or_else(|| {
+                warning = Some(HOMEBREW_TAP_UNKNOWN);
+                "tuicr".to_string()
+            });
+            ("brew", vec!["upgrade".to_string(), formula])
+        }
         InstallMethod::Cargo => ("cargo", strings(&["install", "tuicr", "--force"])),
         InstallMethod::Mise => (
             "mise",
             strings(&["upgrade", "github:agavra/tuicr", "--bump", "--yes"]),
         ),
         InstallMethod::Nix => ("nix", strings(&["profile", "upgrade", ".*tuicr.*"])),
-        InstallMethod::Pacman | InstallMethod::HomeManager | InstallMethod::Direct => return None,
+        InstallMethod::Pacman
+        | InstallMethod::HomeManager
+        | InstallMethod::DeclarativeNix
+        | InstallMethod::Direct => return None,
     };
-    Some(ManagerCommand { program, args })
+    Some(ManagerCommand {
+        program,
+        args,
+        warning,
+    })
 }
 
 fn strings(args: &[&str]) -> Vec<String> {
@@ -70,9 +95,9 @@ fn strings(args: &[&str]) -> Vec<String> {
 
 /// The formula to upgrade, read from the keg's `INSTALL_RECEIPT.json`: the
 /// Cellar layout is identical for homebrew-core and a third-party tap, so only
-/// the receipt's `source.tap` tells them apart. Core, or anything unreadable,
-/// falls back to the bare `tuicr`.
-fn homebrew_formula(executable: &Path) -> String {
+/// the receipt's `source.tap` tells them apart. `None` when the receipt is
+/// missing, unreadable, or names no valid tap.
+fn homebrew_formula(executable: &Path) -> Option<String> {
     let receipt = executable
         .ancestors()
         .find(|keg| {
@@ -89,14 +114,16 @@ fn homebrew_formula(executable: &Path) -> String {
     homebrew_formula_from_receipt(receipt.as_deref())
 }
 
-pub(super) fn homebrew_formula_from_receipt(receipt: Option<&[u8]>) -> String {
+pub(super) fn homebrew_formula_from_receipt(receipt: Option<&[u8]>) -> Option<String> {
     let tap = receipt
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
-        .and_then(|value| value["source"]["tap"].as_str().map(str::to_ascii_lowercase));
-    match tap {
-        Some(tap) if tap != "homebrew/core" && is_tap_name(&tap) => format!("{tap}/tuicr"),
-        _ => "tuicr".to_string(),
-    }
+        .and_then(|value| value["source"]["tap"].as_str().map(str::to_ascii_lowercase))
+        .filter(|tap| is_tap_name(tap))?;
+    Some(if tap == "homebrew/core" {
+        "tuicr".to_string()
+    } else {
+        format!("{tap}/tuicr")
+    })
 }
 
 fn is_tap_name(tap: &str) -> bool {
@@ -113,20 +140,34 @@ fn is_tap_name(tap: &str) -> bool {
 }
 
 /// Installs owned by a system or declarative manager that `tuicr update` must
-/// refuse. `root` is `/` in production; tests point it at a temp tree.
+/// refuse. `state_home` is the XDG state directory (see [`state_home`]);
+/// `root` is `/` in production; tests point it at a temp tree.
 pub(super) fn detect_external_manager(
     executable: &Path,
-    home: Option<&Path>,
+    state_home: Option<&Path>,
     user: Option<&str>,
     root: &Path,
 ) -> Option<InstallMethod> {
     if pacman_owns(executable, root) {
         return Some(InstallMethod::Pacman);
     }
-    if home_manager_owns(executable, home, user, root) {
+    if home_manager_owns(executable, state_home, user, root) {
         return Some(InstallMethod::HomeManager);
     }
+    if declarative_nix_owns(executable, user, root) {
+        return Some(InstallMethod::DeclarativeNix);
+    }
     None
+}
+
+/// `$XDG_STATE_HOME` when set to an absolute path (the XDG spec says to ignore
+/// relative ones), else `~/.local/state`.
+pub(super) fn state_home(xdg_state_home: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
+    xdg_state_home
+        .map(Path::new)
+        .filter(|path| path.is_absolute())
+        .map(Path::to_path_buf)
+        .or_else(|| home.map(|home| home.join(".local/state")))
 }
 
 /// Mirrors `pacman -Qo`: some package's `files` list in the local database
@@ -150,12 +191,11 @@ fn pacman_owns(executable: &Path, root: &Path) -> bool {
     })
 }
 
-/// A Nix store executable that a Home Manager generation (or a NixOS /
-/// nix-darwin per-user profile) links to. Those are rebuilt declaratively, so
-/// `nix profile upgrade` would not touch them.
+/// A Nix store executable that a Home Manager generation links to. Those are
+/// rebuilt declaratively, so `nix profile upgrade` would not touch them.
 fn home_manager_owns(
     executable: &Path,
-    home: Option<&Path>,
+    state_home: Option<&Path>,
     user: Option<&str>,
     root: &Path,
 ) -> bool {
@@ -164,13 +204,15 @@ fn home_manager_owns(
     }
     let generation_bin = Path::new("home-path/bin/tuicr");
     let mut links: Vec<PathBuf> = Vec::new();
-    if let Some(home) = home {
+    if let Some(state_home) = state_home {
         links.push(
-            home.join(".local/state/nix/profiles/home-manager")
+            state_home
+                .join("nix/profiles/home-manager")
                 .join(generation_bin),
         );
         links.push(
-            home.join(".local/state/home-manager/gcroots/current-home")
+            state_home
+                .join("home-manager/gcroots/current-home")
                 .join(generation_bin),
         );
     }
@@ -187,12 +229,30 @@ fn home_manager_owns(
                 .join("current-home")
                 .join(generation_bin),
         );
+    }
+    links_to(executable, &links)
+}
+
+/// A Nix store executable in the NixOS / nix-darwin system profile
+/// (`environment.systemPackages`) or a per-user profile under
+/// `/etc/profiles/per-user`, which holds `users.users.<name>.packages` and
+/// Home Manager's `useUserPackages` alike, so it cannot be pinned on either.
+fn declarative_nix_owns(executable: &Path, user: Option<&str>, root: &Path) -> bool {
+    if !executable.starts_with(root.join("nix/store")) {
+        return false;
+    }
+    let mut links = vec![root.join("run/current-system/sw/bin/tuicr")];
+    if let Some(user) = user {
         links.push(
             root.join("etc/profiles/per-user")
                 .join(user)
                 .join("bin/tuicr"),
         );
     }
+    links_to(executable, &links)
+}
+
+fn links_to(executable: &Path, links: &[PathBuf]) -> bool {
     links
         .iter()
         .any(|link| std::fs::canonicalize(link).is_ok_and(|target| target == executable))

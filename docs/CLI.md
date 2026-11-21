@@ -41,10 +41,16 @@ no `latest` keyword; omit the argument to get the newest release.
 
 It updates through the manager that owns the executable. Homebrew upgrades the
 formula named in the keg's `INSTALL_RECEIPT.json` (`tuicr` for homebrew-core,
-`<tap>/tuicr` for a tap, `tuicr` when the receipt is unreadable). An executable
-listed in the pacman database, or linked from a Home Manager generation or an
-`/etc/profiles/per-user` profile, is refused with exit code `1` and a hint to run
-`sudo pacman -Syu` (or an AUR helper) or `home-manager switch` instead.
+`<tap>/tuicr` for a tap). When the receipt is unreadable or names no tap, it
+still runs `brew upgrade tuicr` and prints a one-line stderr warning that the tap
+could not be determined. These installs are refused with exit code `1` and a
+hint naming the right command:
+
+| Install | Detected by | Update with |
+| --- | --- | --- |
+| pacman / AUR | listed in the pacman local database | `sudo pacman -Syu` (or an AUR helper) |
+| Home Manager | linked from a Home Manager generation under `$XDG_STATE_HOME` (default `~/.local/state`) or `/nix/var/nix/{profiles,gcroots}/per-user/$USER` | `home-manager switch` (or `nixos-rebuild` / `darwin-rebuild switch` for the system module) |
+| Declarative Nix profile | linked from `/etc/profiles/per-user/$USER` (`users.users.<name>.packages`, Home Manager `useUserPackages`) or `/run/current-system/sw/bin` (`environment.systemPackages`) | `home-manager switch`, `nixos-rebuild switch`, or `darwin-rebuild switch` |
 
 There is no `tuicr help` subcommand. Use `-h` / `--help`, which also works per
 command (`tuicr review add --help`).

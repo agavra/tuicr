@@ -69,8 +69,9 @@ tuicr update 0.18.0 # Install a known-good version
 ```
 
 `tuicr update` uses Homebrew (upgrading the core or tap formula you installed), Cargo, Mise, or
-a Nix profile when that manager owns the executable. It refuses pacman and Home Manager installs;
-update those with `sudo pacman -Syu` (or your AUR helper) or `home-manager switch`. Install-script and manually downloaded binaries update in place from the matching
+a Nix profile when that manager owns the executable. It refuses pacman, Home Manager, and
+declarative NixOS / nix-darwin installs; update those with `sudo pacman -Syu` (or your AUR helper),
+`home-manager switch`, `nixos-rebuild switch`, or `darwin-rebuild switch`. Install-script and manually downloaded binaries update in place from the matching
 GitHub release asset after SHA-256 verification. Exact-version installs support Cargo and direct
 binaries; use the package manager's pinning workflow for Homebrew, Mise, or Nix. A `nix run`
 invocation is temporary rather than installed; rerun it to use the current flake, or use
