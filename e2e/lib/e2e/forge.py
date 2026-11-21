@@ -74,24 +74,37 @@ def pr_editor_snapshot(s: Scenario, url: str = "https://github.com/octo/demo.git
 
 
 def gerrit_open(
-    s: Scenario, kind: str, host: str = "gerrit.example.test", project: str = "proj", target: str = "1"
+    s: Scenario,
+    kind: str,
+    host: str = "gerrit.example.test",
+    project: str = "proj",
+    target: str = "1",
+    change: int = 1,
+    patch_set: int = 1,
 ) -> Tui:
-    """Change 1 of `project` served by fakeforge/gerrit.py (anonymous, GERRIT_URL on 127.0.0.1); origin is a Gerrit SSH
-    remote on `host`, both commits exist locally so no fetch is needed. kind:
+    """Change `change` (current patch set `patch_set`) of `project` served by fakeforge/gerrit.py (anonymous, GERRIT_URL
+    on 127.0.0.1); origin is a Gerrit SSH remote on `host`, both commits exist locally so no fetch is needed. kind:
       root:    a single parentless commit (a.txt); the change has no parents, so the base is the empty tree.
       threads: base + head; a.txt line 1 thread resolved by a reply, line 2 thread reopened by a reply.
     target: the `tuicr pr` argument, "@PORT@" replaced by the fake's port. The server is stopped by a cleanup
     registered here (it also dies with the scenario's process group); gerrit_stop() stops it earlier."""
-    r, url = gerrit_serve(s, kind, host=host, project=project)
+    r, url = gerrit_serve(s, kind, host=host, project=project, change=change, patch_set=patch_set)
     port = url.rsplit(":", 1)[1]
     return s.start("pr", target.replace("@PORT@", port), cwd=r, env={"GERRIT_URL": url})
 
 
 def gerrit_serve(
-    s: Scenario, kind: str, host: str = "gerrit.example.test", project: str = "proj", tls: TlsFiles | None = None
+    s: Scenario,
+    kind: str,
+    host: str = "gerrit.example.test",
+    project: str = "proj",
+    tls: TlsFiles | None = None,
+    change: int = 1,
+    patch_set: int = 1,
 ) -> tuple[Path, str]:
     """gerrit_open's fixture without starting tuicr: returns (clone, GERRIT_URL). tls: serve HTTPS with that
-    certificate (see tls_files) instead of plain HTTP."""
+    certificate (see tls_files) instead of plain HTTP. The fake answers only for `change` (any other change number is
+    an UNEXPECTED route); its current revision is patch set `patch_set` (ref refs/changes/<NN>/<change>/<patch_set>)."""
     d = s.dir
     r, gd = d / "repo", d / "gerrit"
     log = gd / "forge.log"  # the fake's calls, UNEXPECTED notes included: checked at exit like the CLI fakes'
@@ -114,7 +127,12 @@ def gerrit_serve(
     parents = f'[{{"commit": "{base}"}}]' if base else "[]"
     tpl = (E2E_DIR / "data/gerrit/change.json.tpl").read_text()
     (gd / "change.json").write_text(
-        tpl.replace("@PROJECT@", project).replace("@HEAD@", head).replace("@PARENTS@", parents)
+        tpl.replace("@PROJECT@", project)
+        .replace("@HEAD@", head)
+        .replace("@PARENTS@", parents)
+        .replace("@NUMBER@", str(change))
+        .replace("@PATCHSET@", str(patch_set))
+        .replace("@REF@", f"refs/changes/{change % 100:02}/{change}/{patch_set}")
     )
     shutil.copy(E2E_DIR / "data/gerrit/comments.json", gd / "comments.json")
     argv = [sys.executable, str(E2E_DIR / "fakeforge/gerrit.py"), str(gd), str(gd / "port")]

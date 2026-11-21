@@ -19,4 +19,6 @@ def main(s: Scenario) -> None:
     tui.settle()
     scr = tui.screen()
     assert "a.txt:1" not in scr, f"resolved-by-reply thread (line 1) is shown\n{scr}"
+    # thread 1 is hidden by the filter, not dropped: showing all comments brings it back
+    tui.cmd("comments all").wait_for("a.txt:1")  # else: the resolved thread was dropped, not filtered
     tui.quit()
