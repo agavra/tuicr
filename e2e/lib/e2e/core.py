@@ -204,6 +204,9 @@ def _setup_env() -> tuple[str, str, dict[str, str]]:
     )
     # UTF-8 locale for tuicr and tmux: en_US.UTF-8 where installed, else C.UTF-8 (CI images).
     loc = os.environ.get("E2E_LOCALE")
+    cached = Path(root) / ".harness" / "locale"  # `locale -a` once per run
+    if not loc and cached.exists():
+        loc = cached.read_text().strip()
     if not loc:
         have = (
             subprocess.run(["locale", "-a"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
@@ -211,6 +214,8 @@ def _setup_env() -> tuple[str, str, dict[str, str]]:
             .split()
         )
         loc = "en_US.UTF-8" if {"en_us.utf-8", "en_us.utf8"} & set(have) else "C.UTF-8"
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(loc)
     os.environ.update(LANG=loc, LC_ALL=loc)
     # One git for the whole run: a private bin dir holding only a `git` link to it goes first on the harness's PATH
     # (fixture commands) and on the child's.
