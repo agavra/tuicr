@@ -34,7 +34,7 @@ pub struct CliArgs {
     pub pr_target: Option<String>,
     /// `tuicr pr` without a target: review the PR for the current branch.
     pub pr_current_branch: bool,
-    /// Override the GitHub repo used for PR operations.
+    /// Override the forge repo used for PR operations.
     pub repo_url: Option<String>,
     /// Use a named VCS remote for PR operations.
     pub remote: Option<String>,
@@ -50,7 +50,7 @@ pub struct CliArgs {
 #[command(
     name = "tuicr",
     version,
-    about = "A code review TUI with vim keybindings. Export to GitHub or clipboard.",
+    about = "A code review TUI with vim keybindings. Submit to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit, or export to the clipboard.",
     after_help = "Press ? in the application for keybinding help.",
     disable_help_subcommand = true
 )]
@@ -134,8 +134,9 @@ struct TuiOptions {
     #[arg(long = "no-update-check", action = ArgAction::SetTrue)]
     no_update_check: bool,
 
-    /// Override the forge repo for PR operations. Accepts GitHub, GitLab, or
-    /// Azure DevOps URLs (HTTPS, SCP-style SSH, or ssh:// forms).
+    /// Override the forge repo for PR operations. Accepts GitHub, GitLab,
+    /// Gitea, Bitbucket, Azure DevOps, or Gerrit URLs (HTTPS, SCP-style SSH,
+    /// or ssh:// forms).
     #[arg(
         long = "repo-url",
         value_name = "URL",
@@ -157,7 +158,7 @@ struct TuiOptions {
 enum Subcmd {
     /// Open the interactive TUI.
     Tui(TuiCommand),
-    /// Review a GitHub pull request or GitLab merge request.
+    /// Review a pull request, merge request, or Gerrit change.
     #[command(visible_alias = "mr")]
     Pr(PrCommand),
     /// Inspect or update persisted review sessions.
@@ -186,7 +187,7 @@ struct TuiCommand {
 
 #[derive(Subcommand, Debug, Clone)]
 enum TuiSubcmd {
-    /// Review a GitHub pull request or GitLab merge request in the TUI.
+    /// Review a pull request, merge request, or Gerrit change in the TUI.
     #[command(visible_alias = "mr")]
     Pr(PrCommand),
 }
@@ -579,6 +580,30 @@ mod tests {
 
     fn parse_for_test(args: &[&str]) -> Result<CliArgs, clap::Error> {
         Cli::try_parse_from(args).and_then(Cli::try_into_args)
+    }
+
+    #[test]
+    fn help_text_names_every_supported_forge() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let root = cmd.render_long_help().to_string();
+        let pr = cmd
+            .find_subcommand_mut("pr")
+            .expect("pr subcommand")
+            .render_long_help()
+            .to_string();
+        for forge in [
+            "GitHub",
+            "GitLab",
+            "Gitea",
+            "Bitbucket",
+            "Azure DevOps",
+            "Gerrit",
+        ] {
+            assert!(root.contains(forge), "root help omits {forge}:\n{root}");
+            assert!(pr.contains(forge), "pr help omits {forge}:\n{pr}");
+        }
+        assert!(root.contains("Review a pull request, merge request, or Gerrit change"));
     }
 
     #[test]
