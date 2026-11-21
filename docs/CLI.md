@@ -39,6 +39,13 @@ several do (the same branch name opened from different forks), on a detached
 including an older known-good one. It only accepts a version number — there is
 no `latest` keyword; omit the argument to get the newest release.
 
+It updates through the manager that owns the executable. Homebrew upgrades the
+formula named in the keg's `INSTALL_RECEIPT.json` (`tuicr` for homebrew-core,
+`<tap>/tuicr` for a tap, `tuicr` when the receipt is unreadable). An executable
+listed in the pacman database, or linked from a Home Manager generation or an
+`/etc/profiles/per-user` profile, is refused with exit code `1` and a hint to run
+`sudo pacman -Syu` (or an AUR helper) or `home-manager switch` instead.
+
 There is no `tuicr help` subcommand. Use `-h` / `--help`, which also works per
 command (`tuicr review add --help`).
 
