@@ -37,7 +37,7 @@ Locale: tuicr and tmux run in UTF-8 (`en_US.UTF-8` if installed, otherwise `C.UT
 `E2E_LOCALE`). The terminal is 160x45 (`E2E_COLS`/`E2E_ROWS`). Linux and macOS are supported.
 
 Environment knobs: `TUICR_BIN` (required), `E2E_ROOT` (scratch, default a fresh temp dir), `E2E_OUT`,
-`E2E_SOCKET` (tmux socket, default unique per run), `E2E_SCENARIO_TIMEOUT` (seconds per scenario, default 120), `E2E_SETTLE_QUIET` (default quiet period of `settle`; the defaults of both are under `[tool.tuicr-e2e]` in `pyproject.toml`, the environment wins),
+`E2E_SOCKET` (tmux socket, default unique per run), `E2E_SCENARIO_DIR` (scenario root, default `e2e/scenarios`), `E2E_SCENARIO_TIMEOUT` (seconds per scenario, default 120), `E2E_SETTLE_QUIET` (default quiet period of `settle`; the defaults of both are under `[tool.tuicr-e2e]` in `pyproject.toml`, the environment wins),
 `E2E_TIMEOUT` (default wait, 10 s), `E2E_HG_DIR` (directory holding a real `hg`), `E2E_REQUIRE_HG=1`,
 `E2E_REQUIRE_JJ=1`, `E2E_JJ_DIR`, `E2E_REQUIRE_SKIPS_ZERO=1` (CI: a skip is a failure), `E2E_KEEP_ROOT=1`, `E2E_INSTALL_SH` / `E2E_INSTALL_REV`
 (the installer script for `cli/install_script_without_tty`; default `upstream/site`, SKIP when unavailable).
@@ -58,12 +58,13 @@ e2e/
     flows.py            open_review/diff, FakeClipboard (recording pbcopy/xclip/wl-copy), minimal_path
     forge.py            pr_open/forge_open, pr_comment, gerrit_open (REST server), pr_editor_snapshot
     ttyrelay.py         a pty between the pane and tuicr that logs how each synchronized frame arrives (argv, frames)
-  fakeforge/          ONE fake-forge core (core.py) + thin adapters gh.py glab.py tea.py bkt.py, gerrit.py (REST server)
-  bin/                gh glab tea bkt: wrappers that put fakeforge first on the child's PATH
+  fakeforge/          ONE fake-forge core (core.py) + thin adapters gh.py glab.py tea.py bkt.py, gerrit.py (REST server);
+                      main.py is the shared entry point the bin/ wrappers exec
+  bin/                gh glab tea bkt: wrappers that exec fakeforge/main.py <tool>; bin/ is first on the child's PATH
   data/               fixture data per forge (github/, gitlab/, gitea/, bitbucket/, gerrit/), variant overlays
   scenarios/<area>/<behaviour>.py
   selftest/           run.py: tests of the runner and the library (false-green paths, timeout kill, skip, zero selection);
-                      scenarios/ and scenarios-hung/ are the scenarios it runs
+                      scenarios/, scenarios-hung/ and scenarios-settle/ are the scenarios it runs
 ```
 
 Areas: `local` (git/hg/commit selection), `tree`, `diff`, `comments`, `review` (marks, persistence), `theme`,
@@ -73,8 +74,7 @@ per other forge: `gitlab`, `gitea`, `bitbucket`, `gerrit`, `azure`.
 ## Writing a scenario
 
 A scenario is a short script named after the **behaviour it checks** (`pr/review_threads_reply_resolves.py`, not after a
-PR or a unit). Put the PR/issue it covers in the header comment (`# Covers #901: ...`). New scenarios are Python;
-the shell scenarios still present are ported one by one (see "Bash scenarios" below).
+PR or a unit). Put the PR/issue it covers in the header comment (`# Covers #901: ...`). Scenarios are Python only.
 
 ```python
 #!/usr/bin/env python3
@@ -176,4 +176,4 @@ Which fake answers is decided by the repository's origin URL (`s.forge_open(url)
 
 ## CI
 
-`.github/workflows/e2e.yml` runs the suite on ubuntu-24.04 and macos-latest with real Mercurial (`E2E_REQUIRE_HG=1`), and provisions Python with `astral-sh/setup-uv` (`uv run --python 3.12`), and uploads `$E2E_OUT` as an artifact on failure. See [COVERAGE.md](COVERAGE.md) for what is covered.
+`.github/workflows/e2e.yml` runs the suite on ubuntu-24.04 and macos-latest with real Mercurial and Jujutsu (`E2E_REQUIRE_HG=1`, `E2E_REQUIRE_JJ=1`) and `E2E_REQUIRE_SKIPS_ZERO=1`, so any SKIP fails the job. It runs the harness self-test (`e2e/selftest/run.py`) before the suite, provisions Python with `astral-sh/setup-uv` (`uv run --python 3.12`), and uploads `$E2E_OUT` as an artifact on failure. See [COVERAGE.md](COVERAGE.md) for what is covered.
