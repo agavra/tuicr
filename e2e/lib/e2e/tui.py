@@ -11,13 +11,17 @@ tui.cmd("theme").wait_for("Switch Theme").keys("Enter").
 from __future__ import annotations
 
 import contextlib
+import fcntl
+import itertools
 import json
 import math
 import os
 import re
 import select
 import shutil
+import struct
 import subprocess
+import termios
 import time
 import zlib
 from collections.abc import Callable
@@ -216,8 +220,8 @@ class _Control:
 
 
 _control = _Control()
-# How long input waits after a bare Escape (see Tui._input): tuicr reads ESC and a key arriving this far apart as two
-# keys while it is idle. Exec'ing tmux per key used to leave a gap of a process launch.
+# How long input waits after a bare Escape before checking that the pane has read it (see Tui._input): by then the
+# Escape has crossed the pty into the pane's input queue. Exec'ing tmux per key used to leave a gap of a process launch.
 ESCAPE_GAP = 0.05
 
 
@@ -330,12 +334,43 @@ class Tui:
     def _input(self, *args: str, escape: bool = False) -> None:
         """Send input to the pane. A bare Escape and the next input must not reach tuicr in one read: the terminal
         parser takes ESC followed by a key as Alt+key (`Escape` then `r` arrives as Alt-r, which nothing binds). The
-        control client sends back to back, so input right after an Escape waits until ESCAPE_GAP has passed."""
+        control client sends back to back, so input after an Escape waits ESCAPE_GAP, then until the pane's tty has no
+        unread input (a busy tuicr reads late; a fixed gap alone would let the next key pile up behind the Escape)."""
         wait = self.escape_at + ESCAPE_GAP - time.monotonic()
         if wait > 0:
             time.sleep(wait)
+        if self.escape_at > -math.inf:
+            self._wait_input_read()
         tmux(*args)
         self.escape_at = time.monotonic() if escape else -math.inf
+
+    def _wait_input_read(self) -> None:
+        """Wait (up to TIMEOUT) until the program in the pane has read all input queued on its tty (FIONREAD on the
+        pane's tty). Gives up early when the tty cannot be queried or the pane's process has exited."""
+        p = tmux("display-message", "-p", "-t", self.session, "#{pane_tty}", check=False)
+        tty = p.stdout.strip()
+        if p.returncode != 0 or not tty:
+            return
+        try:
+            fd = os.open(tty, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+        except OSError:
+            return
+        try:
+            deadline = time.monotonic() + TIMEOUT
+            for i in itertools.count():
+                if not struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0\0\0\0"))[0]:
+                    return
+                if time.monotonic() > deadline or (i % 20 == 19 and not self._running()):
+                    return
+                time.sleep(0.005)
+        except OSError:
+            return
+        finally:
+            os.close(fd)
+
+    def _running(self) -> bool:
+        p = tmux("display-message", "-p", "-t", self.session, "#{pane_dead}", check=False)
+        return p.returncode == 0 and p.stdout.strip() == "0"
 
     def keys(self, *keys: str) -> Tui:
         """tmux send-keys: key names (Enter, Escape, C-c, Tab...) or text; several arguments are sent in order."""
