@@ -1452,8 +1452,10 @@ mod tests {
         // then the mapped author name is used, not the raw one
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].author, "Mapped");
-        assert_ne!(commits[0].author, "Raw Author");    }
+        assert_ne!(commits[0].author, "Raw Author");
+    }
 
+    #[test]
     fn should_not_lazy_fetch_missing_objects_in_a_partial_clone_batch() {
         use crate::forge::local_git::test_support::{clone_without_blobs, init_repo_with_commit};
 
