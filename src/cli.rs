@@ -585,12 +585,15 @@ mod tests {
     #[test]
     fn help_text_names_every_supported_forge() {
         use clap::CommandFactory;
-        let mut cmd = Cli::command();
-        let root = cmd.render_long_help().to_string();
-        let pr = cmd
-            .find_subcommand_mut("pr")
-            .expect("pr subcommand")
-            .render_long_help()
+        let cmd = Cli::command();
+        let root_about = cmd.get_about().expect("root about").to_string();
+        let pr = cmd.find_subcommand("pr").expect("pr subcommand");
+        let pr_about = pr.get_about().expect("pr about").to_string();
+        let repo_url_help = pr
+            .get_arguments()
+            .find(|arg| arg.get_long() == Some("repo-url"))
+            .and_then(|arg| arg.get_help())
+            .expect("pr --repo-url help")
             .to_string();
         for forge in [
             "GitHub",
@@ -600,10 +603,21 @@ mod tests {
             "Azure DevOps",
             "Gerrit",
         ] {
-            assert!(root.contains(forge), "root help omits {forge}:\n{root}");
-            assert!(pr.contains(forge), "pr help omits {forge}:\n{pr}");
+            assert!(
+                root_about.contains(forge),
+                "root about omits {forge}: {root_about}"
+            );
+            assert!(
+                repo_url_help.contains(forge),
+                "pr --repo-url help omits {forge}: {repo_url_help}"
+            );
         }
-        assert!(root.contains("Review a pull request, merge request, or Gerrit change"));
+        // The pr summary names review kinds rather than forges; it must not
+        // regress to a GitHub/GitLab-only description.
+        assert!(
+            !pr_about.contains("GitHub") && pr_about.contains("Gerrit"),
+            "pr about is forge-specific: {pr_about}"
+        );
     }
 
     #[test]
