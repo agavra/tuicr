@@ -747,6 +747,26 @@ fn should_preserve_persisted_commit_range_over_since_last_review_default() {
 }
 
 #[test]
+fn should_keep_the_pr_commit_pane_hidden_when_show_commits_is_false() {
+    // given `show_commits = false`
+    let mut app = build_app();
+    app.apply_show_commits_config(false);
+    let commits = vec![
+        sample_pr_commit("c3", "third"),
+        sample_pr_commit("c2", "second"),
+        sample_pr_commit("c1", "first"),
+    ];
+
+    // when a multi-commit PR installs its selector
+    app.apply_pr_commit_selector(commits, PullRequestReviewMetadata::default());
+
+    // then the pane stays hidden but the commits are still cyclable
+    assert!(!app.show_commit_selector);
+    assert_eq!(app.review_commits.len(), 3);
+    assert_eq!(app.commit_selection_range, Some((0, 2)));
+}
+
+#[test]
 fn should_mark_pr_commits_covered_by_viewers_last_review() {
     let mut app = build_app();
     app.diff_source = DiffSource::PullRequest(Box::new(PullRequestDiffSource::from_details(

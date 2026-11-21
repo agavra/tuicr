@@ -53,7 +53,10 @@ impl App {
         self.commit_list_scroll_offset = 0;
         self.visible_commit_count = mapped.len();
         self.has_more_commit = false;
-        self.show_commit_selector = true;
+        self.show_commit_selector = self.show_commits_on_open;
+        if !self.show_commit_selector && self.focused_panel == FocusedPanel::CommitSelector {
+            self.focused_panel = FocusedPanel::Diff;
+        }
 
         let mut range = (0, mapped.len() - 1);
         let mut auto_scoped_since_last_review = false;
@@ -643,6 +646,18 @@ impl App {
     /// status bar shows the `{n}/{total} commits` count as feedback).
     pub fn has_review_commits(&self) -> bool {
         self.review_commits.len() > 1 && !matches!(&self.diff_source, DiffSource::WorkingTree)
+    }
+
+    /// Apply config `show_commits`: remember it for every review opened later
+    /// and hide the pane of the review already loaded at startup.
+    pub fn apply_show_commits_config(&mut self, show: bool) {
+        self.show_commits_on_open = show;
+        if !show {
+            self.show_commit_selector = false;
+            if self.focused_panel == FocusedPanel::CommitSelector {
+                self.focused_panel = FocusedPanel::Diff;
+            }
+        }
     }
 
     /// Toggle the inline commit selector's visibility. When hiding it while it

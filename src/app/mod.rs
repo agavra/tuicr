@@ -1565,6 +1565,10 @@ pub struct App {
     pub pr_range_reload_rx: Option<std::sync::mpsc::Receiver<PrRangeReloadEvent>>,
     /// Whether the inline commit selector panel is visible
     pub show_commit_selector: bool,
+    /// Config `show_commits`: whether a newly opened multi-commit review
+    /// shows the commit pane. `show_commit_selector` is the current review's
+    /// visibility, which `<leader>s` / `:set commits!` toggle.
+    pub show_commits_on_open: bool,
     /// Display order for the inline commit selector (presentation only).
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
