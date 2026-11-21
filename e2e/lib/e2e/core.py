@@ -33,6 +33,10 @@ TUICR_BIN = os.environ.get("TUICR_BIN") or sys.exit("set TUICR_BIN to the tuicr 
 COLS = int(os.environ.get("E2E_COLS", "160"))
 ROWS = int(os.environ.get("E2E_ROWS", "45"))
 TIMEOUT = float(os.environ.get("E2E_TIMEOUT", "10"))
+# reject()'s default window: 0.4 s at the default E2E_TIMEOUT of 10 s, scaled with it (a slow machine that needs a
+# longer TIMEOUT also needs longer to show text that should not appear). E2E_REJECT_WINDOW overrides it.
+REJECT_WINDOW = float(os.environ.get("E2E_REJECT_WINDOW") or 0.04 * TIMEOUT)
+SENTINEL = "E2E-RAN"  # scenario() prints `E2E-RAN <name> rc=<rc>` last; run.py fails an rc 0 without it
 SETTLE_QUIET = float(os.environ.get("E2E_SETTLE_QUIET", "0.25"))  # default in e2e/pyproject.toml, set by run.py
 UNEXPECTED_MARK = '"note": "UNEXPECTED'
 
@@ -47,6 +51,10 @@ class Failure(Exception):
 
 class NoPane(Failure):
     """The tmux pane is gone: never mistaken for "text disappeared" or "process exited"."""
+
+
+class DeadPane(Failure):
+    """The pane's process exited while a screen wait expected it to run: a crash is never "the text went away"."""
 
 
 class Skip(Exception):
@@ -72,11 +80,14 @@ def because(message: str) -> Iterator[None]:
 
 
 def must_fail(fn: Callable[[], object], message: str, exc: type[BaseException] = Failure) -> None:
-    """Assert that fn() raises `exc` (a Failure by default; NoPane for the missing-pane checks). For harness self-tests:
-    a call that returns, or fails with something else, fails the scenario with `message`."""
+    """Assert that fn() raises `exc` (a Failure by default; NoPane/DeadPane for the pane checks). For harness
+    self-tests: a call that returns, or fails with something else, fails the scenario with `message`. The default
+    does not accept NoPane or DeadPane: a pane problem is not the failure a self-test means to provoke."""
     try:
         fn()
-    except exc:
+    except exc as e:
+        if exc is Failure and isinstance(e, NoPane | DeadPane):
+            raise AssertionError(f"{message} (raised {type(e).__name__}: {e}, not a plain Failure)") from e
         return
     except Exception as e:  # noqa: BLE001
         raise AssertionError(f"{message} (raised {type(e).__name__}: {e}, not {exc.__name__})") from e
@@ -175,6 +186,7 @@ class Scenario:
         self.forge_logs: list[Path] = []
         self.forge_unexpected: list[str] = []  # UNEXPECTED calls from logs a restart truncated
         self.allow_unexpected = False
+        self.deaths: list[str] = []  # TUIs whose process exited with no wait_exit accepting it (checked at teardown)
         self.gerrit_proc = None
         self._cleanups: list[tuple[Callable[..., object], tuple[object, ...]]] = []
 
@@ -332,9 +344,30 @@ class Scenario:
             raise Failure(f"expected exactly one saved session, found {len(files)}", "\n".join(map(str, files)))
         return json.loads(files[0].read_text())
 
-    def session_has(self, pattern: str, name: str | None = None) -> bool:
-        """A saved session mentions the pattern (a regex, matched line by line)."""
+    def session_has(self, pattern: str, name: str | None = None, allow_missing: bool = False) -> bool:
+        """A saved session mentions the pattern (a regex, matched line by line). No saved session at all fails (a
+        negative check would otherwise pass without checking anything) unless allow_missing=True. Prefer the parsed
+        accessors (session(), session_comments(), session_reviewed())."""
+        if not allow_missing and not self.session_files(name):
+            raise Failure(f"session_has(/{pattern}/): no saved session exists (allow_missing=True if that is fine)")
         return grep(pattern, self.session_json(name))
+
+    def session_comments(self, name: str | None = None) -> list[str]:
+        """The text of every comment in the one saved session: review-level, file-level and line comments."""
+        sess = self.session(name)
+        out = [c["content"] for c in sess.get("review_comments") or []]
+        for f in (sess.get("files") or {}).values():
+            out += [c["content"] for c in f.get("file_comments") or []]
+            for cs in (f.get("line_comments") or {}).values():
+                out += [c["content"] for c in cs]
+        return out
+
+    def session_reviewed(self, path: str, name: str | None = None) -> bool:
+        """The file-level `reviewed` flag of `path` in the one saved session (a path it lacks fails)."""
+        files = self.session(name).get("files") or {}
+        if path not in files:
+            raise Failure(f"saved session has no file {path}", "\n".join(files))
+        return bool(files[path].get("reviewed"))
 
     # ---- fixtures and flows (thin forwarding, so a scenario reads `s.diff()`) ------------------------------------
     def open(self, *args: str, **kw: Any) -> Tui:
@@ -432,12 +465,22 @@ def scenario(fn: Callable[[Scenario], None]) -> None:
         rc = e.code if isinstance(e.code, int) else 1
         if isinstance(e.code, str):
             sys.stderr.write(e.code + "\n")
+        if rc == 0:  # a body that exits 0 early has not shown it checked anything
+            sys.stderr.write("e2e: the scenario body called sys.exit(0); return from it instead\n")
+            rc = 1
     except BaseException as e:  # noqa: BLE001 - every other outcome is a scenario failure, reported with its location
         _report(e)
         rc = 1
     finally:
         for tui in s.tuis:
             tui.stop()
+        if rc == 0 and s.deaths:  # a TUI that died unobserved: its crash must not read as a pass
+            sys.stderr.write(
+                "e2e: a TUI exited without a wait_exit accepting its status:\n"
+                f"  at {_rel(str(s.script))}:{fn.__code__.co_firstlineno}: "  # ty: ignore[unresolved-attribute]
+                f"{getattr(fn, '__name__', fn)}()\n" + "\n".join(s.deaths) + "\n"
+            )
+            rc = 1
         for cleanup, args in reversed(s._cleanups):
             try:
                 cleanup(*args)
@@ -452,4 +495,5 @@ def scenario(fn: Callable[[Scenario], None]) -> None:
                 f"{getattr(fn, '__name__', fn)}() finished with it unreported\n" + "\n".join(bad) + "\n"
             )
             rc = 1
+    print(f"{SENTINEL} {s.name} rc={rc}", flush=True)
     sys.exit(rc)

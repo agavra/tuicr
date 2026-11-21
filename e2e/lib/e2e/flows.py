@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import repos
+from .core import TIMEOUT
 from .tui import Tui
 from .waits import wait_file
 
@@ -52,7 +53,7 @@ class FakeClipboard:
         """Something was copied already (the file exists)."""
         return self.path.exists()
 
-    def text(self, timeout: float = 10) -> str:
+    def text(self, timeout: float = TIMEOUT) -> str:
         """Wait for, then return, what the fake clipboard received."""
         return wait_file(self.path, timeout).read_text()
 

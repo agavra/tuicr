@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from . import repos
-from .core import E2E_DIR, Failure, grep
+from .core import E2E_DIR, TIMEOUT, UNEXPECTED_MARK, Failure, grep
 from .tui import Tui
 from .waits import wait_file
 
@@ -25,7 +25,7 @@ def forge_open(
     variant = data/<forge>/<variant>/ overlay (E2E_VARIANT); env: extra child variables."""
     repo = repos.pr_repo(s.dir / "repo", origin=url)
     t = s.start("pr", "1", cwd=repo, env={**({"E2E_VARIANT": variant} if variant else {}), **(env or {})}, **start_kw)
-    return t.wait_for("PR Description|Merge Request|!1", 20)
+    return t.wait_for("PR Description|Merge Request|!1", 2 * TIMEOUT)
 
 
 def pr_open(s: Scenario, variant: str = "threads_and_commits", **kw: Any) -> Tui:
@@ -34,11 +34,9 @@ def pr_open(s: Scenario, variant: str = "threads_and_commits", **kw: Any) -> Tui
 
 
 def pr_comment(t: Tui, text: str) -> Tui:
-    """In the opened PR, add a line comment on src/greet.rs line 1."""
+    """In the opened PR, add a line comment on src/greet.rs line 1 and wait until it is saved (see Tui.comment)."""
     t.keys("}").cursor_on("1[╭ ]▌ pub fn greet")
-    t.keys("c").wait_for("COMMENT")
-    t.keys(text).keys("Enter")
-    return t.wait_for(text)
+    return t.comment(text)
 
 
 def pr_editor_snapshot(s: Scenario, url: str = "https://github.com/octo/demo.git") -> Tui:
@@ -57,7 +55,7 @@ def pr_editor_snapshot(s: Scenario, url: str = "https://github.com/octo/demo.git
     t.keys("}").cursor_on("1[╭ ]▌ pub fn greet")
     t.keys("e")
     try:
-        wait_file(argv, 10)
+        wait_file(argv, TIMEOUT)
     except Failure as e:
         raise Failure("fake editor was not run", t.screen()) from e
     text = argv.read_text()
@@ -96,6 +94,9 @@ def gerrit_serve(
     certificate (see tls_files) instead of plain HTTP."""
     d = s.dir
     r, gd = d / "repo", d / "gerrit"
+    log = gd / "forge.log"  # the fake's calls, UNEXPECTED notes included: checked at exit like the CLI fakes'
+    if log.exists():  # a second serve wipes the dir: keep what the first one flagged
+        s.forge_unexpected += [ln for ln in log.read_text().splitlines() if UNEXPECTED_MARK in ln]
     shutil.rmtree(gd, ignore_errors=True)
     r = repos._fresh_git(r)
     gd.mkdir(parents=True)
@@ -119,9 +120,10 @@ def gerrit_serve(
     argv = [sys.executable, str(E2E_DIR / "fakeforge/gerrit.py"), str(gd), str(gd / "port")]
     if tls is not None:
         argv += [str(tls.cert), str(tls.key)]
+    s.forge_logs.append(log)
     s.gerrit_proc = subprocess.Popen(argv)
     s.on_exit(gerrit_stop, s)
-    wait_file(gd / "port", 10)
+    wait_file(gd / "port", TIMEOUT)
     port = (gd / "port").read_text().strip()
     return r, f"{'https' if tls else 'http'}://127.0.0.1:{port}"
 

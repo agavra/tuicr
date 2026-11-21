@@ -9,4 +9,4 @@ EXPECTED = "PASS"  # asserted by e2e/selftest/run.py
 def main(s: Scenario) -> None:
     s.allow_unexpected_forge_calls("the fake gh has no fixture for this route, on purpose")
     tui = s.start_cmd(["sh", "-c", "gh api repos/octo/demo/nonexistent >/dev/null 2>&1; sleep 30"])
-    tui.wait_forge_log("UNEXPECTED", 10)
+    tui.wait_forge_log("UNEXPECTED", 10, notes=True)
