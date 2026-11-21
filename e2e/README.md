@@ -66,7 +66,8 @@ e2e/
     ttyrelay.py         a pty between the pane and tuicr that logs how each synchronized frame arrives (argv, frames)
   fakeforge/          ONE fake-forge core (core.py) + thin adapters gh.py glab.py tea.py bkt.py, gerrit.py (REST server);
                       main.py is the shared entry point the bin/ wrappers exec
-  bin/                gh glab tea bkt: wrappers that exec fakeforge/main.py <tool>; bin/ is first on the child's PATH
+  bin/                gh glab tea bkt: wrappers that exec fakeforge/main.py <tool>; the harness puts copies that run it
+                      in-process (one process launch per call) first on the child's PATH
   data/               fixture data per forge (github/, gitlab/, gitea/, bitbucket/, gerrit/), variant overlays
   scenarios/<area>/<behaviour>.py
   selftest/           run.py: tests of the runner and the library (false-green paths, timeout kill, skip, zero selection);

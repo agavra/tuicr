@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .core import (
-    E2E_DIR,
+    FAKE_BIN,
     OUT,
     REJECT_WINDOW,
     ROOT,
@@ -278,7 +278,7 @@ class Tui:
         if exit_file.exists():
             exit_file.unlink()
         s.forge_logs.append(t.forge_log)
-        path = ":".join([*s.pre_path, f"{E2E_DIR}/bin", TOOL_PATH])
+        path = ":".join([*s.pre_path, FAKE_BIN, TOOL_PATH])
         cenv = child_env(
             d,
             path,
