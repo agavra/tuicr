@@ -49,6 +49,7 @@ fn options(revisions: Option<&str>, working_tree: bool) -> AppStartupOptions<'_>
         path_filter: None,
         file_path: None,
         all_files: false,
+        include_untracked: true,
         show_pr_checks: false,
         show_pr_comments: false,
         pr_comments_visibility: None,
