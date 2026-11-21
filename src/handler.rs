@@ -1390,11 +1390,17 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
 pub fn handle_confirm_action(app: &mut App, action: Action) {
     // Only the quit prompts end the session. A Sessions-tab delete answers
     // in place and returns to the selector.
-    let quits = app.pending_confirm != Some(app::ConfirmAction::DeleteSession);
+    let quits = !matches!(
+        app.pending_confirm,
+        Some(app::ConfirmAction::DeleteSession | app::ConfirmAction::DeleteRemoteDraft)
+    );
     match action {
         Action::ConfirmYes => {
             if let Some(app::ConfirmAction::DeleteSession) = app.pending_confirm {
                 app.sessions_tab_delete_selected();
+            }
+            if let Some(app::ConfirmAction::DeleteRemoteDraft) = app.pending_confirm {
+                app.spawn_remote_draft_delete();
             }
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
                 let slug = app.session_slug();

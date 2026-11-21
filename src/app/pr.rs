@@ -1457,8 +1457,17 @@ impl App {
             .forge_backend
             .as_deref()
             .and_then(|b| b.local_checkout_path());
-        let details = match &self.diff_source {
-            DiffSource::PullRequest(pr) => crate::forge::traits::PullRequestDetails {
+        let Some(details) = self.open_pr_details() else {
+            return;
+        };
+        self.spawn_pr_threads_fetch(&details, local_checkout);
+    }
+
+    /// The open PR's details as far as a backend call needs them, rebuilt from
+    /// the diff source. `None` outside PR mode.
+    fn open_pr_details(&self) -> Option<crate::forge::traits::PullRequestDetails> {
+        match &self.diff_source {
+            DiffSource::PullRequest(pr) => Some(crate::forge::traits::PullRequestDetails {
                 repository: pr.key.repository.clone(),
                 number: pr.key.number,
                 title: pr.title.clone(),
@@ -1475,10 +1484,120 @@ impl App {
                 closed: pr.closed,
                 merged_at: None,
                 diff_start_sha: None,
-            },
-            _ => return,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The draft comment under the cursor that the open forge lets its author
+    /// delete: the comment's id, when the cursor is on a remote draft and the
+    /// backend can remove it.
+    pub fn deletable_remote_draft_at_cursor(&self) -> Option<String> {
+        if !self.forge_backend.as_deref()?.can_delete_draft_comments() {
+            return None;
+        }
+        let Some(AnnotatedLine::RemoteThreadLine {
+            thread_idx,
+            comment_idx,
+        }) = self.line_annotations.get(self.diff_state.cursor_line)
+        else {
+            return None;
         };
-        self.spawn_pr_threads_fetch(&details, local_checkout);
+        self.forge_review_threads
+            .get(*thread_idx)?
+            .comments
+            .get(*comment_idx)
+            .filter(|comment| comment.is_draft)
+            .map(|comment| comment.id.clone())
+    }
+
+    /// `dd` on a remote draft: ask before deleting it, since the forge keeps
+    /// no copy. Returns false when the cursor is not on a deletable draft.
+    pub fn begin_remote_draft_delete(&mut self) -> bool {
+        if self.pr_draft_delete_rx.is_some() {
+            self.set_message("A draft deletion is already in progress");
+            return true;
+        }
+        let Some(comment_id) = self.deletable_remote_draft_at_cursor() else {
+            return false;
+        };
+        self.pending_draft_delete = Some(comment_id);
+        self.enter_confirm_mode(ConfirmAction::DeleteRemoteDraft);
+        true
+    }
+
+    /// Answer to the confirmation: delete the draft on the forge in the
+    /// background. The local copy is never edited; the threads are fetched
+    /// again once the forge has answered.
+    pub fn spawn_remote_draft_delete(&mut self) {
+        let Some(comment_id) = self.pending_draft_delete.take() else {
+            return;
+        };
+        let Some(details) = self.open_pr_details() else {
+            return;
+        };
+        let local_checkout = self
+            .forge_backend
+            .as_deref()
+            .and_then(|b| b.local_checkout_path());
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pr_draft_delete_rx = Some(rx);
+        self.set_message("Deleting draft comment…");
+
+        let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
+        std::thread::spawn(move || {
+            let backend = create_forge_backend(
+                &details.repository,
+                local_checkout,
+                show_pr_checks,
+                show_pr_comments,
+            );
+            let result = backend
+                .delete_draft_comment(&details, &comment_id)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(PrDraftDeleteEvent::Done {
+                repository: details.repository,
+                pr_number: details.number,
+                head_sha: details.head_sha,
+                result,
+            });
+        });
+    }
+
+    /// Apply the result of a background draft deletion. A result for a PR the
+    /// user has since left is dropped.
+    pub fn poll_pr_draft_delete_events(&mut self) {
+        let Some(rx) = self.pr_draft_delete_rx.as_ref() else {
+            return;
+        };
+        let Ok(PrDraftDeleteEvent::Done {
+            repository,
+            pr_number,
+            head_sha,
+            result,
+        }) = rx.try_recv()
+        else {
+            return;
+        };
+        self.pr_draft_delete_rx = None;
+        let still_open = matches!(
+            &self.diff_source,
+            DiffSource::PullRequest(pr)
+                if pr.key.repository == repository
+                    && pr.key.number == pr_number
+                    && pr.key.head_sha == head_sha
+        );
+        if !still_open {
+            return;
+        }
+        match result {
+            Ok(()) => {
+                self.set_message("Draft comment deleted");
+                self.refetch_pr_threads();
+            }
+            Err(e) => self.set_warning(format!("Failed to delete draft comment: {e}")),
+        }
     }
 
     /// Open a PR using the provided forge backend, synchronously. Exists

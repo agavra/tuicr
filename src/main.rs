@@ -501,6 +501,7 @@ fn main() -> anyhow::Result<()> {
         app.poll_pr_range_reload_events();
         app.poll_pr_threads_events();
         app.poll_pr_submit_events();
+        app.poll_pr_draft_delete_events();
         needs_redraw |= app.poll_editor_launches();
         needs_redraw |= app.poll_persisted_session_changes();
         needs_redraw |= app.poll_diff_watch_changes();
@@ -684,7 +685,9 @@ fn main() -> anyhow::Result<()> {
                                     "Comment already pushed to {forge} — read only in tuicr"
                                 ));
                             } else if !app.delete_comment_at_cursor() {
-                                if app.cursor_on_remote_thread() {
+                                if app.begin_remote_draft_delete() {
+                                    // Waiting on the confirmation prompt.
+                                } else if app.cursor_on_remote_thread() {
                                     let forge = app.forge_display_name();
                                     app.set_message(format!(
                                         "{forge} comment — read only in tuicr"

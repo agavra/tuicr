@@ -381,5 +381,6 @@ impl App {
             .pending_confirm
             .map_or(InputMode::Normal, ConfirmAction::return_mode);
         self.pending_confirm = None;
+        self.pending_draft_delete = None;
     }
 }
