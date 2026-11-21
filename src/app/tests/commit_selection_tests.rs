@@ -1189,3 +1189,41 @@ fn should_hide_the_current_commit_pane_and_drop_its_focus_when_show_commits_is_f
     assert!(!app.show_commit_selector);
     assert_eq!(app.focused_panel, FocusedPanel::Diff);
 }
+
+fn esc_key() -> crossterm::event::KeyEvent {
+    crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Esc,
+        crossterm::event::KeyModifiers::NONE,
+    )
+}
+
+/// Esc in the inline commit selector returns focus to the diff. Normal mode
+/// maps Esc to `ClearSearchHighlight` (#493), so the selector must treat that
+/// action as its exit, and it still clears a visible search highlight.
+#[test]
+fn esc_in_inline_selector_returns_focus_to_diff() {
+    let mut app = inline_selector_app(CommitOrder::Descending);
+    app.focused_panel = FocusedPanel::CommitSelector;
+    app.search_highlight_visible = true;
+
+    let action = crate::handler::map_normal_path_key(&app, esc_key());
+    crate::handler::dispatch_action(&mut app, action);
+
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+    assert_eq!(app.commit_selection_range, Some((0, 11)));
+    assert!(!app.search_highlight_visible);
+}
+
+/// Esc in the diff pane keeps clearing the search highlight and focus.
+#[test]
+fn esc_in_diff_pane_clears_search_highlight() {
+    let mut app = inline_selector_app(CommitOrder::Descending);
+    app.focused_panel = FocusedPanel::Diff;
+    app.search_highlight_visible = true;
+
+    let action = crate::handler::map_normal_path_key(&app, esc_key());
+    crate::handler::dispatch_action(&mut app, action);
+
+    assert!(!app.search_highlight_visible);
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+}
