@@ -216,6 +216,9 @@ class _Control:
 
 
 _control = _Control()
+# How long input waits after a bare Escape (see Tui._input): tuicr reads ESC and a key arriving this far apart as two
+# keys while it is idle. Exec'ing tmux per key used to leave a gap of a process launch.
+ESCAPE_GAP = 0.05
 
 
 def tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -250,6 +253,7 @@ class Tui:
         self.forge_log = self.dir / "forge.log"
         self.exit_ok = False  # a wait_exit accepted the process's exit (screen checks of the dead pane are fine then)
         self.retired = False  # a restart under the same name took over the pane
+        self.escape_at = -math.inf  # when the last input sent ended in a bare Escape (see _input)
 
     @classmethod
     def start(
@@ -323,14 +327,24 @@ class Tui:
         return t
 
     # ---- input -----------------------------------------------------------------------------------------------------
+    def _input(self, *args: str, escape: bool = False) -> None:
+        """Send input to the pane. A bare Escape and the next input must not reach tuicr in one read: the terminal
+        parser takes ESC followed by a key as Alt+key (`Escape` then `r` arrives as Alt-r, which nothing binds). The
+        control client sends back to back, so input right after an Escape waits until ESCAPE_GAP has passed."""
+        wait = self.escape_at + ESCAPE_GAP - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        tmux(*args)
+        self.escape_at = time.monotonic() if escape else -math.inf
+
     def keys(self, *keys: str) -> Tui:
         """tmux send-keys: key names (Enter, Escape, C-c, Tab...) or text; several arguments are sent in order."""
-        tmux("send-keys", "-t", self.session, *keys)
+        self._input("send-keys", "-t", self.session, *keys, escape=bool(keys) and keys[-1] in ("Escape", "Esc", "C-["))
         return self
 
     def type(self, text: str) -> Tui:
         """tmux send-keys -l: text sent literally, never parsed as key names (escape sequences, ';e')."""
-        tmux("send-keys", "-t", self.session, "-l", text)
+        self._input("send-keys", "-t", self.session, "-l", text, escape=text.endswith("\x1b"))
         return self
 
     def click(self, col: int, row: int, button: int = 0) -> Tui:
@@ -340,7 +354,7 @@ class Tui:
     def paste(self, text: str) -> Tui:
         """Bracketed paste, through a tmux buffer."""
         tmux("set-buffer", "-b", "e2e", text)
-        tmux("paste-buffer", "-p", "-b", "e2e", "-t", self.session)
+        self._input("paste-buffer", "-p", "-b", "e2e", "-t", self.session)
         return self
 
     def resize(self, cols: int, rows: int) -> Tui:
