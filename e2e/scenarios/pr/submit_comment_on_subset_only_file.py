@@ -17,7 +17,9 @@ def main(s: Scenario) -> None:
     tui.expect("Submit review to GitHub").expect("Inline: 1")
     tui.keys("y")
     tui.wait_for("Submitted GitHub review #1001")
-    p = tui.posts()[0]["payload"]
+    posts = tui.posts()
+    assert len(posts) == 1, f"expected exactly one review POST: {posts}"
+    p = posts[0]["payload"]
     got = [(c["path"], c["line"], c["body"]) for c in p["comments"]]
     assert got == [("src/greet.rs", 1, "inline on subset-only file")], got
     tui.quit()

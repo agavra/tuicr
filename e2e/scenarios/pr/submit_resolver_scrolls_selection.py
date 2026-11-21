@@ -11,11 +11,12 @@ from e2e import Scenario, scenario
 def main(s: Scenario) -> None:
     s.rows = 26
     tui = s.pr_open("many_binary_files")
-    for i in range(1, 10):
-        tui.keys("}").settle(0.2).keys("C").wait_for("COMMENT").type(f"note-{i}").keys("Enter").settle(0.2)
-    tui.cmd("submit comment").wait_for("cannot be posted inline").settle()
+    notes = [f"note-{i}" for i in range(1, 10)]
+    for note in notes:
+        tui.keys("}").settle(0.2).comment(note, key="C")
+    assert sorted(s.session_comments()) == notes, f"not every note was saved: {s.session_comments()}"
+    tui.cmd("submit comment").wait_for(r"\d+ comments cannot be posted inline").settle()
     tui.keys(*["j"] * 9).settle()
-    print("\n".join(line[33:150] for line in tui.screen().split("\n")[5:24]))
     tui.expect(r"> \[x\] Move to summary  Commit Message", 2)  # else: selected last resolver row is not visible
     tui.expect("Esc: cancel", 2)  # else: resolver footer scrolled away
     tui.keys("Escape").quit()
