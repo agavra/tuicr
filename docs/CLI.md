@@ -19,11 +19,15 @@ Related references: [CONFIG.md](CONFIG.md) for the config file and themes,
 | `tuicr review list` | List persisted review sessions |
 | `tuicr review add` | Add a local draft comment to a session |
 | `tuicr review comments` (`tuicr review get`) | Print a session's comments |
+| `tuicr review delete` | Delete one local draft comment (`--comment-id <ID>`) |
+| `tuicr review clearc` | Clear every comment in a session, keeping review marks |
+| `tuicr review clear` | Clear every comment and review mark in a session |
 | `tuicr update [VERSION]` | Update the installed binary |
 
 `mr` is an alias of `pr`, and `get` an alias of `comments`; they behave
 identically. `<target>` accepts a bare `<number>`, `<owner/repo#N>`, or a PR
-URL.
+URL. [REVIEW_CLI.md](REVIEW_CLI.md) lists the flags of every `tuicr review`
+subcommand.
 
 Without a target, `tuicr pr` reviews the open PR for the branch checked out in
 the current directory, like `gh pr view`. It finds the PR on the same repository
@@ -37,7 +41,9 @@ several do (the same branch name opened from different forks), on a detached
 
 `tuicr update` takes an optional SemVer version to install a specific release,
 including an older known-good one. It only accepts a version number — there is
-no `latest` keyword; omit the argument to get the newest release.
+no `latest` keyword; omit the argument to get the newest release. Pinning a
+version works only for Cargo and direct-binary installs; for a Homebrew, Mise or
+Nix install it fails with exit code 1.
 
 There is no `tuicr help` subcommand. Use `-h` / `--help`, which also works per
 command (`tuicr review add --help`).
@@ -99,10 +105,10 @@ succeed before a full PR URL or `owner/repo#N` target takes precedence. Omit
 
 ### Scope selection
 
-`--path`, `--working-tree`, `--file`, and `--all-files` pick what gets reviewed,
-so they cannot be combined — passing two is a usage error. `--file` also
-conflicts with `--revisions`, since annotating an arbitrary file has no commit
-range.
+`--file` and `--all-files` pick their own review scope, so each conflicts with
+`--path`, `--working-tree`, `--revisions` and the other; passing a conflicting
+pair is a usage error. `--path` combines with `--working-tree` and/or
+`--revisions`.
 
 `--path` on its own implies `--working-tree`. Pair it with `-r` to filter a
 commit range instead:
@@ -157,9 +163,10 @@ out to.
 | `TUICR_GLAB_DEBUG` | Log `glab` invocations for debugging. See [GITLAB.md](GITLAB.md) |
 | `TMUX`, `ZELLIJ` | Prefer local clipboard tools before the OSC 52 relay in local multiplexers |
 | `SSH_TTY`, `SSH_CONNECTION` | Prefer OSC 52 on non-macOS SSH sessions; macOS keeps `pbcopy` first |
-| `REX_SESSION` | Prefer OSC 52 clipboard writes to reach the Rex client's clipboard |
-| `TERM_PROGRAM` | When set to `rex`, prefer OSC 52 clipboard writes |
+| `REX_SESSION` | Prefer OSC 52 clipboard writes to reach the Rex client's clipboard (non-macOS only; macOS keeps `pbcopy` first) |
+| `TERM_PROGRAM` | When set to `rex`, prefer OSC 52 clipboard writes (non-macOS only; macOS keeps `pbcopy` first) |
 | `XDG_SESSION_TYPE` | Picks `wl-copy` on Wayland or `xclip` on X11 |
+| `CARGO_HOME` | Cargo root `tuicr update` uses to tell whether the binary is a Cargo install (default `~/.cargo`) |
 
 Set `TUICR_PROFILE` to `1`, `true`, `on`, or `yes` to log to
 `tuicr-profile.<timestamp>.log` in the system temp directory. Any other
@@ -186,16 +193,22 @@ in `@<host>`, e.g. `gh:owner/repo/pr/N@ghe.example.com`. `tuicr-summary:` is pri
 including with zero comments, so a watcher can tell "reviewed everything, found
 nothing" apart from "quit without looking".
 
+`tuicr review add` also writes a `Warning: comment type '<id>' is not
+configured; known types: …` line to stderr when `--type` names an id missing
+from a configured `comment_types` list. The comment is still stored.
+
 `--stdout` prints the export markdown to stdout when the TUI exits, with the
 TUI itself rendered to `/dev/tty`. Combined with the two stderr markers, that
 keeps stdout clean for a pipe.
 
-All three `tuicr review` subcommands print pretty JSON to stdout and nothing
+Every `tuicr review` subcommand prints pretty JSON to stdout and nothing
 else. There is no `--json` flag because JSON is the only format. See
 [REVIEW_CLI.md](REVIEW_CLI.md) for the schemas.
 
-`tuicr update` prints a single line describing what it did — updated, already
-up to date, or completed through an external package manager.
+`tuicr update` itself prints a single line describing what it did — updated,
+already up to date, or completed through an external package manager. When it
+delegates to a package manager (Homebrew, Cargo, Mise, Nix), that tool's own
+output passes through before tuicr's line.
 
 ## Exit codes
 
