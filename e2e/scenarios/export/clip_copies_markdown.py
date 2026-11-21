@@ -18,6 +18,7 @@ def main(s: Scenario) -> None:
         and grep(r"^1\. `README\.md:4` - clip me please$", clip)
     ), f"clipboard lacks the structured export:\n{clip}"
     tui.wait_for("Review copied to clipboard")  # the status line confirms the copy
-    assert tui.alive(), "tuicr exited after :clip"
-    tui.expect("clip me please")  # still showing the review
+    # Still running (a dead pane fails every wait): the review is still shown and keys still move the cursor.
+    tui.settle().check("clip me please", "the review is no longer shown after :clip")
+    tui.cursor_on(r"═══ data\.bin")
     tui.quit()
