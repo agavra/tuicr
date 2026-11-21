@@ -119,6 +119,7 @@ Fixtures: `s.diff()` / `s.open(*args)` (git fixture, tuicr started), `s.pr_open(
 (PR #1 through the fake `gh`/`glab`/`tea`/`bkt`, picked by the origin URL; `env=` for the fake), `e2e.pr_comment(tui, text)`,
 `s.gerrit_open("root"|"threads", host=, project=, target=)` / `s.gerrit_stop()`, `e2e.forge.pr_editor_snapshot(s)`,
 `s.fake_clipboard()` (create it before starting; `.text()` waits for what was copied, `.copied` says whether anything was),
+`e2e.flows.GitCalls(s)` (a recording `git` first on the child's PATH; `.calls(name)`, `.cli_backend(name)` proves `backend = "cli"` took effect; create it before starting),
 `s.minimal_path(dir, "git")` (a PATH holding only those tools; pass as `path=` to `s.cli`), `s.use_hg()` / `s.use_jj()`
 (SKIP without the real tool, FAIL with `E2E_REQUIRE_HG=1`/`E2E_REQUIRE_JJ=1`), and in `e2e.repos`: `git_repo`,
 `empty_repo` (empty git repo on main), `git_merge_base` (`.repo .base .main .topic`), `pr_repo`, `wide_repo`, `long_file_repo`, `hg_repo`, `jj_repo`, `git(repo, *args)`,
