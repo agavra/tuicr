@@ -91,15 +91,21 @@ pub struct ForgeConfig {
     /// reader can see the comment classification at a glance. Defaults to
     /// `true`; set to `false` to send the raw comment body.
     pub comment_type_prefix: bool,
+    /// Template for that prefix. `{label}` is the type's label as configured,
+    /// `{LABEL}` the same uppercased.
+    pub comment_type_format: String,
     /// GitHub search query for the Pull Requests review scope. `None` keeps
     /// `review-requested:@me`. Other forges ignore it.
     pub pr_search: Option<String>,
 }
 
+pub const DEFAULT_COMMENT_TYPE_FORMAT: &str = "[{LABEL}] ";
+
 impl Default for ForgeConfig {
     fn default() -> Self {
         Self {
             comment_type_prefix: true,
+            comment_type_format: DEFAULT_COMMENT_TYPE_FORMAT.to_string(),
             pr_search: None,
         }
     }
@@ -342,7 +348,7 @@ const KNOWN_KEYS: &[&str] = &[
     "export",
 ];
 
-const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix", "pr_search"];
+const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix", "comment_type_format", "pr_search"];
 
 const EXPORT_KNOWN_KEYS: &[&str] = &[
     "intro",
@@ -815,6 +821,18 @@ fn parse_forge(value: &Value, warnings: &mut Vec<String>) -> Option<ForgeConfig>
         if !trimmed.is_empty() {
             cfg.pr_search = Some(trimmed.to_string());
             any_override = true;
+        }
+    }
+
+    if let Some(v) = read_section_string(table, "forge", "comment_type_format", warnings) {
+        if v.contains("{label}") || v.contains("{LABEL}") {
+            cfg.comment_type_format = v;
+            any_override = true;
+        } else {
+            warnings.push(
+                "Warning: Config key 'forge.comment_type_format' must contain {label} or {LABEL}; ignoring value"
+                    .to_string(),
+            );
         }
     }
 
@@ -2431,6 +2449,35 @@ comment_type_prefix = false
             .expect("forge section should parse");
         assert!(!forge.comment_type_prefix);
         assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_forge_comment_type_format() {
+        let outcome = parse_config("[forge]\ncomment_type_format = \"**{label}:** \"\n");
+        let forge = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.forge.clone())
+            .expect("forge section should parse");
+        assert_eq!(forge.comment_type_format, "**{label}:** ");
+        assert!(forge.comment_type_prefix);
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_comment_type_format_without_placeholder() {
+        let outcome = parse_config("[forge]\ncomment_type_format = \"note: \"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.forge.clone()),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec![
+                "Warning: Config key 'forge.comment_type_format' must contain {label} or {LABEL}; ignoring value"
+                    .to_string()
+            ]
+        );
     }
 
     #[test]

@@ -10,7 +10,9 @@
 
 use std::path::PathBuf;
 
-use crate::app::{CommentTypeDefinition, resolve_comment_type_label};
+use crate::app::{
+    CommentTypeDefinition, resolve_comment_type_label, resolve_comment_type_raw_label,
+};
 use crate::config::ForgeConfig;
 use crate::model::comment::{Comment, CommentType};
 use crate::model::{DiffFile, FileStatus, LineOrigin, LineRange, LineSide};
@@ -32,10 +34,21 @@ impl<'a> SubmitContext<'a> {
         }
     }
 
-    /// Resolved `[TYPE]` text, or an empty string for `None` so callers omit
-    /// the tag.
-    fn type_label(&self, comment_type: &CommentType) -> String {
-        resolve_comment_type_label(comment_type, self.comment_types)
+    /// The type prefix rendered through `forge.comment_type_format`, or an
+    /// empty string for `None`. Independent of `comment_type_prefix` so the
+    /// submit modals can preview it.
+    pub fn type_tag(&self, comment_type: &CommentType) -> String {
+        let raw = resolve_comment_type_raw_label(comment_type, self.comment_types);
+        if raw.is_empty() {
+            return String::new();
+        }
+        self.forge
+            .comment_type_format
+            .replace(
+                "{LABEL}",
+                &resolve_comment_type_label(comment_type, self.comment_types),
+            )
+            .replace("{label}", &raw)
     }
 }
 
@@ -222,12 +235,7 @@ fn build_inline_body(comment: &Comment, file_level: bool, ctx: SubmitContext<'_>
     }
     // `None` comments carry no `[TYPE]` tag, but file-level ones keep the
     // `File-level:` marker so the reader still knows where the comment applies.
-    let label = ctx.type_label(&comment.comment_type);
-    let type_tag = if label.is_empty() {
-        String::new()
-    } else {
-        format!("[{label}] ")
-    };
+    let type_tag = ctx.type_tag(&comment.comment_type);
     let prefix = if file_level {
         format!("{type_tag}File-level: ")
     } else {
@@ -521,9 +529,8 @@ pub fn build_review_body(
             if i > 0 {
                 block.push_str("\n\n");
             }
-            let label = ctx.type_label(&c.comment_type);
-            if ctx.forge.comment_type_prefix && !label.is_empty() {
-                block.push_str(&format!("[{label}] "));
+            if ctx.forge.comment_type_prefix {
+                block.push_str(&ctx.type_tag(&c.comment_type));
             }
             block.push_str(&c.content);
         }
@@ -533,9 +540,8 @@ pub fn build_review_body(
     if !moved_to_summary.is_empty() {
         let mut block = String::from("## Unplaced comments\n");
         for item in moved_to_summary {
-            let label = ctx.type_label(&item.comment.comment_type);
-            let prefix = if ctx.forge.comment_type_prefix && !label.is_empty() {
-                format!("[{label}] ")
+            let prefix = if ctx.forge.comment_type_prefix {
+                ctx.type_tag(&item.comment.comment_type)
             } else {
                 String::new()
             };
@@ -1109,7 +1115,7 @@ mod tests {
         let types = test_comment_types();
         let config = default_config();
         let ctx = ctx_of(&config, &types);
-        assert_eq!(ctx.type_label(&CommentType::None), "");
+        assert_eq!(ctx.type_tag(&CommentType::None), "");
         let custom = vec![CommentTypeDefinition {
             id: "issue".into(),
             label: "bug".into(),
@@ -1117,8 +1123,8 @@ mod tests {
             color: None,
         }];
         let ctx = ctx_of(&config, &custom);
-        assert_eq!(ctx.type_label(&CommentType::from_id("issue")), "BUG");
-        assert_eq!(ctx.type_label(&CommentType::from_id("note")), "NOTE");
+        assert_eq!(ctx.type_tag(&CommentType::from_id("issue")), "[BUG] ");
+        assert_eq!(ctx.type_tag(&CommentType::from_id("note")), "[NOTE] ");
     }
 
     // File-level mapping
@@ -1221,7 +1227,7 @@ mod tests {
         let comment = comment_with_line(LineSide::New, Some(11), None);
         let cfg = ForgeConfig {
             comment_type_prefix: false,
-            pr_search: None,
+            ..ForgeConfig::default()
         };
         let mapped = map_comment(
             &comment,
@@ -1297,7 +1303,7 @@ mod tests {
     fn should_omit_type_prefix_in_body_when_disabled() {
         let cfg = ForgeConfig {
             comment_type_prefix: false,
-            pr_search: None,
+            ..ForgeConfig::default()
         };
         let comments = vec![note("just text")];
         let body = build_review_body(&comments, &[], ctx_of(&cfg, &test_comment_types()));
@@ -1404,6 +1410,51 @@ mod tests {
         assert!(
             body.contains("[💬 NOTE] a.rs: unplaced"),
             "body was: {body}"
+        );
+    }
+
+    #[test]
+    fn should_render_type_prefix_through_configured_format() {
+        let types = vec![CommentTypeDefinition {
+            id: "nit".into(),
+            label: "nitpick (non-blocking)".into(),
+            definition: None,
+            color: None,
+        }];
+        let cases = [
+            ("[{LABEL}] ", "[NITPICK (NON-BLOCKING)] tidy"),
+            ("**{label}:** ", "**nitpick (non-blocking):** tidy"),
+            ("{label}: ", "nitpick (non-blocking): tidy"),
+        ];
+        for (format, want) in cases {
+            let cfg = ForgeConfig {
+                comment_type_format: format.to_string(),
+                ..ForgeConfig::default()
+            };
+            let ctx = ctx_of(&cfg, &types);
+            let comment = Comment::new("tidy".to_string(), CommentType::from_id("nit"), None);
+            assert_eq!(build_inline_body(&comment, false, ctx), want, "{format}");
+            assert!(
+                build_review_body(std::slice::from_ref(&comment), &[], ctx).starts_with(want),
+                "{format}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_render_unconfigured_type_id_through_lowercase_format() {
+        let cfg = ForgeConfig {
+            comment_type_format: "{label}: ".to_string(),
+            ..ForgeConfig::default()
+        };
+        let comment = Comment::new("fix".to_string(), CommentType::from_id("ghost"), None);
+        assert_eq!(
+            build_inline_body(&comment, true, ctx_of(&cfg, &test_comment_types())),
+            "ghost: File-level: fix"
+        );
+        assert_eq!(
+            ctx_of(&cfg, &test_comment_types()).type_tag(&CommentType::None),
+            ""
         );
     }
 
