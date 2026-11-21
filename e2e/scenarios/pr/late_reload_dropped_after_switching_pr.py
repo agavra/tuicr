@@ -20,7 +20,7 @@ def main(s: Scenario) -> None:
     (hold / "gate").touch()
     tui.cmd("e")
     # barrier: all three data calls (files, commits, diff) of the reload are parked on the forge
-    tui.wait_forge_log('"note": "HELD', 10, count=3)  # else: reload data calls never reached the forge hold
+    tui.wait_forge_log('"note": "HELD', 10, count=3, notes=True)  # else: reload data calls never reached the forge hold
     (hold / "gate").unlink()
     variant.write_text("second_pr\n")
     # open PR #2 from the selector while the reload is parked
@@ -30,7 +30,7 @@ def main(s: Scenario) -> None:
     # now let PR #1's reload finish
     (hold / "release").touch()
     # barrier: the three held data calls of PR #1's reload were served; then the UI absorbs (and must drop) the result
-    tui.wait_forge_log('"note": "RELEASED', 10, count=3)  # else: held reload calls were never released
+    tui.wait_forge_log('"note": "RELEASED', 10, count=3, notes=True)  # else: held reload calls were never released
     tui.settle(0.4)
     scr = tui.screen()
     assert "octo/demo#2" in scr, f"PR #2 is no longer on screen\n{scr}"

@@ -17,7 +17,9 @@ uv run --python 3.12 e2e/selftest/run.py        # tests of the harness itself (n
 
 Exit status is 0 only if at least one scenario ran and none failed. Results per scenario are `PASS`, `FAIL`
 (assertion, crash or timeout), `SKIP` (scenario exit 77, e.g. no Mercurial) and `QPASS`/`QFAIL` for
-quarantined scenarios (see below). Logs, final screenshots (`*.screen.txt`), fake-forge call logs
+quarantined scenarios (see below). A scenario proves it ran: `@scenario` ends by printing `E2E-RAN <name> rc=<rc>`,
+and an exit 0 without that line (a script that never reached `@scenario`, or a body that called `sys.exit(0)`) is a
+`FAIL`. Logs, final screenshots (`*.screen.txt`), fake-forge call logs
 (`*.forge.log`) and `results.json` (a list of `{name, result, seconds, log}`) land in `$E2E_OUT` (default `$E2E_ROOT/out`).
 
 ## Requirements
@@ -38,7 +40,8 @@ Locale: tuicr and tmux run in UTF-8 (`en_US.UTF-8` if installed, otherwise `C.UT
 
 Environment knobs: `TUICR_BIN` (required), `E2E_ROOT` (scratch, default a fresh temp dir), `E2E_OUT`,
 `E2E_SOCKET` (tmux socket, default unique per run), `E2E_SCENARIO_DIR` (scenario root, default `e2e/scenarios`), `E2E_SCENARIO_TIMEOUT` (seconds per scenario, default 120), `E2E_SETTLE_QUIET` (default quiet period of `settle`; the defaults of both are under `[tool.tuicr-e2e]` in `pyproject.toml`, the environment wins),
-`E2E_TIMEOUT` (default wait, 10 s), `E2E_HG_DIR` (directory holding a real `hg`), `E2E_REQUIRE_HG=1`,
+`E2E_TIMEOUT` (default wait, 10 s; the harness's other timeouts derive from it), `E2E_REJECT_WINDOW` (default window
+of `reject`, 0.04 × `E2E_TIMEOUT` = 0.4 s), `E2E_HG_DIR` (directory holding a real `hg`), `E2E_REQUIRE_HG=1`,
 `E2E_REQUIRE_JJ=1`, `E2E_JJ_DIR`, `E2E_REQUIRE_SKIPS_ZERO=1` (CI: a skip is a failure), `E2E_KEEP_ROOT=1`, `E2E_INSTALL_SH` / `E2E_INSTALL_REV`
 (the installer script for `cli/install_script_without_tty`; default `upstream/site`, SKIP when unavailable).
 `PYTHONPATH` is set by `run.py` (`e2e/lib`); to run a Python scenario by hand set it yourself (see Debugging).
@@ -106,7 +109,8 @@ defaults to `<scratch>/work`; `env` is a **dict** of extra child variables; `kee
 saved sessions; `name=` starts a second TUI), `s.start_cmd(argv, ...)` (any command, same environment),
 `s.cli(*args, input=, env=, path=, cwd=, check=True)` (non-interactive tuicr, returns stdout, fails on a non-zero exit),
 `s.cli_result(*args, cwd=)` (`.rc`, `.out` = stdout+stderr, never fails), `s.session()` (the one saved session, parsed JSON),
-`s.session_json()`, `s.session_has(regex)`, `s.skip(reason)`, `s.on_exit(fn, *args)` (cleanups run in reverse order after
+`s.session_comments()` (every comment text in it), `s.session_reviewed(path)` (a file's `reviewed` flag),
+`s.session_json()`, `s.session_has(regex, allow_missing=False)` (fails when no session exists at all), `s.skip(reason)`, `s.on_exit(fn, *args)` (cleanups run in reverse order after
 the TUIs stop; never install signal or atexit handlers), `s.allow_unexpected_forge_calls(why)`, `s.env` / `s.pre_path`
 (variables and PATH directories applied to every later start; `use_hg`, `use_jj` and `fake_clipboard` add to them),
 `s.cols` / `s.rows` (size of the next pane).
@@ -123,13 +127,15 @@ pty of its own and logs each synchronized frame it draws; `e2e.ttyrelay.frames(l
 frame.
 
 `Tui`: input `keys(*tmux_keys)`, `type(text)` (literal, `send-keys -l`), `click(col, row)`, `paste(text)`,
-`resize(cols, rows)`, `kill()`; screen `screen(colors=, join=)`, `cursor_row()`, `colors_hash(*rows)` (rows are `1` or
-`(3, 30)`; no argument hashes everything), `alive()`, `pane_exists()`, `exit_status()`; waits and checks
-`wait_for` (alias `expect`), `wait_gone`, `reject(pattern, window=0.4)`, `check(pattern, message)` (no polling),
-`settle(quiet=0.25)`, `wait_screen_change(before)`, `wait_exit(timeout, status=0|"any")`; flows `quit()`, `cmd("w")`,
-`save()`, `comment(text, key="c")`, `cursor_on(regex)`; fake-forge log `posts()` (review POSTs of the fake `gh`),
-`forge_posts(tool)`, `forge_calls()`, `forge_count(regex)`, `forge_expect` / `forge_reject`, `wait_forge_log(regex, timeout,
-count=1)`. Timeouts default to `E2E_TIMEOUT` (10 s). Module functions: `wait_file(path)`, `wait_grep(path, regex)`,
+`resize(cols, rows)`, `kill()`; screen `screen(colors=, join=)`, `cursor_row()` (the diff cursor `▶`; the file tree's
+columns are ignored), `colors_hash(*rows)` (rows are `1` or `(3, 30)`; no argument hashes everything), `alive()`,
+`pane_exists()`, `exit_status()`; waits and checks `wait_for` (alias `expect`), `wait_gone`, `reject(pattern, window=)`,
+`check(pattern, message)` (no polling), `settle(quiet=0.25)`, `wait_screen_change(before)`, `wait_exit(timeout,
+status=0|"any")`; flows `quit()`, `cmd("w")`, `save()`, `comment(text, key="c")` (types literally, returns once the
+editor closed and the status line says the comment was added), `cursor_on(regex)`; fake-forge log (see below)
+`forge_mark()`, `forge_calls(where=, since=, notes=)`, `forge_count(regex)`, `forge_expect` / `forge_reject`,
+`wait_forge_log(regex, timeout, count=1)`, `posts()` (review POSTs of the fake `gh`), `forge_posts(tool)`,
+`mutations(tool)`. Timeouts default to `E2E_TIMEOUT` (10 s). Module functions: `wait_file(path)`, `wait_grep(path, regex)`,
 `wait_cmd(timeout, argv_or_callable)`, `grep(regex, text)`, `because(message)` (context manager: a failing wait inside reports your message plus the evidence), `must_fail(fn, message, exc)` (harness self-tests).
 
 Rules that keep scenarios reliable:
@@ -142,8 +148,19 @@ Rules that keep scenarios reliable:
   (`wait_for`) before it, otherwise it passes before the app has reacted.
 * **A missing pane is a failure.** Every screen query raises `NoPane` when the tmux pane is gone; never turn that into
   "text disappeared", "forbidden text absent" or "process exited". `alive()` raises too, it does not return False.
-* **Fakes fail loudly.** A call a fake has no fixture for is logged with an `UNEXPECTED` note and fails the scenario at
-  exit (tuicr treats some forge errors as best effort, so the exit code alone would hide it). A scenario that provokes
+* **A dead pane is a failure.** The pane stays after its process exits (`remain-on-exit`), but every wait and check
+  (`wait_for`, `wait_gone`, `reject`, `check`, `settle`, `wait_screen_change`, `cursor_on`) raises `DeadPane` once the
+  process has exited, unless you pass `allow_dead=True` or a `wait_exit` already accepted the exit. A TUI that exits
+  (with any status) without a `wait_exit` accepting it fails the scenario at teardown; `kill()` is deliberate and exempt.
+* **Forge-log assertions see calls, not notes, and can start at a step.** Each fake-forge record is a call
+  (`tool`, `argv`, `stdin`; parsed: `body` = stdin decoded, `method` in any spelling) or a note about one
+  (`UNEXPECTED…`, `HELD…`, `RELEASED…`, `injected failure`). Readers return calls only (`notes=True`: notes only) and
+  only records at or after `since=tui.forge_mark()`. Regexes match one JSON line per record with stdin **decoded**
+  (`"stdin": {"body": "x"}`) and non-ASCII kept; prefer predicates: `tui.forge_calls(where=lambda c: c["method"] ==
+  "POST", since=mark)`. A forge-log wait is not a screen barrier: the call is logged before tuicr renders the answer.
+* **Fakes fail loudly.** A call a fake has no fixture for, an adapter that raises (e.g. a missing fixture file) and,
+  for the fake Gerrit, an unknown route or a non-GET method are logged with an `UNEXPECTED` note and fail the scenario
+  at exit (tuicr treats some forge errors as best effort, so the exit code alone would hide it). A scenario that provokes
   one on purpose calls `s.allow_unexpected_forge_calls(why)`.
 * **Exit status is checked.** `wait_exit` requires status 0 unless you pass the expected one (or `"any"`); `s.cli`
   fails on a non-zero exit, `s.cli_result` returns `.rc` and `.out`.
@@ -153,13 +170,16 @@ Rules that keep scenarios reliable:
   To make a tool's *absence* deterministic use `s.minimal_path`. Environment goes in dicts (`env={"EDITOR": path}`), not
   strings. No CPU or IO load generators in a scenario.
 * Skip with `s.skip("reason")`. If a scenario is known to fail for a product/docs reason, declare a module-level
-  `QUARANTINE = "<reason>"` in it (run, reported as QPASS/QFAIL, never gating) instead of ignoring the failure.
+  `QUARANTINE = "<reason>"` in it (run, reported as QPASS/QFAIL, never gating) instead of ignoring the failure. A
+  quarantine covers a failing body only: a quarantined scenario that skips is reported `SKIP` (so
+  `E2E_REQUIRE_SKIPS_ZERO` sees it) and one that times out `FAIL`.
 * Text assertions use short, distinctive fragments, not full-screen snapshots; coordinates and colours are used only
   where the behaviour *is* the coordinate or colour (mouse hit areas, themes).
 
 ### Fake forges
 
-`fakeforge/core.py` owns the call log (`$E2E_FORGE_LOG`, one JSON per call), fixture lookup with variant overlays
+`fakeforge/core.py` owns the call log (`$E2E_FORGE_LOG`, one JSON per call, each written with a single `O_APPEND`
+write), fixture lookup with variant overlays
 (`E2E_VARIANT`, or `E2E_VARIANT_FILE` to change what the forge serves mid-run), per-run state files, and the
 exit conventions (97 = unexpected call). An adapter (`gh.py`, ...) only maps that forge's REST/GraphQL routes to
 fixture files under `data/<forge>/`. To teach a fake a new route add the fixture file and one `if` in the adapter.
@@ -172,7 +192,8 @@ Which fake answers is decided by the repository's origin URL (`s.forge_open(url)
 3. Re-run only that scenario with the scratch dir kept: `E2E_ROOT=/tmp/e2e E2E_KEEP_ROOT=1 uv run --python 3.12 e2e/run.py area/behaviour`.
 4. Watch it live: run the scenario by hand (`PYTHONPATH=e2e/lib TUICR_BIN=... python3 e2e/scenarios/<area>/<behaviour>.py`), then
    `tmux -L <socket> attach -t e2e-<area>_<behaviour>` (the socket name is `$E2E_SOCKET`, printed by `ps`).
-5. A timeout kills the scenario's whole process tree; look for `exceeded ...s` in the log.
+5. A timeout sends SIGTERM to the scenario's process tree (so its teardown still saves screenshots and forge logs), then
+   SIGKILL 3 s later; look for `exceeded ...s` in the log.
 
 ## CI
 

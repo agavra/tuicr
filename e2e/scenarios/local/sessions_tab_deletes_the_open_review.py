@@ -21,7 +21,7 @@ def main(s: Scenario) -> None:
     tui.keys("d", "d").wait_for(r"Delete this saved review\?")
     tui.keys("y")
     tui.wait_gone("1 comments")
-    assert not s.session_has("delete me"), "dd left the session this TUI has open"
+    assert not s.session_has("delete me", allow_missing=True), "dd left the session this TUI has open"
     # A later save starts a new review: the deleted comments must not return.
     tui.keys("Tab").wait_for("Unstaged changes").keys("Enter")
     tui.wait_for("unstaged line").cursor_on("unstaged line")
