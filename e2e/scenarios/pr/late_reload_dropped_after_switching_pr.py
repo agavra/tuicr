@@ -31,9 +31,7 @@ def main(s: Scenario) -> None:
     (hold / "release").touch()
     # barrier: the three held data calls of PR #1's reload were served; then the UI absorbs (and must drop) the result
     tui.wait_forge_log('"note": "RELEASED', 10, count=3, notes=True)  # else: held reload calls were never released
-    tui.settle(0.4)
-    scr = tui.screen()
-    assert "octo/demo#2" in scr, f"PR #2 is no longer on screen\n{scr}"
-    assert "greet.rs" not in scr, f"PR #1's late reload result replaced PR #2's files\n{scr}"
-    assert "other.rs" in scr, f"PR #2's file list lost\n{scr}"
+    # PR #1's files must not show up over the whole window (a late result lands some time after the release)
+    tui.reject(r"greet\.rs", 1)  # else: PR #1's late reload result replaced PR #2's files
+    tui.check("octo/demo#2", "PR #2 is no longer on screen").check(r"other\.rs", "PR #2's file list lost")
     tui.quit()
