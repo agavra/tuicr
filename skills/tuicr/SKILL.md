@@ -77,7 +77,7 @@ When the user needs an interactive tuicr pane and no active session exists:
 | Environment | Action |
 |-------------|--------|
 | `$CMUX_WORKSPACE_ID` is set | Run `tuicr-wrapper-cmux.sh /path/to/repo -- <scope>` |
-| `$REX_SESSION` is set | Run `tuicr-wrapper-rex.sh /path/to/repo -- <scope>` |
+| `$REX_SESSION` and `$REX_BLOCK` are set | Run `tuicr-wrapper-rex.sh /path/to/repo -- <scope>` |
 | `$TMUX` is set | Run `tuicr-wrapper.sh /path/to/repo -- <scope>` |
 | `$ZELLIJ` is set | Run `tuicr-wrapper-zellij.sh /path/to/repo -- <scope>` |
 | `$HERDR_ENV` is `1` | Run `tuicr-wrapper-herdr.sh /path/to/repo -- <scope>` |
@@ -94,7 +94,9 @@ reads `ghostty` inside cmux — check `$CMUX_WORKSPACE_ID`, not the terminal nam
 tuicr supports both git and Jujutsu (jj) repositories, and jj workspaces may
 have no `.git` directory at all. Do not pre-check the directory with
 `git rev-parse` or refuse to launch because git does not recognize it; always
-run the wrapper and let it validate the repository.
+run the wrapper and let it validate the repository. The Herdr wrapper checks
+only that the directory exists; tuicr itself reports a non-repository inside
+the pane.
 
 Wrapper paths are relative to this skill directory:
 
@@ -120,7 +122,8 @@ If your tool supports command timeouts, use a long timeout, such as 10 minutes,
 because the tmux, Zellij, and Herdr wrappers wait for the TUI to exit. The cmux
 and Rex wrappers are the exception: they return as soon as the pane is running.
 When another tuicr is already open where the new pane would go (the caller's
-tmux window; the same repository under Zellij), the tmux and Zellij wrappers
+tmux window; the same repository under Zellij on Linux, where the check reads
+`/proc`), the tmux and Zellij wrappers
 wait for it to close before opening a new pane, for up to `TUICR_WAIT_TIMEOUT` seconds (default 300). If it is still open
 after that, they exit 75 without opening anything: rerun the command, and don't
 treat it as an empty review. A tuicr in another tmux window, such as another
@@ -130,6 +133,19 @@ markers; capture it to close the pane later with
 `cmux close-surface --surface <ref>`. The Rex wrapper prints the new block ref
 between `=== TUICR BLOCK ===` markers; capture it to close the block later with
 `rex block close <ref>`.
+
+Wrapper environment variables:
+
+| Variable | Wrappers | Values (default) |
+|----------|----------|------------------|
+| `TUICR_WAIT_TIMEOUT` | tmux, Zellij | seconds to wait for an open tuicr (300) |
+| `TUICR_PANE_POSITION` | tmux | `top`, `bottom` (`top`); cmux and Zellij still map it to a direction |
+| `TUICR_PANE_SIZE` | tmux | percentage of the calling pane (80) |
+| `TUICR_PANE_DIRECTION` | cmux, Rex | `left`, `right`, `up`, `down` (`right`) |
+| `TUICR_PANE_DIRECTION` | Zellij | `down`, `right`, `stacked` (`stacked`) |
+| `TUICR_PANE_DIRECTION` | Herdr | `right`, `down` (`right`) |
+| `CMUX_BIN`, `REX_BIN`, `ZELLIJ_BIN`, `HERDR_BIN`, `JQ_BIN` | matching wrapper | binary to run (`cmux`, `rex`, `zellij`, `herdr`, `jq`) |
+
 Once the TUI creates its active session, use
 `tuicr review list --repo /path/to/repo` to capture the slug. If your
 environment cannot run another command while a blocking wrapper is waiting,
@@ -146,7 +162,11 @@ segment says which:
 | `staged/<head>` | `git diff --cached` |
 | `unstaged/<head>` | `git diff` |
 | `commits/<base>..<head>` | `git diff <base>~1..<head>` |
-| `pr/<n>` | `gh pr diff <n>` |
+| `worktree-and-commits/<base>..<head>`, `staged-and-unstaged-and-commits/<base>..<head>` | `git diff <base>~1` |
+| `gh:…/pr/<n>` | `gh pr diff <n>` |
+| `gl:…/pr/<n>` | `glab mr diff <n>` |
+| other `…/pr/<n>` (`gt:`, `bb:`, `az:`, `ge:`) | that forge's diff for the PR |
+| `file/<hash>` | none; the single `--file` target shown in full |
 | `pristine` | none; every tracked file shown in full |
 
 Range endpoints are inclusive and printed oldest-first, so `<base>` without
@@ -178,8 +198,13 @@ The command emits JSON. Each comment includes fields like:
 - `lifecycle_state`
 - `content`
 
-Treat these comments as the user's review feedback:
+Treat these comments as the user's review feedback. `comment_type` is
+`none` unless the user configured `comment_types` in tuicr's `config.toml`
+(`$XDG_CONFIG_HOME/tuicr/config.toml`, else `~/.config/tuicr/config.toml`), so
+expect untyped comments by default:
 
+- `none`: untyped; read the content to decide whether it is a fix, a question
+  or praise
 - `issue`: blocking problem to fix first
 - `suggestion`: consider implementing or explain why not
 - `note`: answer or acknowledge
@@ -190,17 +215,18 @@ seconds and compare comment IDs with the previous result. Read immediately when
 the user says comments are ready. Stop polling once the user says the review is
 done or your tooling would block other work.
 
-An empty result does not by itself mean the review didn't happen. On exit,
-tuicr always prints a line like `tuicr-summary: reviewed 3/3 files, 0 comments
-added` to stderr (visible in the pane's scrollback), and `tuicr review list`
-reports the same `reviewed_count`/`file_count` for the session. If
-`reviewed_count` equals `file_count`, zero comments is a legitimate "nothing to
-flag" outcome — treat the review as complete, don't ask the user to confirm.
-Only ask whether the user saved comments in the intended session, or whether
-another active session should be selected, when `reviewed_count` is less than
-`file_count` (the user quit before reviewing everything) or you can't find a
-`tuicr-summary:` line at all. If the review may have continued while you were
-working, rerun `tuicr review comments` before claiming completion.
+An empty result does not by itself mean the review didn't happen. `tuicr
+review list` reports `reviewed_count`/`file_count` for the session (tuicr also
+prints a `tuicr-summary:` line to stderr on exit, but the wrapper panes close
+with it). If `reviewed_count` equals `file_count`, zero comments is a
+legitimate "nothing to flag" outcome — treat the review as complete, don't ask
+the user to confirm. A session the TUI created that has no comments and no
+reviewed files is deleted on exit, so no row after exit means nothing was
+reviewed or commented. Ask whether the user saved comments in the intended
+session, or whether another active session should be selected, when
+`reviewed_count` is less than `file_count` (the user quit before reviewing
+everything) or the row is gone. If the review may have continued while you
+were working, rerun `tuicr review comments` before claiming completion.
 
 ## Add Agent Comments
 
@@ -212,8 +238,10 @@ Defaults:
 - Prefer line comments when a specific file and line are known.
 - Use file comments for file-scoped feedback.
 - Use review-level comments only for whole-review summaries.
-- Use `--type issue` for problems by default.
-- Use `suggestion`, `note`, or `praise` when that better matches the intent.
+- `--type` defaults to `none` (untyped). Pass a type only when the user's
+  `comment_types` config defines it (read `config.toml`, see above): a type
+  that isn't configured is stored with no badge in the TUI, and warns on
+  stderr when `comment_types` is set.
 - Pass `--username` so agent comments are visually distinguishable.
 
 Examples:
@@ -223,7 +251,6 @@ tuicr review add --repo /path/to/repo --session <slug> \
   --target-file src/main.rs \
   --line 42 \
   --side new \
-  --type issue \
   --username "Codex" \
   "Handle the empty case here."
 ```
@@ -231,7 +258,6 @@ tuicr review add --repo /path/to/repo --session <slug> \
 ```bash
 tuicr review add --repo /path/to/repo --session <slug> \
   --target-file src/main.rs \
-  --type suggestion \
   --username "Codex" \
   "Consider splitting this file-level concern into a helper."
 ```
@@ -247,7 +273,7 @@ For structured input, use `--input` with literal JSON, `@path/to/file.json`, or
 
 ```bash
 tuicr review add --session <slug> --username "Codex" --input \
-  '{"file":"src/main.rs","line":42,"side":"new","comment_type":"issue","content":"Handle the empty case."}'
+  '{"file":"src/main.rs","line":42,"side":"new","content":"Handle the empty case."}'
 ```
 
 Then verify. A line outside the diff stores, prints back, and exits 0, but
@@ -255,11 +281,15 @@ never renders — invisible to the user, successful-looking to you. Re-read
 `tuicr review comments` and check each `start_line` exists on the side you gave
 (`new` for added or unchanged, `old` for removed). Check `author` to distinguish
 your comments from the user's, and keep the returned `id`s to identify the exact
-comments in later reads.
+comments in later reads. Remove a misplaced comment with
+`tuicr review delete --session <slug> --comment-id <id>`, then add it on a
+line the diff shows.
 
-## Legacy Export Output
+## Wrapper Export Output
 
-Older wrapper-driven flows may emit:
+When the user exports on exit, the tmux, Zellij, and Herdr wrappers print the
+export captured through `tuicr --stdout` (the cmux and Rex wrappers don't
+wait, so they never do):
 
 ```text
 === TUICR INSTRUCTIONS ===
@@ -267,7 +297,7 @@ Older wrapper-driven flows may emit:
 === END TUICR INSTRUCTIONS ===
 ```
 
-If present, process those instructions. Otherwise prefer
+If present, process those instructions. Otherwise use
 `tuicr review comments`; it is the primary source of review feedback. If the
 wrapper mentions clipboard export, ask the user to paste it only when the CLI
 comments are unavailable.

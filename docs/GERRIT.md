@@ -4,9 +4,11 @@ tuicr can review **Gerrit changes** the same way it reviews GitHub PRs and GitLa
 change, read its diff, leave inline comments, and push the review back. A Gerrit change takes the
 place of a pull request, and its change number is the "PR number" everywhere in the UI.
 
-Gerrit ships no companion CLI (the other backends wrap `gh`, `glab`, `bkt`, and `az`), so tuicr
-talks to the [Gerrit REST API](https://gerrit-review.googlesource.com/Documentation/rest-api.html)
-directly over HTTPS.
+Gerrit ships no companion CLI (the other backends wrap `gh`, `glab`, `tea`, and `bkt`, and
+Azure DevOps uses a PAT or `az`), so tuicr talks to the
+[Gerrit REST API](https://gerrit-review.googlesource.com/Documentation/rest-api.html)
+directly over HTTPS. TLS is verified against the operating system's trust store, so a server
+signed by a corporate CA installed there works without extra configuration.
 
 ## Setup
 
@@ -181,8 +183,9 @@ will not post the inline comments twice. A second review *message* can still app
   *Settings → HTTP Credentials*, not your account password.
 - **"refusing to send GERRIT_USERNAME/GERRIT_PASSWORD over plaintext HTTP…"** — `GERRIT_URL` is an
   `http://` URL. Point it at HTTPS, or unset the two credential variables to browse anonymously.
-- **The Pull Requests tab says there is no supported remote** — your Gerrit host shows none of the
-  three signals above. Set `GERRIT_URL` to the server root.
+- **The Pull Requests tab treats the repository as GitHub and `gh` errors appear** — your Gerrit
+  host shows none of the three signals above, so GitHub's parser, which accepts any host, claims
+  it. Set `GERRIT_URL` to the server root.
 - **Requests go to the wrong host** — the error names the server actually contacted. If that is
   your SSH gateway rather than the web host, set `GERRIT_URL`; if it is a *different* Gerrit than
   the one you meant, you have a stale `GERRIT_URL` exported in that shell.

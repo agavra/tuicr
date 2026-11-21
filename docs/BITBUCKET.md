@@ -108,9 +108,10 @@ workspaces, `/rest/api/1.0` instead of `/2.0`, requires comment version numbers
 on edits, and expresses "request changes" as a `NEEDS_WORK` participant status.
 
 Rather than half-work against a Data Center host, tuicr does not claim those
-remotes at all — `parse_bitbucket_remote_url` accepts `bitbucket.org` only. A
-`bitbucket.example.com` remote therefore falls through to the other forge
-parsers, and the pull request tab reports no supported remote.
+remotes as Bitbucket — `parse_bitbucket_remote_url` accepts `bitbucket.org`
+only. A `bitbucket.example.com` remote therefore falls through to the other
+forge parsers and ends up treated as a GitHub repository (GitHub's parser
+accepts any host), so the pull request tab opens and its `gh` calls fail.
 
 ## Limitations and troubleshooting
 
