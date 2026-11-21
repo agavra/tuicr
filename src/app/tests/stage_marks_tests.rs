@@ -9,7 +9,7 @@ use crate::app::*;
 use crate::model::StageState;
 use crate::vcs::GitBackendPreference;
 use crate::vcs::git::GitBackend;
-use crate::vcs::traits::{DiffWhitespaceMode, VcsType};
+use crate::vcs::traits::{VcsDiffOptions, VcsType};
 
 fn git(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
@@ -74,7 +74,7 @@ fn marks(files: &[DiffFile]) -> Marks {
 }
 
 fn load(root: &Path, preference: GitBackendPreference) -> Vec<DiffFile> {
-    let vcs = GitBackend::discover_from(root, preference, DiffWhitespaceMode::Normal).unwrap();
+    let vcs = GitBackend::discover_from(root, preference, VcsDiffOptions::default()).unwrap();
     App::get_working_tree_diff_with_ignore(&vcs, root, &SyntaxHighlighter::default(), None).unwrap()
 }
 
@@ -226,7 +226,7 @@ fn should_filter_the_marker_diffs_like_the_reviewed_diff() {
     fs::write(root.join(".tuicrignore"), "staged.txt\nuntracked.txt\n").unwrap();
 
     for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
-        let vcs = GitBackend::discover_from(root, preference, DiffWhitespaceMode::Normal).unwrap();
+        let vcs = GitBackend::discover_from(root, preference, VcsDiffOptions::default()).unwrap();
 
         let (staged, unstaged) =
             App::stage_mark_side_diffs(&vcs, root, None).expect("git has an index");
