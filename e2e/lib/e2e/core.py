@@ -217,18 +217,23 @@ def _setup_env() -> tuple[str, str, dict[str, str]]:
         cached.parent.mkdir(parents=True, exist_ok=True)
         cached.write_text(loc)
     os.environ.update(LANG=loc, LC_ALL=loc)
+    # PATH of the child: fake forge CLIs first, then the run's git, system dirs, then the dirs of the harness's tools.
+    # Those dirs come from PATH without the private git dir: the dir of the git on PATH often holds other tools too
+    # (Homebrew's bin has hg), which the child must keep finding.
+    private = str(Path(root) / ".harness" / "bin")
+    outer = os.pathsep.join(d for d in os.environ.get("PATH", "").split(os.pathsep) if d != private)
+    tool_path = ["/usr/bin", "/bin"]
+    for tool in ("git", "python3"):
+        p = shutil.which(tool, path=outer)
+        if not p:
+            sys.exit(f"e2e: required tool '{tool}' not found")
+        tool_path.append(os.path.dirname(p))
     # One git for the whole run: a private bin dir holding only a `git` link to it goes first on the harness's PATH
     # (fixture commands) and on the child's.
     bindir, git_env = _git_bindir(Path(root))
     os.environ.update(git_env)
     os.environ["PATH"] = f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"
-    # PATH of the child: fake forge CLIs first, then that git, system dirs, then the dirs of the harness's tools.
-    tool_path = [str(bindir), "/usr/bin", "/bin"]
-    for tool in ("git", "python3"):
-        p = shutil.which(tool)
-        if not p:
-            sys.exit(f"e2e: required tool '{tool}' not found")
-        tool_path.append(os.path.dirname(p))
+    tool_path.insert(0, str(bindir))
     if os.environ.get("E2E_EXTRA_PATH"):
         tool_path.append(os.environ["E2E_EXTRA_PATH"])
     return loc, ":".join(tool_path), git_env
@@ -387,7 +392,7 @@ class Scenario:
         for sub in ("home", "config", "data", "state", "tmp"):
             (d / sub).mkdir(parents=True, exist_ok=True)
         self.forge_logs.append(d / "forge.log")  # the central UNEXPECTED check covers CLI runs too
-        return child_env(d, path or f"{FAKE_BIN}:{TOOL_PATH}", {**self.env, **(env or {})})
+        return child_env(d, path or ":".join([*self.pre_path, FAKE_BIN, TOOL_PATH]), {**self.env, **(env or {})})
 
     def cli(
         self,
