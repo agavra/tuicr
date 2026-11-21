@@ -21,5 +21,11 @@ def main(s: Scenario) -> None:
     assert "1. `src/greet.rs:1` - export this draft" in lines, f"export lacks the numbered, anchored draft:\n{clip}"
     # the unresolved remote thread is listed separately, after the local draft
     assert "## Existing GitHub Comments" in lines, f"export lacks the remote-thread section:\n{clip}"
+    local, remote = lines.index("## Local tuicr Comments"), lines.index("## Existing GitHub Comments")
+    draft = lines.index("1. `src/greet.rs:1` - export this draft")
+    assert local < draft < remote, f"the remote-thread section is not after the local draft:\n{clip}"
+    assert any("remote open thread: please reword" in ln for ln in lines[remote:]), (
+        f"the unresolved remote thread is not listed in its section:\n{clip}"
+    )
     assert tui.posts() == [], f"a POST happened during export: {tui.posts()}"
     tui.quit()
