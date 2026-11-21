@@ -10,7 +10,8 @@ Repository-managed agent integration: `skills/tuicr/` (shared skill bundle that 
 
 ## Testing rules
 
-- Every user-visible bug fix or behaviour change adds or updates an e2e scenario `e2e/scenarios/<area>/<behaviour>.py`, named after the behaviour, with the PR/issue in its header comment. It must FAIL on the parent commit and PASS with the change. Unit tests are still required.
+- Every user-visible bug fix or behaviour change adds or updates an e2e scenario `e2e/scenarios/<area>/<behaviour>.py`, named after the behaviour, with the PR/issue in its header comment. Unit tests are still required.
+- **Red first.** Write the scenario before touching the code, run it on the unchanged parent and watch it go red, failing on the assertion that names the behaviour (not a typo, a missing fixture or a timeout in setup). Only then make the change and watch it go green. A scenario you never saw red proves nothing: it may be passing for the wrong reason. Put both results (the red failure line, then the green PASS) in the PR's test plan. For a new feature the red run is the scenario failing because the feature is absent.
 - Run: `cargo build --release && TUICR_BIN=target/release/tuicr uv run --python 3.12 e2e/run.py [<area>/<behaviour>…]` (needs tmux and uv for Python 3.11+; hg/jj scenarios SKIP without them). CI job `e2e` runs it on ubuntu and macOS. Authoring guide: `e2e/README.md`.
 - Before committing Python changes run `uvx ruff@0.15.16 format --check`, `uvx ruff@0.15.16 check` and `uvx ty@0.0.44 check` with `e2e/pyproject.toml` (exact commands and pinned versions as in CI: `CONTRIBUTING.md#python-checks`).
 - Scenarios are Python on the stdlib library `e2e/lib/e2e/` (`from e2e import scenario`); all scenarios are `.py`, never add a `.sh`. A known failure declares a module-level `QUARANTINE = "<reason>"`. Harness self-test: `uv run --python 3.12 e2e/selftest/run.py`.
