@@ -192,19 +192,28 @@ fn file_jumps_follow_the_alignment_setting() {
         vec![
             make_file("a.rs", vec![make_hunk(1, 30)]),
             make_file("b.rs", vec![make_hunk(1, 5)]),
+            make_file("c.rs", vec![make_hunk(1, 5)]),
         ]
     };
 
-    let mut app = build_app(files(), 0);
+    // `visible` keeps the new file's header at the top even with a scroll
+    // margin: `jump_to_file` already put it there.
+    let mut app = build_app(files(), 3);
     app.hunk_jump_align = HunkJumpAlign::Visible;
     app.next_file();
     let file_b_header = app.diff_state.cursor_line;
     assert_eq!(app.diff_state.scroll_offset, file_b_header);
+    app.next_file();
+    let file_c_header = app.diff_state.cursor_line;
+    assert_eq!(app.diff_state.scroll_offset, file_c_header);
+    app.prev_file();
+    assert_eq!(app.diff_state.cursor_line, file_b_header);
+    assert_eq!(app.diff_state.scroll_offset, file_b_header);
 
-    let mut app = build_app(files(), 0);
+    let mut app = build_app(files(), 3);
     app.hunk_jump_align = HunkJumpAlign::Top;
     app.next_file();
-    assert_eq!(app.diff_state.scroll_offset, app.diff_state.cursor_line);
+    assert_eq!(app.diff_state.scroll_offset, app.diff_state.cursor_line - 3);
 
     let mut app = build_app(files(), 0);
     app.hunk_jump_align = HunkJumpAlign::Center;
