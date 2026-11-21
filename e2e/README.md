@@ -28,7 +28,7 @@ and an exit 0 without that line (a script that never reached `@scenario`, or a b
 |---|---|---|
 | tmux | 3.4+ (developed on 3.8) | provides the pty; no display or attached terminal needed |
 | Python | 3.11+, standard library only | runner, scenario library (`lib/e2e/`), fakes, selftest; provision it with [uv](https://docs.astral.sh/uv/): `uv run --python 3.12 e2e/run.py` |
-| git | any recent | fixtures; sparse/CLI backend scenarios use the git CLI |
+| git | any recent | fixtures; sparse/CLI backend scenarios use the git CLI; `E2E_GIT` picks one (see below) |
 | Mercurial | real `hg` (not Sapling) | `local/hg_*`; SKIP without it, FAIL with `E2E_REQUIRE_HG=1` |
 | Jujutsu | real `jj` (tested with 0.47) | `local/jj_*`; SKIP without it, FAIL with `E2E_REQUIRE_JJ=1`; `E2E_JJ_DIR` names the directory holding it |
 
@@ -43,7 +43,10 @@ Environment knobs: `TUICR_BIN` (required), `E2E_ROOT` (scratch, default a fresh 
 `E2E_TIMEOUT` (default wait, 10 s; the harness's other timeouts derive from it), `E2E_REJECT_WINDOW` (default window
 of `reject`, 0.04 × `E2E_TIMEOUT` = 0.4 s), `E2E_HG_DIR` (directory holding a real `hg`), `E2E_REQUIRE_HG=1`,
 `E2E_REQUIRE_JJ=1`, `E2E_JJ_DIR`, `E2E_REQUIRE_SKIPS_ZERO=1` (CI: a skip is a failure), `E2E_KEEP_ROOT=1`, `E2E_INSTALL_SH` / `E2E_INSTALL_REV`
-(the installer script for `cli/install_script_without_tty`; default `upstream/site`, SKIP when unavailable).
+(the installer script for `cli/install_script_without_tty`; default `upstream/site`, SKIP when unavailable),
+`E2E_GIT` (the git binary for fixtures and for tuicr; default: on macOS the toolchain git `xcrun -f git` names, which
+skips the `/usr/bin/git` shim, else `git` on PATH. It is resolved once per run and linked as `git` from a private
+directory that goes first on both the harness's and the child's PATH).
 `PYTHONPATH` is set by `run.py` (`e2e/lib`); to run a Python scenario by hand set it yourself (see Debugging).
 
 ## Layout

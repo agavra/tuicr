@@ -94,7 +94,67 @@ def must_fail(fn: Callable[[], object], message: str, exc: type[BaseException] =
     raise AssertionError(message)
 
 
-def _setup_env() -> tuple[str, str]:
+def _resolve_git() -> str:
+    """The git the run uses: $E2E_GIT, else on macOS the toolchain git `xcrun -f git` names (it skips the /usr/bin
+    shim, which costs a process launch per call), else `git` on PATH."""
+    if os.environ.get("E2E_GIT"):
+        found = shutil.which(os.environ["E2E_GIT"])
+        if not found:
+            sys.exit(f"e2e: E2E_GIT={os.environ['E2E_GIT']} is not an executable")
+        return os.path.abspath(found)
+    if sys.platform == "darwin":
+        with contextlib.suppress(OSError):
+            p = subprocess.run(["xcrun", "-f", "git"], stdin=subprocess.DEVNULL, capture_output=True, text=True)
+            found = p.stdout.strip()
+            if p.returncode == 0 and os.path.isfile(found) and os.access(found, os.X_OK):
+                return found
+    found = shutil.which("git")
+    if not found:
+        sys.exit("e2e: required tool 'git' not found")
+    return found
+
+
+def _git_env(real: str, link: Path) -> dict[str, str]:
+    """GIT_EXEC_PATH (and GIT_TEMPLATE_DIR) for a git that finds its helpers relative to its own location: run through
+    the link it would look beside the link. Empty when the link already finds the same exec path."""
+
+    def exec_path(g: str | Path) -> str:
+        return subprocess.run(
+            [g, "--exec-path"], stdin=subprocess.DEVNULL, capture_output=True, text=True
+        ).stdout.strip()
+
+    found = exec_path(real)
+    if not found or exec_path(link) == found:
+        return {}
+    env = {"GIT_EXEC_PATH": found}
+    templates = Path(found).parent.parent / "share" / "git-core" / "templates"
+    if templates.is_dir():
+        env["GIT_TEMPLATE_DIR"] = str(templates)
+    return env
+
+
+def _git_bindir(root: Path) -> tuple[Path, dict[str, str]]:
+    """<root>/.harness/bin with a `git` link to _resolve_git(), and the variables that git needs (see _git_env);
+    resolved once per run (later scenarios read <root>/.harness/git.json)."""
+    bindir = root / ".harness" / "bin"
+    link, info = bindir / "git", root / ".harness" / "git.json"
+    if not os.environ.get("E2E_GIT") and link.is_symlink() and os.path.exists(link) and info.exists():
+        return bindir, json.loads(info.read_text())
+    bindir.mkdir(parents=True, exist_ok=True)
+    real = _resolve_git()
+    tmp = bindir / f".git.{os.getpid()}"
+    with contextlib.suppress(FileNotFoundError):
+        tmp.unlink()
+    os.symlink(real, tmp)
+    os.replace(tmp, link)
+    env = _git_env(real, link)
+    tmp = info.with_name(f".git.json.{os.getpid()}")
+    tmp.write_text(json.dumps(env))
+    os.replace(tmp, info)
+    return bindir, env
+
+
+def _setup_env() -> tuple[str, str, dict[str, str]]:
     """Harness-side isolation, exported to this process (fixture git/hg/jj commands inherit it)."""
     root = os.environ.get("E2E_ROOT") or tempfile.mkdtemp(prefix="tuicr-e2e.", dir=os.environ.get("TMPDIR", "/tmp"))
     os.environ.update(
@@ -126,8 +186,13 @@ def _setup_env() -> tuple[str, str]:
         )
         loc = "en_US.UTF-8" if {"en_us.utf-8", "en_us.utf8"} & set(have) else "C.UTF-8"
     os.environ.update(LANG=loc, LC_ALL=loc)
-    # PATH of the child: fake forge CLIs first, then system dirs, then the dirs of the tools the harness needs.
-    tool_path = ["/usr/bin", "/bin"]
+    # One git for the whole run: a private bin dir holding only a `git` link to it goes first on the harness's PATH
+    # (fixture commands) and on the child's.
+    bindir, git_env = _git_bindir(Path(root))
+    os.environ.update(git_env)
+    os.environ["PATH"] = f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"
+    # PATH of the child: fake forge CLIs first, then that git, system dirs, then the dirs of the harness's tools.
+    tool_path = [str(bindir), "/usr/bin", "/bin"]
     for tool in ("git", "python3"):
         p = shutil.which(tool)
         if not p:
@@ -135,11 +200,12 @@ def _setup_env() -> tuple[str, str]:
         tool_path.append(os.path.dirname(p))
     if os.environ.get("E2E_EXTRA_PATH"):
         tool_path.append(os.environ["E2E_EXTRA_PATH"])
-    return loc, ":".join(tool_path)
+    return loc, ":".join(tool_path), git_env
 
 
-LOCALE, TOOL_PATH = _setup_env()
+LOCALE, TOOL_PATH, GIT_ENV = _setup_env()
 ROOT = Path(os.environ["E2E_ROOT"])
+GIT = str(ROOT / ".harness" / "bin" / "git")  # the run's git (see _resolve_git), for fixture commands
 OUT = Path(os.environ["E2E_OUT"])
 SOCKET = os.environ["E2E_SOCKET"]
 
@@ -157,6 +223,7 @@ def child_env(d: Path, path: str, extra: dict[str, str] | None = None) -> dict[s
         LC_ALL=LOCALE,
         E2E_FORGE_LOG=f"{d}/forge.log",
         E2E_DATA=f"{E2E_DIR}/data",
+        **GIT_ENV,
     )
     env.update(extra or {})
     return env

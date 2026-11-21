@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
-from .core import Failure, Skip, grep
+from .core import GIT, Failure, Skip, grep
 
 if TYPE_CHECKING:
     from .core import Scenario
@@ -20,7 +20,7 @@ def git(repo: str | Path, *args: str) -> str:
     """`git -C repo` with a fixed identity and no signing; returns stripped stdout, fails on a non-zero exit."""
     p = subprocess.run(
         [
-            "git",
+            GIT,
             "-C",
             str(repo),
             "-c",
@@ -66,7 +66,7 @@ def fresh(d: str | Path) -> Path:
 
 def _fresh_git(d: str | Path) -> Path:
     d = fresh(d)
-    subprocess.run(["git", "init", "-q", "-b", "main", str(d)], check=True)
+    subprocess.run([GIT, "init", "-q", "-b", "main", str(d)], check=True)
     return d
 
 
