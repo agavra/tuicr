@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # Covers #431/#695: disabling untracked files removes phantom selector rows and preserves staged files on unborn HEAD.
-from e2e import Scenario, repos, scenario
+from e2e import Scenario, flows, repos, scenario
 
 
 @scenario
 def main(s: Scenario) -> None:
+    git = flows.GitCalls(s)  # proves which backend each TUI used
     for backend in ("libgit2", "cli"):
         name = f"{s.name}_{backend}"
         repo = repos.empty_repo(s.dir / f"repo_{backend}")
@@ -17,6 +18,7 @@ def main(s: Scenario) -> None:
         repos.write(repo / "untracked.txt", "excluded\n")
         tui = s.start(cwd=repo, name=name, keep=True)
         tui.wait_for("second").reject("Unstaged changes|Staged changes")
+        assert git.cli_backend(name) == (backend == "cli"), f"{name}: wrong backend; git calls: {git.calls(name)}"
         tui.keys("Enter").expect("second commit").reject(r"untracked\.txt").quit()
         repo = repos.empty_repo(s.dir / f"unborn_{backend}")
         repos.write(repo / "new.txt", "untracked content\n")

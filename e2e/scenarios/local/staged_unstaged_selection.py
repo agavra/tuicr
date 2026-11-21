@@ -18,5 +18,5 @@ def main(s: Scenario) -> None:
     # both rows (Space on each) -> union
     tui.keys("Escape").keys(":commits", "Enter").wait_for("Unstaged changes")
     tui.keys("Space", "j", "Space", "Enter")
-    tui.expect(r"▢ A staged\.txt").expect(r"▢ M README\.md")
+    tui.expect(r"▢ A staged\.txt").expect(r"▢ M README\.md").expect(r"▢ A untracked\.txt")
     tui.quit()

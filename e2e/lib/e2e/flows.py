@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import stat
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -58,12 +60,40 @@ class FakeClipboard:
         return wait_file(self.path, timeout).read_text()
 
 
+class GitCalls:
+    """A `git` first on the child's PATH that records each call's arguments (one line per call, space-joined) in the
+    TUI's state dir, then runs the real git. It proves which Git backend served a review: only the CLI backend runs
+    `git rev-parse --show-toplevel` (libgit2 opens the repository in-process). Create it BEFORE starting tuicr; it
+    covers every later start (each TUI logs to its own dir, read with `calls(name)`)."""
+
+    CLI_BACKEND = r"(^|.* )rev-parse --show-toplevel"  # after any leading `-c key=value` options
+
+    def __init__(self, s: Scenario) -> None:
+        self.s = s
+        real = shutil.which("git")
+        if not real:
+            raise repos.Failure("e2e: git not found")
+        bindir = s.dir / "gitbin"
+        bindir.mkdir(parents=True, exist_ok=True)
+        f = bindir / "git"
+        f.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "$XDG_STATE_HOME/git-calls.log"\nexec "{real}" "$@"\n')
+        f.chmod(f.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        s.pre_path.insert(0, str(bindir))
+
+    def calls(self, name: str | None = None) -> list[str]:
+        """The git calls the named TUI (default: the scenario's own) made so far."""
+        log = self.s.path_of(name or self.s.name) / "state" / "git-calls.log"
+        return log.read_text().splitlines() if log.exists() else []
+
+    def cli_backend(self, name: str | None = None) -> bool:
+        """The named TUI opened its repository with the CLI backend."""
+        return any(re.fullmatch(self.CLI_BACKEND, c) for c in self.calls(name))
+
+
 def minimal_path(directory: str | Path, *tools: str) -> str:
     """A PATH directory holding only the named tools (symlinks), for scenarios where the absence of a tool
     (az, gh, ...) must be deterministic rather than depend on the machine.
     Returns the directory; pass it as `path=` to Scenario.cli."""
-    import shutil
-
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     for t in tools:
