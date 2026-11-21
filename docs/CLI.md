@@ -235,3 +235,44 @@ output passes through before tuicr's line.
 
 tuicr ships no man page and no shell completions. `tuicr --help` and this page
 are the reference.
+
+## Updating
+
+```bash
+tuicr update          # newest release
+tuicr update 0.18.0   # a specific, e.g. known-good, release
+```
+
+`tuicr update` looks at where the running executable lives and updates it the
+same way it was installed:
+
+| Install | What `tuicr update` does |
+|---|---|
+| Install script or downloaded release binary | Replaces the binary in place with the matching GitHub release asset, after SHA-256 verification. Keeps the GNU or musl variant you run |
+| Cargo (`~/.cargo/bin`) | `cargo install tuicr --force` |
+| Mise | `mise upgrade github:agavra/tuicr --bump --yes` |
+| Homebrew (a `Cellar/tuicr` path) | `brew upgrade` of the formula named in the keg's `INSTALL_RECEIPT.json` (`tuicr` for homebrew-core, `<tap>/tuicr` for a tap) |
+| Nix profile (a `/nix/store` path) | `nix profile upgrade '.*tuicr.*'` |
+
+Exact-version installs work for Cargo and direct binaries; for Homebrew, Mise or
+Nix, use the package manager's own pinning. A `nix run` invocation is temporary
+rather than installed: rerun it to get the current flake, or use
+`nix profile install github:agavra/tuicr` for an installation `tuicr update` can
+upgrade. pacman, Home Manager and declarative Nix installs are refused with a hint
+naming the right command; see the table under [Commands](#commands).
+
+## Version control backends
+
+tuicr detects the repository type at startup, trying jj, then git, then
+Mercurial.
+
+Git uses libgit2 by default. It switches to the Git CLI backend on its own for
+SHA-256 repositories (root commits included), reftable or split-index
+repositories, and sparse checkouts (the last with a startup warning). Set
+`backend = "cli"` in the config to always use the Git CLI
+([CONFIG.md](CONFIG.md#git-diff-generation)).
+
+The default libgit2 backend detects renames at libgit2's 50% similarity
+threshold and honours Git's `diff.renames` (including `copies`) and
+`diff.renameLimit` settings. Working-tree reviews include untracked files in
+rename detection, so a move can show as `R` before it is staged.

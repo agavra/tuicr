@@ -1,6 +1,9 @@
 # tuicr
 
-**A code review TUI with vim keybindings. Export to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, Gerrit, or clipboard.**
+**Review AI-generated diffs like a GitHub pull request, right from your terminal.**
+
+Comment on lines, ranges and files with vim keys, then hand the review to your coding agent or
+post it to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps or Gerrit.
 
 [![Crates.io](https://img.shields.io/crates/v/tuicr)](https://crates.io/crates/tuicr)
 [![License](https://img.shields.io/crates/l/tuicr)](./LICENSE)
@@ -11,15 +14,13 @@
 > [!TIP]
 > Pronounced "tweaker".
 
-## What it does
+## Why tuicr
 
-- GitHub-style continuous diff in the terminal. Scroll through every changed file in one stream.
-- PR-style comments at the line, range, file, and review level. 
-- Review tracking at file or hunk granularity, persisted across sessions.
-- Three export targets: push a real review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit, copy
-  structured markdown to your clipboard, or pipe to stdout.
-- Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
-  GitLab MR, Gitea PR, Bitbucket PR, Azure DevOps PR, or Gerrit change.
+- **One continuous diff.** Every changed file scrolls past in one stream, as on a GitHub PR page.
+- **PR-style comments.** Comment on a line, a range, a file or the whole review, and suggest code changes.
+- **Review tracking.** Mark files or hunks reviewed. The marks persist across sessions.
+- **Any VCS.** git, jj and Mercurial: uncommitted changes, commit ranges, or a forge PR/MR.
+- **Two ways out.** Copy numbered, agent-ready markdown, or push a real inline review to six forges.
 
 ## Install
 
@@ -32,99 +33,124 @@ sudo pacman -S tuicr
 ```
 
 <details>
-<summary>Other install methods (cargo, mise, nix, binaries, source)</summary>
+<summary>Other install methods (cargo, mise, nix, Home Manager, binaries, source)</summary>
 
 ```bash
-# Cargo
-cargo install tuicr
-
-# Mise
-mise use github:agavra/tuicr
-
-# Nix
-nix run github:agavra/tuicr
-
-# Home Manager (programs.tuicr)
-programs.tuicr.enable = true;
+cargo install tuicr                 # Cargo
+mise use github:agavra/tuicr        # Mise
+nix run github:agavra/tuicr         # Nix (temporary; `nix profile install` to keep it)
+programs.tuicr.enable = true;       # Home Manager, see docs/CONFIG.md
 ```
 
 Pre-built binaries: [GitHub Releases](https://github.com/agavra/tuicr/releases). Linux releases
 include dynamically linked GNU and static musl variants.
 
-From source:
-
-```bash
-git clone https://github.com/agavra/tuicr.git
-cd tuicr
-cargo install --path .
-```
+From source: `git clone https://github.com/agavra/tuicr.git && cd tuicr && cargo install --path .`
 
 </details>
 
-Update the active installation with one command:
+`tuicr update` upgrades the active installation. See [docs/CLI.md](docs/CLI.md#updating) for
+which install methods it supports.
+
+## 60-second walkthrough
 
 ```bash
-tuicr update
-tuicr update 0.18.0 # Install a known-good version
+tuicr -w                    # review uncommitted changes (plain `tuicr` opens a target picker)
+tuicr -r main..HEAD         # or a commit range
+tuicr pr 125                # or a PR/MR/change on any supported forge
 ```
 
-`tuicr update` uses Homebrew (upgrading the core or tap formula you installed), Cargo, Mise, or
-a Nix profile when that manager owns the executable. It refuses pacman, Home Manager, and
-declarative NixOS / nix-darwin installs; update those with `sudo pacman -Syu` (or your AUR helper),
-`home-manager switch`, `nixos-rebuild switch`, or `darwin-rebuild switch`. Install-script and manually downloaded binaries update in place from the matching
-GitHub release asset after SHA-256 verification. Exact-version installs support Cargo and direct
-binaries; use the package manager's pinning workflow for Homebrew, Mise, or Nix. A `nix run`
-invocation is temporary rather than installed; rerun it to use the current flake, or use
-`nix profile install github:agavra/tuicr` for an installation that `tuicr update` can upgrade.
+1. Scroll with `j` / `k`; jump between files with `{` / `}`.
+2. Press `c` on a line, type your comment, and press `Enter` to save it. `v` selects a range first.
+3. Press `r` to mark the file reviewed. The sidebar tracks progress.
+4. Press `y` to copy the review, then paste it into your coding agent.
+   In a PR, run `:submit` instead to post the review on the forge.
+5. `:wq` saves and quits. Reopen the same target later and your comments and marks are still there.
 
-## Quick start
+Press `?` at any time for the full key reference.
 
-```bash
-tuicr                       # Pick from a commit selector
-tuicr tui                   # Same TUI, explicit subcommand
-tuicr -w                    # Uncommitted changes (skip selector)
-tuicr -r main..HEAD         # Commit range
-tuicr --file f.md --line 42 # Annotate a file, starting at line 42
-tuicr pr                    # The PR for the current branch
-tuicr pr 125                # GitHub, Gitea, Bitbucket, or Azure DevOps PR, or Gerrit change
-tuicr pr 125 --remote up    # Use a named Git remote's fetch URL
-tuicr mr 125                # GitLab MR
-tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
-tuicr tui mr 125            # GitLab MR via explicit TUI subcommand
-tuicr --stdout              # Pipe the review to stdout
-tuicr review list           # List saved local review sessions
-tuicr update                # Update the active installation
-tuicr update 0.18.0         # Install a known-good version
+## Using it with a coding agent
+
+`y` (or `:clip`) copies a numbered markdown review. After `tuicr -r main..HEAD`, with the
+default settings, it looks like this:
+
+```markdown
+## Session: acme/app@feature-login/commits/1a2b3c4..9f8e7d6
+
+I reviewed your code and have the following comments. Please address them.
+
+Reviewing commits: 9f8e7d6, 1a2b3c4
+
+## Local tuicr Comments
+
+1. `src/auth.rs` - Consider adding unit tests
+2. `src/auth.rs:42` - Magic number should be a named constant
+3. `src/auth.rs:50-55` - This block could be refactored
 ```
 
-Every flag, environment variable, and exit code in [docs/CLI.md](docs/CLI.md).
+Paste it into any coding agent (Claude, Codex, Cursor, etc.). `tuicr --stdout` prints the same
+markdown to stdout. The `[export]` config section rewords or drops every line except the numbered
+comments, and `comment_types` adds `**[ISSUE]**`-style tags ([docs/CONFIG.md](docs/CONFIG.md)).
 
-The default Git backend detects renames using a 50% similarity threshold and honors
-Git's `diff.renames` and `diff.renameLimit` settings. Working-tree reviews include
-untracked destinations in rename detection, so a move can appear as `R` before staging.
+- **Agent-launched panes.** The [tuicr skill](skills/tuicr/SKILL.md) lets your agent open tuicr in
+  a cmux, Rex, tmux, Zellij or Herdr split pane, then read your comments when you are done.
+- **Scripting saved reviews.** `tuicr review` lists, reads, adds and deletes comments without
+  opening the TUI, for example
+  `tuicr review add --session <slug> --target-file src/main.rs --line 42 "Handle the empty case"`.
+  See [docs/REVIEW_CLI.md](docs/REVIEW_CLI.md). Rust tools can use the
+  [library API](docs/LIBRARY.md).
 
-Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the review or
-`:submit` to push it to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit. When reopening a
-pull request you've reviewed before, tuicr preselects commits newer than your latest submitted
-review when that metadata is available; commits already covered by that review are marked with
-`✓` in the inline selector.
-(Bitbucket does not record which commit an approval covered, so that preselection does not apply
-there.)
-Narrow a multi-commit review to one commit with `(` / `)` and tuicr puts that commit's message above
-its diff, in pull requests as well as local ranges, where it can be read, marked reviewed and
-commented on like a file. tuicr does not post inline comments on commit messages, so `:submit` sends
-those comments in the review summary.
-Use `:summary` during a review to show every pending local-draft comment. The summary replaces the
-diff while leaving the file sidebar visible when it is open. The first
-comment is selected when the view opens; use `j`/`k` to select the next or previous comment, and
-the view scrolls automatically to keep it visible. Press `Enter` to jump to the selected comment
-in the continuous diff, leaving single-file view if necessary, or `Esc` to return to the diff. If
-its file or hunk is already marked reviewed, tuicr reveals the target without clearing that
-reviewed state.
-Press `dd` to delete the selected local draft, even if its original line or file is absent from
-this diff. Return with `Esc` and use `:w` to save the deletion, as with diff-view deletion.
-Auto-detects git, jj, or mercurial. SHA-256 Git repositories automatically use the Git CLI backend,
-including when reviewing root commits; ordinary SHA-1 repositories still default to libgit2.
+## Reviewing pull requests
+
+`tuicr pr` reviews the PR for the current branch, and `tuicr pr <number|owner/repo#N|URL>` any
+other one (`tuicr mr` is an alias). `:submit` opens a picker with Comment, Approve, Request changes
+and Draft. Inline comments land on their lines; review-level comments become the review summary.
+
+| Forge | Tool / auth | Submit notes | Guide |
+|---|---|---|---|
+| GitHub | [`gh`](https://cli.github.com/) (`gh auth login`) | Draft leaves a pending review | [docs/GITHUB.md](docs/GITHUB.md) |
+| GitLab | [`glab`](https://gitlab.com/gitlab-org/cli) | Draft posts draft notes; Request changes needs you as an assigned reviewer | [docs/GITLAB.md](docs/GITLAB.md) |
+| Gitea | [`tea`](https://gitea.com/gitea/tea) (`tea logins add`) | Draft leaves a pending review; ranges collapse to their last line | [docs/GITEA.md](docs/GITEA.md) |
+| Bitbucket Cloud | `bkt` | Draft posts pending comments; Data Center unsupported | [docs/BITBUCKET.md](docs/BITBUCKET.md) |
+| Azure DevOps | `AZURE_DEVOPS_EXT_PAT`, or `az login` | Approve / Request changes cast a vote; no drafts, so Draft posts like Comment; needs a local clone | [docs/AZURE.md](docs/AZURE.md) |
+| Gerrit | `GERRIT_USERNAME` / `GERRIT_PASSWORD` | Approve votes Code-Review +2, Request changes -1; Draft keeps Gerrit drafts; needs a local clone | [docs/GERRIT.md](docs/GERRIT.md) |
+
+## Essential keys
+
+| Key | Action |
+|---|---|
+| `j` / `k`, `Ctrl-d` / `Ctrl-u` | Scroll a line / half a page |
+| `{` / `}`, `[` / `]` | Previous / next file, hunk |
+| `<leader>p` | Jump to a file by path (leader is `;` by default) |
+| `c` / `C` | Comment on the line / file |
+| `v` / `V` | Visual mode for a range comment (`s` suggests a code change) |
+| `r` / `R` | Toggle file / hunk reviewed |
+| `/`, `n` / `N` | Search the diff, next / previous match |
+| `y` | Copy the review to the clipboard |
+| `:submit` | Post the review to the PR's forge |
+| `:w`, `:wq`, `:q` | Save, save and quit, quit |
+| `?` | Full help |
+
+Every key and `:` command: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
+
+## Configuration
+
+Path: `~/.config/tuicr/config.toml` on Linux/macOS, `%APPDATA%\tuicr\config.toml` on Windows.
+
+```toml
+theme = "catppuccin-mocha"   # 24 bundled themes, or your own
+diff_view = "side-by-side"   # or "unified"
+editor = "nvim"              # for `e` / `:edit`; overrides $EDITOR
+leader = ";"                 # prefix for leader shortcuts
+
+[[comment_types]]            # optional; reviews are untyped by default
+id = "issue"
+color = "red"
+definition = "must fix before merge"
+```
+
+All options, the theme list, local themes, Home Manager settings and `.tuicrignore`:
+[docs/CONFIG.md](docs/CONFIG.md).
 
 ## How it compares
 
@@ -134,16 +160,12 @@ including when reviewing root commits; ordinary SHA-1 repositories still default
 | Write comments in the TUI | ✅ | ✅ | ✅ | ❌ | ❌ |
 | Vim keybindings | ✅ | ❌ | partial¹ | ❌ | ❌ |
 | Push inline review to GitHub | ✅ | ❌ | ❌ | partial² | ❌ |
-| Push inline review to GitLab | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Push inline review to Gitea | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Push inline review to Bitbucket | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Push inline review to Azure DevOps | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Push inline review to Gerrit | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Push inline review to GitLab, Gitea, Bitbucket, Azure DevOps, Gerrit | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Agent-ready markdown export | ✅ | via CLI skill | ❌ | ❌ | ❌ |
 | git | ✅ | ✅ | ✅ | ❌ | ✅ |
 | jj | ✅ | ✅ | ✅ | ❌ | ❌ |
 | Mercurial (hg) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Single static binary | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Standalone binary, no runtime needed | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ¹ Lumen has `j`/`k` navigation but no broader vim model (visual mode, `{N}G`, `Ctrl-d`/`Ctrl-u`,
 etc.).
@@ -151,223 +173,18 @@ etc.).
 ² `gh pr review` posts approve/comment/request-changes at the review level only. No inline line
 comments.
 
-## Export your review
+## Documentation
 
-When you're done reviewing, send your comments wherever the work continues.
-
-### To GitHub
-
-`:submit` opens a picker for Comment, Approve, Request changes, or Draft. Inline comments land
-on the right lines as a real PR review. Review-level comments become the review summary.
-Requires `gh` authenticated to the repo.
-
-### To GitLab
-
-`:submit` offers Comment, Approve, Request changes, or Draft on a GitLab MR. Inline comments post
-as discussion notes, or as draft notes for Draft. Review-level comments become the summary.
-Requires `glab` authenticated to the host. Request changes needs your account to be an assigned
-reviewer. An instance served from a subfolder (`https://example.com/gitlab/`) works once `glab`
-knows about it (`glab config set subfolder gitlab --host example.com`, `glab` 1.128+).
-See [docs/GITLAB.md](docs/GITLAB.md) for setup, self-hosted instances, and
-troubleshooting.
-
-### To Gitea
-
-`:submit` offers Comment, Approve, Request changes, or Draft on a Gitea pull request. Inline
-comments post as review comments and review-level comments become the summary, all in one request.
-Requires [`tea`](https://gitea.com/gitea/tea) with a login for the instance (`tea logins add`).
-Multi-line comments collapse to their last line — Gitea has no range form. See
-[docs/GITEA.md](docs/GITEA.md) for setup, self-hosted detection, and limitations.
-
-### To Bitbucket
-
-`:submit` offers Comment, Approve, Request changes, or Draft on a Bitbucket Cloud PR. Inline
-comments post as inline PR comments, multi-line ranges included; review-level comments become
-general PR comments. Draft posts them as pending comments that you publish from Bitbucket. Requires
-`bkt` authenticated to `bitbucket.org`. Bitbucket Data Center is out of scope. See [docs/BITBUCKET.md](docs/BITBUCKET.md) for setup,
-required token scopes, and troubleshooting.
-
-### To Azure DevOps
-
-`:submit` offers Comment, Approve, or Request changes on an Azure DevOps PR. Inline comments post
-as PR comment threads; Approve/Request changes also cast a reviewer vote. Auth is a Personal
-Access Token in `AZURE_DEVOPS_EXT_PAT` (preferred — works with enterprise tenants), falling back
-to `az login` via the Azure CLI. Run tuicr from a local clone of the repo — Azure exposes no
-unified-diff API, so the diff is built with `git diff base...head`. See
-[docs/AZURE.md](docs/AZURE.md) for setup, supported URL forms, and MVP limitations. From a commit subrange, inline comments
-submit only when the newest selected commit is a PR iteration head (see the AZURE doc).
-
-### To Gerrit
-
-`:submit` offers Comment, Approve, Request changes, or Draft on a Gerrit change. Inline comments
-post as Gerrit comments (multi-line ranges included) and the review-level comment becomes the
-change message; Approve votes `Code-Review +2` and Request changes votes `-1`. Draft keeps
-everything as Gerrit draft comments so you can publish from the web UI; tuicr keeps showing them,
-marked `draft`, and `dd` on one deletes it from Gerrit after a Y/N prompt. Auth is your Gerrit HTTP
-password in `GERRIT_USERNAME` / `GERRIT_PASSWORD`. Run tuicr from a local clone — the diff is
-built with `git diff base..head` after fetching the change's patch-set ref. See
-[docs/GERRIT.md](docs/GERRIT.md) for setup, detection of self-hosted hosts, and limitations.
-
-### To your coding agent
-
-`y` or `:clip` copies a structured markdown block to your clipboard. Each comment has a number
-and a file/line anchor: 
-
-```markdown
-I reviewed your code and have the following comments. Please address them.
-
-1. `src/auth.rs` - Consider adding unit tests
-2. `src/auth.rs:42` - Magic number should be a named constant
-3. `src/auth.rs:50-55` - This block could be refactored
-```
-
-Paste it back to any coding agent (Claude, Codex, Cursor, etc).
-
-For an agent-driven workflow where your agent opens tuicr in a cmux, Rex, tmux, Zellij, or
-Herdr split pane, see [skills/tuicr/SKILL.md](skills/tuicr/SKILL.md).
-
-### To stdout
-
-Run with `--stdout` to pipe the markdown to another process:
-
-```bash
-tuicr --stdout > review.md
-tuicr --stdout | pbcopy
-```
-
-## Review session CLI
-
-`tuicr review` exposes saved sessions without opening the TUI. It can list
-sessions, add, delete, and clear comments, and print stored comments for
-agent and script
-integrations. See [docs/REVIEW_CLI.md](docs/REVIEW_CLI.md).
-
-The TUI creates a persisted session file when a review target becomes active,
-so collaborative tools can add comments immediately. Empty auto-created session
-files are removed when the TUI exits. `tuicr review list` marks currently open
-TUI sessions with `"active": true`.
-
-Inside the TUI, the review target selector's **Sessions** tab lists the saved
-reviews for the current checkout, so you can resume one by picking it instead of
-retyping the commit range it was opened with. Open it with `:sessions` or cycle
-to it with `Tab`. Press `dd` to delete the review under the cursor after a
-confirmation prompt, and `a` to reveal reviews holding no comments and no
-reviewed files, which are hidden by default.
-
-## Library API
-
-tuicr also exposes a Rust library API for tools that want to build on top of its
-persisted review sessions. `ReviewStore` can list sessions for a checkout, load a
-session, and add review, file, line, or range comments using the same insertion
-primitive as the TUI.
-
-```rust
-use tuicr::{AddCommentRequest, CommentTarget, CommentType, LineSide, ReviewStore};
-
-let store = ReviewStore::new();
-let sessions = store.list_sessions_for_repo("/path/to/repo")?;
-let session = &sessions[0].session_ref;
-
-store.add_comment(
-    session,
-    AddCommentRequest {
-        target: CommentTarget::Line {
-            path: "src/main.rs".into(),
-            line: 42,
-            side: LineSide::New,
-        },
-        content: "Handle the empty case here.".into(),
-        comment_type: CommentType::from_id("issue"),
-    },
-)?;
-```
-
-## Configuration
-
-Path: `~/.config/tuicr/config.toml` on Linux/macOS, `%APPDATA%\tuicr\config.toml` on Windows.
-
-```toml
-theme = "catppuccin-mocha"
-diff_view = "side-by-side"   # or "unified"
-ignore_whitespace = false    # ignore all whitespace in local VCS diffs
-appearance = "system"        # or "dark" / "light"
-mouse = true
-leader = ";"                  # configurable prefix for leader shortcuts
-editor = "nvim"               # editor for `e` / `:edit`; overrides $EDITOR
-comment_vim = false           # vim modal editing in the review comment box
-relative_line_numbers = false # show rendered-row distances in the diff gutter
-
-[[comment_types]]
-id = "issue"
-color = "red"
-definition = "must fix before merge"
-```
-
-With Home Manager, the same settings go in `programs.tuicr.settings`:
-
-```nix
-programs.tuicr = {
-  enable = true;
-  settings = {
-    theme = "catppuccin-mocha";
-    diff_view = "side-by-side";
-    mouse = true;
-  };
-};
-```
-
-Bundled themes: `dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-light`,
-`github-dark`, `github-dark-colorblind`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`,
-`catppuccin-mocha`, `everforest-dark`, `everforest-light`, `gruvbox-dark`,
-`gruvbox-light`, `nord-dark`, `nord-light`, `nord-dark-high-contrast`,
-`nord-light-high-contrast`, `solarized-light`, `solarized-dark`, `tokyo-night-storm`,
-`tokyo-night-day`.
-
-Local themes: set `theme = "my-theme"` or run `tuicr --theme my-theme`, then create
-`~/.config/tuicr/themes/my-theme.toml` on Linux/macOS or `%APPDATA%\tuicr\themes\my-theme.toml`
-on Windows. Local themes may reference a local `syntax_theme = "my-syntax.tmTheme"` file for
-syntax highlighting. A ready-to-copy example lives at [`examples/tuicr-teal.toml`](examples/tuicr-teal.toml)
-with its matching [`examples/tuicr-teal-syntax.tmTheme`](examples/tuicr-teal-syntax.tmTheme) syntax theme.
-
-Full options, theme resolution precedence, `comment_types` semantics, and `.tuicrignore` rules in
-[docs/CONFIG.md](docs/CONFIG.md).
-
-## Keybindings
-
-A first-session cheatsheet. Press `?` inside tuicr for the full reference.
-
-| Key | Action |
+| Page | Covers |
 |---|---|
-| `j` / `k` | Down / up |
-| `Ctrl-d` / `Ctrl-u` | Half-page down / up |
-| `g` / `G` | Top / bottom |
-| `{` / `}` | Previous / next file |
-| `<leader>p` | Pick a file by path from a popup and jump to it (`/` filters); handy with the file list hidden |
-| `[` / `]` | Previous / next hunk |
-| `m` / `M` | Next / previous comment |
-| `/` | Search the diff by case-insensitive regex, or search the file tree/help by text — whichever is focused/open |
-| `n` / `N` | Next / previous search match (wraps); matches stay highlighted — `Esc` clears |
-| `i` / `e` (file tree) | Filter files in / out by regex; narrows the tree **and** the diff |
-| `I` / `E` (file tree) | Clear the include / exclude filter |
-| `c` / `C` | Add line / file comment |
-| `v` / `V` | Visual mode (range comment) |
-| `s` (visual mode) | Suggest changes to the selected code lines |
-| `r` | Toggle file reviewed (on the PR description: mark it reviewed and collapse it to one row) |
-| `R` | Toggle hunk reviewed |
-| `e` | Open focused file in `$EDITOR` (in PR review: the PR's revision, as a read-only copy when the checkout differs) |
-| `y` | Copy review to clipboard |
-| `:edit` | Open focused file in `$EDITOR` |
-| `:file <path>` | Write the review to a file instead of the clipboard |
-| `:submit` | Push review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit |
-| `:theme` | Open a live-preview theme picker (`/` to filter); `:theme <name>` applies directly. Session-only; set `theme` in `config.toml` to keep it |
-| `Tab` in `:` prompt | Complete or cycle commands |
-| `Ctrl-l` | Redraw the whole screen |
-| `?` | Toggle full help |
-
-While composing a comment in the default editor, `↑` / `↓` move one displayed row,
-including wrapped rows, preserving the column where possible.
-
-Full reference in [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
+| [docs/CLI.md](docs/CLI.md) | Commands, flags, environment variables, exit codes, `tuicr update`, VCS backends |
+| [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md) | Every key and `:` command, the target selector and the Sessions tab |
+| [docs/CONFIG.md](docs/CONFIG.md) | `config.toml` options, themes, comment types, export format, `.tuicrignore` |
+| [docs/REVIEW_CLI.md](docs/REVIEW_CLI.md) | `tuicr review` for scripts and agents |
+| [docs/LIBRARY.md](docs/LIBRARY.md) | The Rust library API (`ReviewStore`) |
+| [docs/GITHUB.md](docs/GITHUB.md), [docs/GITLAB.md](docs/GITLAB.md), [docs/GITEA.md](docs/GITEA.md) | Forge setup, submit behaviour, limitations |
+| [docs/BITBUCKET.md](docs/BITBUCKET.md), [docs/AZURE.md](docs/AZURE.md), [docs/GERRIT.md](docs/GERRIT.md) | Forge setup, submit behaviour, limitations |
+| [skills/tuicr/SKILL.md](skills/tuicr/SKILL.md) | The agent skill and its split-pane wrappers |
 
 ## Sponsors
 

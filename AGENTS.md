@@ -101,6 +101,7 @@ configuration options in `docs/CONFIG.md` only.
 | `docs/FORGES.md`       | Forge backend contracts, detection, session/submit rules, F*/G* gotchas (new forge-specific gotchas go here)             |
 | `e2e/COVERAGE.md`      | Adding an e2e scenario area, or closing a listed gap (authoring rules stay in `e2e/README.md`)                           |
 | `docs/CONFIG.md`       | Any `config.toml` key: add a row to the Options table and a line to the Full example block                               |
+| `docs/LIBRARY.md`      | Public library API (`ReviewStore`, `AddCommentRequest`); its Rust blocks compile as doctests via `src/lib.rs`            |
 
 ---
 
