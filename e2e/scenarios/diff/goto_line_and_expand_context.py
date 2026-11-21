@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # `:N` (new side), `:oN` (old side) and `{N}G` put the cursor on that source line even inside collapsed context,
-# expanding
-# only as far as needed; `Enter` on an "expand" row reveals the hidden lines and `Enter` on revealed context folds
-# them back.
+# expanding only as far as needed; `Enter` on an "expand" row reveals the hidden lines and `Enter` on revealed context
+# folds them back.
 from e2e import Scenario, repos, scenario
 
 
@@ -21,8 +20,11 @@ def main(s: Scenario) -> None:
     tui.wait_for("row 70 CHANGED").keys("Escape")
     tui.reject("row 28")  # hidden to begin with
     tui.cmd("30").wait_for("▶ +30 +row 28")  # new-side line 30 is "row 28"
+    # only as far as needed: the rest of the gap (rows 29..66) stays folded behind an expand row
+    tui.expect(r"expand \(").reject(r"\brow 40\b")
     tui.cmd("o30").wait_for("▶ +32 +row 30")  # old-side line 30 is "row 30"
     tui.keys("5", "0", "G").wait_for("▶ +50 +row 48")
+    tui.expect(r"expand \(").reject(r"\brow 60\b")
     # fresh view: Enter on an expand row reveals its lines, Enter on revealed context folds them again
     tui.cmd("e").wait_gone("row 48")
     tui.keys("g").cursor_on(r"expand \(20 lines\)")

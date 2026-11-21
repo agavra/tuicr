@@ -14,11 +14,11 @@ def main(s: Scenario) -> None:
     # range comment over two rows (gone.txt deleted lines) via visual mode
     tui.cursor_on("1 ▌ delete me")
     tui.keys("v", "j").comment("range note beta")
-    tui.expect("L1-L2|L1.{0,3}2")
+    tui.expect("── L1-L2 ─")
     # file comment
-    tui.keys("g").comment("file note gamma", key="C")
+    tui.keys("g").comment("file note gamma", key="C").expect("file note gamma")
     # review-level comment
-    tui.comment("review note delta", key=";c")
+    tui.comment("review note delta", key=";c").expect("review note delta")
     # comment navigator sidebar lists them
     tui.expect("Comments")
     # persist, then verify on disk

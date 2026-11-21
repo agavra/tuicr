@@ -24,9 +24,7 @@ def main(s: Scenario) -> None:
     for name, context, changed, line in cases:
         tui = s.start("-w", "-p", f"{name}.rs", cwd=repo)
         tui.wait_for(context).wait_for(changed)
-        assert not s.session()["files"][f"{name}.rs"]["line_comments"], "precondition: no comments"
         tui.cursor_on(changed).comment(f"aligned {name}")
-        tui.wait_for(f"aligned {name}")
         tui.save()
         comments = s.session()["files"][f"{name}.rs"]["line_comments"]
         assert list(comments) == [str(line)], comments

@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 
-from e2e import Scenario, scenario
+from e2e import Scenario, because, scenario
 
 
 def hunks(f: Path) -> int:
@@ -17,9 +17,8 @@ def hunks(f: Path) -> int:
 def main(s: Scenario) -> None:
     tui = s.diff()
     tui.cursor_on("4 ▌ second line")
-    tui.keys("R").settle()
+    tui.keys("R").wait_for(r"✓ @@")
     tui.save()
-    marked = tui.screen()
     files = s.session_files()
     assert files, "no saved session file"
     f = files[0]
@@ -32,9 +31,10 @@ def main(s: Scenario) -> None:
     tmp = Path(f"{f}.tmp")
     tmp.write_text(json.dumps(d))
     os.replace(tmp, f)
-    # barrier: the running TUI polls the session file (review_watch_interval_ms = 1000) and redraws the merged mark
-    tui.wait_screen_change(marked, 10)  # TUI never merged the external edit otherwise
-    tui.settle()
+    # the running TUI polls the session file (review_watch_interval_ms = 1000) and unfolds the merged hunk
+    with because("the TUI never merged the external edit (the hunk is still marked on screen)"):
+        tui.wait_gone(r"✓ @@").wait_for("4 ▌ second line")
+    tui.wait_gone("Saved to")  # the first save's message expires, so the next one is this save's
     tui.save()
     print(f"hunk marks after external clear + :w: {hunks(f)}")
     assert hunks(f) == 0, "TUI save resurrected the externally cleared hunk mark"
