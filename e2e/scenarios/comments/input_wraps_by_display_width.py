@@ -8,7 +8,7 @@ from e2e import Scenario, scenario
 @scenario
 def main(s: Scenario) -> None:
     tui = s.diff()
-    tui.keys("j", "j").keys("c").wait_for("Add L1", 3)
+    tui.keys("j", "j").keys("c").wait_for("Add L1")
     tui.type("\u2764\ufe0f" * 60).settle(0.4)
     rows = [line for line in tui.screen().split("\n") if "\u2764" in line]
     assert rows, "no emoji rows"
