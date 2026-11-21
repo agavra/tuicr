@@ -16,7 +16,7 @@ use crate::process::{CommandOutputResult, run_command_output_with_env};
 /// object does not just fail: it starts a lazy fetch with `noop` negotiation,
 /// which can take tens of seconds. These helpers only check whether the
 /// checkout has the object, and callers fall back to the forge when it does
-/// not, so a missing object must fail fast. Git older than 2.44 ignores the
+/// not, so a missing object must fail fast. Git older than 2.45 ignores the
 /// variable and keeps its previous behavior.
 pub(crate) fn run_git_probe<I, S>(repo_root: &Path, args: I) -> CommandOutputResult<String>
 where
@@ -214,6 +214,26 @@ mod tests {
         clone_without_blobs(&origin, &clone);
 
         assert_eq!(read_blob(&clone, &sha, Path::new("file.txt")), None);
+        assert_eq!(
+            show_object_unchecked(&clone, &format!("{sha}:file.txt")),
+            None
+        );
+    }
+
+    #[test]
+    fn should_not_lazy_fetch_a_missing_commit_message_from_a_partial_clone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let origin = dir.path().join("origin");
+        std::fs::create_dir(&origin).expect("origin dir");
+        init_repo_with_commit(&origin, &["one"]);
+        let clone = dir.path().join("clone");
+        clone_without_blobs(&origin, &clone);
+
+        std::fs::write(origin.join("file.txt"), "three\n").expect("write");
+        git(&origin, &["commit", "-qam", "two"]);
+        let second = git(&origin, &["rev-parse", "HEAD"]).trim().to_string();
+
+        assert_eq!(read_commit_message(&clone, &second), None);
     }
 
     #[test]

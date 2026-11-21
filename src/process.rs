@@ -33,8 +33,8 @@ where
 
 /// Variant of `run_command_output` that sets `envs` on the child. Callers that
 /// only probe for an object in a partial clone use this to disable lazy
-/// promisor fetches: git < 2.44 ignores the variable, newer git fails fast.
-pub fn run_command_output_with_env<I, S>(
+/// promisor fetches: git < 2.45 ignores the variable, newer git fails fast.
+pub(crate) fn run_command_output_with_env<I, S>(
     program: &str,
     current_dir: Option<&Path>,
     args: I,

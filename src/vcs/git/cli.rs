@@ -1072,16 +1072,40 @@ pub(crate) fn read_git_objects<K: Eq + std::hash::Hash>(
     workdir: &Path,
     requests: Vec<(K, String)>,
 ) -> Result<HashMap<K, String>> {
+    read_git_objects_with_lazy_fetch(workdir, requests, true)
+}
+
+/// Like [`read_git_objects`], but a missing object is reported as missing
+/// instead of triggering a promisor fetch. Forge reads use this so a PR whose
+/// commits are absent from a `blob:none` clone falls back to the API instead
+/// of fetching the missing history with `noop` negotiation.
+pub(crate) fn read_git_objects_without_lazy_fetch<K: Eq + std::hash::Hash>(
+    workdir: &Path,
+    requests: Vec<(K, String)>,
+) -> Result<HashMap<K, String>> {
+    read_git_objects_with_lazy_fetch(workdir, requests, false)
+}
+
+fn read_git_objects_with_lazy_fetch<K: Eq + std::hash::Hash>(
+    workdir: &Path,
+    requests: Vec<(K, String)>,
+    allow_lazy_fetch: bool,
+) -> Result<HashMap<K, String>> {
     if requests.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .current_dir(workdir)
         .args(["cat-file", "--batch"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    if !allow_lazy_fetch {
+        command.env("GIT_NO_LAZY_FETCH", "1");
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
 
@@ -1428,7 +1452,24 @@ mod tests {
         // then the mapped author name is used, not the raw one
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].author, "Mapped");
-        assert_ne!(commits[0].author, "Raw Author");
+        assert_ne!(commits[0].author, "Raw Author");    }
+
+    fn should_not_lazy_fetch_missing_objects_in_a_partial_clone_batch() {
+        use crate::forge::local_git::test_support::{clone_without_blobs, init_repo_with_commit};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let origin = dir.path().join("origin");
+        fs::create_dir(&origin).expect("origin dir");
+        let sha = init_repo_with_commit(&origin, &["add file"]);
+        let clone = dir.path().join("clone");
+        clone_without_blobs(&origin, &clone);
+
+        // `git cat-file --batch` would otherwise fetch the missing blob from
+        // the promisor remote and return it.
+        let objects =
+            read_git_objects_without_lazy_fetch(&clone, vec![(0usize, format!("{sha}:file.txt"))])
+                .expect("batch read");
+        assert!(objects.is_empty(), "missing blob was read: {objects:?}");
     }
 
     #[test]
