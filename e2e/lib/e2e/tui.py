@@ -584,12 +584,14 @@ class Tui:
             if grep(pattern, cur):
                 return self
             self.keys("j")
-            try:  # the cursor moving redraws; at the end of the diff it cannot move, so stop waiting after 0.5 s
-                self.wait_screen_change(scr, 0.5, allow_dead)
+            # The cursor moving redraws. No redraw within the window means it cannot move (the end of the diff): stop
+            # pressing, since a j sent while a slow app still handles the last one would skip a row.
+            try:
+                self.wait_screen_change(scr, 0.2 * TIMEOUT, allow_dead)
             except (NoPane, DeadPane):
                 raise
             except Failure:
-                pass
+                break
             self.settle(0.1, allow_dead=allow_dead)  # the first changed frame can be partial: judge a settled screen
             scr = self._live(what, allow_dead)
         raise Failure(f"cursor never reached /{pattern}/", scr)
