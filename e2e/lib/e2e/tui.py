@@ -13,7 +13,9 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
 import re
+import select
 import shutil
 import subprocess
 import time
@@ -99,14 +101,131 @@ def read_forge_log(path: Path) -> list[Call]:
     return out
 
 
+_TMUX = ["tmux", "-L", SOCKET, "-f", "/dev/null", "-u"]
+# Commands the control client runs; anything else (new-session's long argv, set-option -g...) is exec'ed.
+_CONTROL_COMMANDS = frozenset(
+    {"capture-pane", "display-message", "send-keys", "has-session", "kill-session", "set-buffer", "paste-buffer"}
+    | {"resize-window"}
+)
+
+
+class _Control:
+    """One tmux control-mode client (`tmux -C attach`, output notifications off) per scenario process: each command
+    is a line written to it, answered by a `%begin <time> <n> <flags>` ... `%end|%error <time> <n> <flags>` block, so a
+    capture or a key costs no process launch. Commands are tmux-quoted; an argument the line syntax cannot carry
+    (a newline, or a trailing `;` that tmux's argv parsing reads as a separator) is exec'ed instead. When the client
+    cannot be started, dies or stalls, the command is exec'ed, so the answer is the same as without it."""
+
+    def __init__(self) -> None:
+        self.proc: subprocess.Popen[bytes] | None = None
+        self.enabled = False  # set once this process made sure the anchor session exists
+        self.buf = b""
+
+    @staticmethod
+    def line(args: tuple[str, ...]) -> tuple[str, int] | None:
+        """(command line, number of commands) for args, or None when it must be exec'ed."""
+        words, count, first = [], 1, True
+        for a in args:
+            if a == ";":
+                words.append(";")
+                count, first = count + 1, True
+                continue
+            if first and a not in _CONTROL_COMMANDS:
+                return None
+            if any(c in a for c in "\n\r\0") or a.endswith(";"):
+                return None
+            words.append("'" + a.replace("'", "'\\''") + "'")
+            first = False
+        return " ".join(words), count
+
+    def _open(self) -> subprocess.Popen[bytes] | None:
+        if self.proc is not None and self.proc.poll() is None:
+            return self.proc
+        self.proc, self.buf = None, b""
+        try:
+            p = subprocess.Popen(
+                [*_TMUX, "-C", "attach-session", "-t", "e2e-anchor"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            self.enabled = False
+            return None
+        self.proc = p
+        if self._send("refresh-client -f no-output", 1) is None:  # also proves the client attached
+            self.enabled = False
+            return None
+        return p
+
+    def _readline(self, p: subprocess.Popen[bytes], deadline: float) -> str | None:
+        assert p.stdout is not None
+        while b"\n" not in self.buf:
+            left = deadline - time.monotonic()
+            if left <= 0 or not select.select([p.stdout], [], [], left)[0]:
+                return None
+            chunk = os.read(p.stdout.fileno(), 65536)
+            if not chunk:
+                return None
+            self.buf += chunk
+        ln, self.buf = self.buf.split(b"\n", 1)
+        return ln.decode("utf-8", errors="replace")
+
+    def _send(self, line: str, count: int) -> tuple[int, str, str] | None:
+        """Run one command line; (status, stdout, stderr) like an exec'ed tmux, or None (the client is closed)."""
+        p = self.proc
+        assert p is not None and p.stdin is not None
+        deadline = time.monotonic() + 2 * TIMEOUT
+        out: list[str] = []
+        try:
+            p.stdin.write(line.encode() + b"\n")
+            p.stdin.flush()
+            while count:
+                block: list[str] | None = None
+                tag, mine, tail = [""], False, [""]
+                while True:
+                    ln = self._readline(p, deadline)
+                    if ln is None:
+                        raise OSError("tmux control client closed or stalled")
+                    if block is None:
+                        head = ln.split(" ")
+                        if head[0] == "%begin" and len(head) == 4:
+                            block, tag, mine = [], head[1:3], head[3] == "1"
+                        continue  # a notification between blocks
+                    tail = ln.split(" ")
+                    if len(tail) == 4 and tail[0] in ("%end", "%error") and tail[1:3] == tag:
+                        break
+                    block.append(ln)
+                if not mine:  # a block of a command this client did not send (the attach itself)
+                    continue
+                count -= 1
+                if tail[0] == "%error":  # tmux stops a command list at its first error
+                    return 1, "".join(x + "\n" for x in out), "".join(x + "\n" for x in block)
+                out += block
+        except OSError:
+            p.kill()
+            p.wait()
+            self.proc = None
+            return None
+        return 0, "".join(x + "\n" for x in out), ""
+
+    def run(self, args: tuple[str, ...]) -> tuple[int, str, str] | None:
+        if not self.enabled or (parsed := self.line(args)) is None or self._open() is None:
+            return None
+        return self._send(*parsed)
+
+
+_control = _Control()
+
+
 def tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    """Run tmux on the scenario's private server (socket $E2E_SOCKET, no config, UTF-8)."""
-    p = subprocess.run(
-        ["tmux", "-L", SOCKET, "-f", "/dev/null", "-u", *args],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-    )
+    """Run tmux on the scenario's private server (socket $E2E_SOCKET, no config, UTF-8), through the control client
+    when it can carry the command (see _Control), else as its own process."""
+    res = _control.run(args)
+    if res is not None:
+        p = subprocess.CompletedProcess([*_TMUX, *args], *res)
+    else:
+        p = subprocess.run([*_TMUX, *args], stdin=subprocess.DEVNULL, capture_output=True, text=True)
     if check and p.returncode != 0:
         raise Failure(f"tmux {' '.join(args)} failed: {p.stderr.strip()}")
     return p
@@ -114,11 +233,14 @@ def tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
 
 def _anchor(cols: int, rows: int) -> None:
     """An idle session keeps one tmux server alive for the whole run (a new-session sent to a server that is shutting
-    down is lost); remain-on-exit is server-wide so even an instantly dying program leaves its pane and exit status."""
-    if tmux("has-session", "-t", "e2e-anchor", check=False).returncode == 0:
+    down is lost); remain-on-exit is server-wide so even an instantly dying program leaves its pane and exit status.
+    The control client attaches to it."""
+    if _control.enabled and _control.proc is not None and _control.proc.poll() is None:
         return
-    tmux("new-session", "-d", "-x", str(cols), "-y", str(rows), "-s", "e2e-anchor", "--", "sleep", "86400")
-    tmux("set-option", "-g", "remain-on-exit", "on")
+    if tmux("has-session", "-t", "e2e-anchor", check=False).returncode != 0:
+        tmux("new-session", "-d", "-x", str(cols), "-y", str(rows), "-s", "e2e-anchor", "--", "sleep", "86400")
+        tmux("set-option", "-g", "remain-on-exit", "on")
+    _control.enabled = True
 
 
 class Tui:
