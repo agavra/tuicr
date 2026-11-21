@@ -111,7 +111,7 @@ saved sessions; `name=` starts a second TUI), `s.start_cmd(argv, ...)` (any comm
 `s.cli_result(*args, cwd=)` (`.rc`, `.out` = stdout+stderr, never fails), `s.session()` (the one saved session, parsed JSON),
 `s.session_comments()` (every comment text in it), `s.session_reviewed(path)` (a file's `reviewed` flag),
 `s.session_json()`, `s.session_has(regex, allow_missing=False)` (fails when no session exists at all), `s.skip(reason)`, `s.on_exit(fn, *args)` (cleanups run in reverse order after
-the TUIs stop; never install signal or atexit handlers), `s.allow_unexpected_forge_calls(why)`, `s.env` / `s.pre_path`
+the TUIs stop; never install signal or atexit handlers), `s.allow_unexpected_forge_calls(pattern, count, why)`, `s.env` / `s.pre_path`
 (variables and PATH directories applied to every later start; `use_hg`, `use_jj` and `fake_clipboard` add to them),
 `s.cols` / `s.rows` (size of the next pane).
 
@@ -161,7 +161,8 @@ Rules that keep scenarios reliable:
 * **Fakes fail loudly.** A call a fake has no fixture for, an adapter that raises (e.g. a missing fixture file) and,
   for the fake Gerrit, an unknown route or a non-GET method are logged with an `UNEXPECTED` note and fail the scenario
   at exit (tuicr treats some forge errors as best effort, so the exit code alone would hide it). A scenario that provokes
-  one on purpose calls `s.allow_unexpected_forge_calls(why)`.
+  one on purpose declares it with `s.allow_unexpected_forge_calls(pattern, count, why)`: exactly `count` UNEXPECTED
+  log lines matching the regex `pattern`; any other UNEXPECTED call, or a different count, still fails.
 * **Exit status is checked.** `wait_exit` requires status 0 unless you pass the expected one (or `"any"`); `s.cli`
   fails on a non-zero exit, `s.cli_result` returns `.rc` and `.out`.
 * **Assert on structure, not text.** Parse JSON (`s.session()`, `json.loads(s.cli(...))`, `tui.posts()`) and assert on the
