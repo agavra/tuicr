@@ -1,9 +1,10 @@
 # tuicr
 
-**Review AI-generated diffs like a GitHub pull request, right from your terminal.**
+**A code review TUI with vim keybindings: review any diff like a GitHub pull request, right from your terminal.**
 
-Comment on lines, ranges and files with vim keys, then hand the review to your coding agent or
-post it to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps or Gerrit.
+Your own changes, a teammate's PR, or your coding agent's work: comment on lines, ranges and files,
+then post the review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps or Gerrit, or copy it to the
+clipboard for your agent.
 
 [![Crates.io](https://img.shields.io/crates/v/tuicr)](https://crates.io/crates/tuicr)
 [![License](https://img.shields.io/crates/l/tuicr)](./LICENSE)
@@ -19,7 +20,7 @@ post it to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps or Gerrit.
 - **One continuous diff.** Every changed file scrolls past in one stream, as on a GitHub PR page.
 - **PR-style comments.** Comment on a line, a range, a file or the whole review, and suggest code changes.
 - **Review tracking.** Mark files or hunks reviewed. The marks persist across sessions.
-- **git, jj and Mercurial.** uncommitted changes, commit ranges, or a forge PR/MR.
+- **git, jj and Mercurial.** Uncommitted changes, commit ranges, or a forge PR/MR.
 - **Two ways out.** Copy numbered, agent-ready markdown, or push a real inline review to six forges.
 
 ## Install
