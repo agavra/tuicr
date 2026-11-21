@@ -485,6 +485,7 @@ fn handle_export(app: &mut App) {
             &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
+            &app.export_diff(),
         ) {
             Ok(content) => {
                 app.pending_stdout_output = Some(content);
@@ -500,6 +501,7 @@ fn handle_export(app: &mut App) {
             &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
+            &app.export_diff(),
             app.clipboard_override.as_deref(),
             app.clipboard_command.as_deref(),
         ) {
@@ -536,6 +538,7 @@ fn handle_export_to_file(app: &mut App, path: &str) {
         &app.forge_review_threads,
         slug.as_deref(),
         &path,
+        &app.export_diff(),
     ) {
         Ok(msg) => app.set_message(msg),
         Err(TuicrError::Io(e)) => {
@@ -1412,6 +1415,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
+                        &app.export_diff(),
                     ) {
                         Ok(content) => app.pending_stdout_output = Some(content),
                         Err(e) => app.set_warning(format!("{e}")),
@@ -1424,6 +1428,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
+                        &app.export_diff(),
                         app.clipboard_override.as_deref(),
                         app.clipboard_command.as_deref(),
                     ) {

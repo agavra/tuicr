@@ -13,9 +13,12 @@ use crate::forge::remote_comments::{
     PrCommentsVisibility, RemoteReviewComment, RemoteReviewThread, filter_threads,
     group_threads_by_path,
 };
-use crate::model::{CommentType, LineRange, LineSide, ReviewSession};
+use crate::model::{
+    Comment, CommentType, DiffFile, DiffHunk, DiffLine, LineOrigin, LineRange, LineSide,
+    ReviewSession,
+};
 use crate::slug::short_sha;
-/// (file_path, line_range, side, comment_type, content, commit_id)
+/// (file_path, line_range, side, comment_type, content, commit_id, code_block)
 type CommentEntry<'a> = (
     String,
     Option<LineRange>,
@@ -23,6 +26,7 @@ type CommentEntry<'a> = (
     String,
     &'a str,
     Option<&'a str>,
+    Option<String>,
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -139,6 +143,21 @@ fn with_terminal_backstop(methods: &[CopyMethod]) -> Vec<CopyMethod> {
     order
 }
 
+/// Diff rows (`+`, `-` or context) shown on either side of the commented lines when
+/// `[export] code_context` is on.
+const CODE_CONTEXT_LINES: usize = 2;
+
+/// The loaded diff that `[export] code_context` reads commented lines from.
+#[derive(Debug, Default)]
+pub struct ExportDiff<'a> {
+    pub files: &'a [DiffFile],
+    /// Whether the inline commit selector narrows the loaded diff to a
+    /// strict subset of the review's commits.
+    pub subset_loaded: bool,
+    /// The loaded single commit; `None` for cumulative or working-tree views.
+    pub single_commit: Option<String>,
+}
+
 /// Generate markdown content from the review session.
 /// Returns the markdown string or an error if there are no comments.
 pub fn generate_export_content(
@@ -148,6 +167,7 @@ pub fn generate_export_content(
     export: &ExportConfig,
     remote_threads: &[RemoteReviewThread],
     session_slug: Option<&str>,
+    diff: &ExportDiff,
 ) -> Result<String> {
     // In PR mode it's still useful to export PR identity + remote
     // discussions even if the user has no local drafts. Outside PR mode
@@ -164,6 +184,7 @@ pub fn generate_export_content(
         export,
         remote_threads,
         session_slug,
+        diff,
     ))
 }
 
@@ -174,6 +195,7 @@ pub fn export_to_clipboard(
     export: &ExportConfig,
     remote_threads: &[RemoteReviewThread],
     session_slug: Option<&str>,
+    diff: &ExportDiff,
 ) -> Result<String> {
     export_to_clipboard_with(
         session,
@@ -182,6 +204,7 @@ pub fn export_to_clipboard(
         export,
         remote_threads,
         session_slug,
+        diff,
         None,
         None,
     )
@@ -197,6 +220,7 @@ pub(crate) fn export_to_clipboard_with(
     export: &ExportConfig,
     remote_threads: &[RemoteReviewThread],
     session_slug: Option<&str>,
+    diff: &ExportDiff,
     clipboard_override: Option<&[CopyMethod]>,
     clipboard_command: Option<&str>,
 ) -> Result<ClipboardCopy> {
@@ -207,11 +231,13 @@ pub(crate) fn export_to_clipboard_with(
         export,
         remote_threads,
         session_slug,
+        diff,
     )?;
     copy_text_to_clipboard_with(&content, clipboard_override, clipboard_command)
 }
 
 /// Write the same review `:clip` copies to `path`, replacing any file there.
+#[allow(clippy::too_many_arguments)]
 pub fn export_to_file(
     session: &ReviewSession,
     diff_source: &DiffSource,
@@ -220,6 +246,7 @@ pub fn export_to_file(
     remote_threads: &[RemoteReviewThread],
     session_slug: Option<&str>,
     path: &std::path::Path,
+    diff: &ExportDiff,
 ) -> Result<String> {
     let content = generate_export_content(
         session,
@@ -228,6 +255,7 @@ pub fn export_to_file(
         export,
         remote_threads,
         session_slug,
+        diff,
     )?;
     std::fs::write(path, content)?;
     Ok(format!("Review written to {}", path.display()))
@@ -586,6 +614,7 @@ fn generate_markdown(
     export: &ExportConfig,
     remote_threads: &[RemoteReviewThread],
     session_slug: Option<&str>,
+    diff: &ExportDiff,
 ) -> String {
     let mut md = String::new();
 
@@ -685,6 +714,7 @@ fn generate_markdown(
             resolve_comment_type_label(&comment.comment_type, comment_types),
             &comment.content,
             None,
+            None,
         ));
     }
 
@@ -694,6 +724,10 @@ fn generate_markdown(
 
     for (path, review) in files {
         let path_str = path.display().to_string();
+        let diff_file = export
+            .code_context()
+            .then(|| diff.files.iter().find(|f| f.display_path() == path))
+            .flatten();
 
         // File comments (no line number)
         for comment in &review.file_comments {
@@ -704,6 +738,7 @@ fn generate_markdown(
                 resolve_comment_type_label(&comment.comment_type, comment_types),
                 &comment.content,
                 comment.commit_id.as_deref(),
+                None,
             ));
         }
 
@@ -716,14 +751,20 @@ fn generate_markdown(
                 // Use comment's line_range if available, otherwise use the key line
                 let line_range = comment
                     .line_range
-                    .or_else(|| Some(LineRange::single(*line)));
+                    .unwrap_or_else(|| LineRange::single(*line));
+                let code_block = diff_file
+                    .filter(|_| comment_addresses_loaded_diff(comment, diff))
+                    .and_then(|file| {
+                        code_context_block(file, line_range, comment.side.unwrap_or(LineSide::New))
+                    });
                 all_comments.push((
                     path_str.clone(),
-                    line_range,
+                    Some(line_range),
                     comment.side,
                     resolve_comment_type_label(&comment.comment_type, comment_types),
                     &comment.content,
                     comment.commit_id.as_deref(),
+                    code_block,
                 ));
             }
         }
@@ -740,7 +781,7 @@ fn generate_markdown(
         }
         local_section_written = true;
     }
-    for (i, (file, line_range, side, comment_type, content, commit_id)) in
+    for (i, (file, line_range, side, comment_type, content, commit_id, code_block)) in
         all_comments.iter().enumerate()
     {
         let number = i + 1;
@@ -784,6 +825,13 @@ fn generate_markdown(
         );
         for line in content_lines {
             let _ = writeln!(md, "{continuation_indent}{line}");
+        }
+        // Indented to the list marker's width so the fence nests inside
+        // this list item rather than ending the list.
+        if let Some(block) = code_block {
+            for line in block.lines() {
+                let _ = writeln!(md, "{continuation_indent}{line}");
+            }
         }
     }
 
@@ -854,6 +902,114 @@ fn write_remote_body(md: &mut String, prefix: &str, indent: &str, body: &str) {
     let _ = writeln!(md, "{prefix}{}", lines.next().unwrap_or_default());
     for line in lines {
         let _ = writeln!(md, "{indent}{line}");
+    }
+}
+
+/// Quote code only for the comment's exact diff scope. Visibility alone allows
+/// legacy comments over subsets and stamped comments over wider diffs.
+fn comment_addresses_loaded_diff(comment: &Comment, diff: &ExportDiff) -> bool {
+    match &comment.commit_id {
+        None => !diff.subset_loaded,
+        Some(sha) => diff.single_commit.as_deref() == Some(sha.as_str()),
+    }
+}
+
+/// Quote the range plus [`CODE_CONTEXT_LINES`] rows either side, clipped to
+/// each hunk with its own `@@` header. Skip commit messages and missing anchors.
+fn code_context_block(file: &DiffFile, range: LineRange, side: LineSide) -> Option<String> {
+    if file.is_commit_message {
+        return None;
+    }
+    let lineno = |line: &DiffLine| match side {
+        LineSide::Old => line.old_lineno,
+        LineSide::New => line.new_lineno,
+    };
+    let in_range = |line: &DiffLine| lineno(line).is_some_and(|n| range.contains(n));
+
+    let mut body: Vec<String> = Vec::new();
+    for hunk in &file.hunks {
+        let Some(first) = hunk.lines.iter().position(in_range) else {
+            continue;
+        };
+        let last = hunk.lines.iter().rposition(in_range).unwrap_or(first);
+        let lo = first.saturating_sub(CODE_CONTEXT_LINES);
+        let hi = (last + CODE_CONTEXT_LINES).min(hunk.lines.len() - 1);
+        body.push(slice_header(hunk, lo, hi));
+        for line in &hunk.lines[lo..=hi] {
+            let prefix = match line.origin {
+                LineOrigin::Addition => '+',
+                LineOrigin::Deletion => '-',
+                LineOrigin::Context => ' ',
+            };
+            let text = line.raw_content.as_deref().unwrap_or(&line.content);
+            body.push(format!("{prefix}{}", text.trim_end_matches(['\n', '\r'])));
+        }
+    }
+    if body.is_empty() {
+        return None;
+    }
+
+    // A fence longer than any backtick run in the code, so source that
+    // contains ``` cannot close the block early.
+    let longest_run = body
+        .iter()
+        .flat_map(|line| line.split(|c| c != '`'))
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest_run.max(2) + 1);
+    let mut block = format!("{fence}diff\n");
+    for line in body {
+        block.push_str(&line);
+        block.push('\n');
+    }
+    block.push_str(&fence);
+    Some(block)
+}
+
+/// Unified-diff header for `hunk.lines[lo..=hi]`.
+fn slice_header(hunk: &DiffHunk, lo: usize, hi: usize) -> String {
+    let (old_start, old_count) = side_span(
+        hunk,
+        lo,
+        hi,
+        |l| l.old_lineno,
+        hunk.old_start,
+        hunk.old_count,
+    );
+    let (new_start, new_count) = side_span(
+        hunk,
+        lo,
+        hi,
+        |l| l.new_lineno,
+        hunk.new_start,
+        hunk.new_count,
+    );
+    format!("@@ -{old_start},{old_count} +{new_start},{new_count} @@")
+}
+
+/// Start line and line count one side of a hunk slice covers. A side with
+/// no lines in the slice names the line before it, as unified diffs do.
+fn side_span(
+    hunk: &DiffHunk,
+    lo: usize,
+    hi: usize,
+    lineno: impl Fn(&DiffLine) -> Option<u32>,
+    hunk_start: u32,
+    hunk_count: u32,
+) -> (u32, u32) {
+    let mut numbers = hunk.lines[lo..=hi].iter().filter_map(&lineno);
+    match numbers.next() {
+        Some(first) => (first, 1 + numbers.count() as u32),
+        None => {
+            let before = hunk.lines[..lo].iter().rev().find_map(&lineno);
+            let start = before.unwrap_or(if hunk_count == 0 {
+                hunk_start
+            } else {
+                hunk_start.saturating_sub(1)
+            });
+            (start, 0)
+        }
     }
 }
 
@@ -941,6 +1097,7 @@ mod tests {
                 false,
             )],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(markdown.contains("## Comments"));
@@ -972,6 +1129,7 @@ mod tests {
                 false,
             )],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(!markdown.contains("## Local tuicr Comments"));
@@ -996,6 +1154,7 @@ mod tests {
             &export,
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(!markdown.contains("Reviewing unstaged changes"));
@@ -1018,6 +1177,7 @@ mod tests {
             &export,
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(!markdown.contains("Reviewing pull request"));
@@ -1040,6 +1200,7 @@ mod tests {
             &export,
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(markdown.contains("Reviewing pull request agavra/tuicr#125"));
@@ -1064,6 +1225,7 @@ mod tests {
             &export,
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(!markdown.contains("Reviewing pull request"));
@@ -1089,6 +1251,7 @@ mod tests {
             &export,
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(markdown.contains("Code review comments:"));
@@ -1110,6 +1273,7 @@ mod tests {
             &export,
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(!markdown.contains("I reviewed your code"));
@@ -1189,9 +1353,27 @@ mod tests {
             &ExportConfig::default(),
         );
 
-        let message = export_to_file(&session, args.0, args.1, args.2, &[], None, &path).unwrap();
+        let message = export_to_file(
+            &session,
+            args.0,
+            args.1,
+            args.2,
+            &[],
+            None,
+            &path,
+            &ExportDiff::default(),
+        )
+        .unwrap();
 
-        let expected = generate_export_content(&session, args.0, args.1, args.2, &[], None);
+        let expected = generate_export_content(
+            &session,
+            args.0,
+            args.1,
+            args.2,
+            &[],
+            None,
+            &ExportDiff::default(),
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), expected.unwrap());
         assert_eq!(message, format!("Review written to {}", path.display()));
     }
@@ -1208,6 +1390,7 @@ mod tests {
             &[],
             None,
             &path,
+            &ExportDiff::default(),
         );
         assert!(matches!(result, Err(TuicrError::Io(_))));
     }
@@ -1230,6 +1413,7 @@ mod tests {
             &[],
             None,
             &path,
+            &ExportDiff::default(),
         );
         assert!(matches!(result, Err(TuicrError::NoComments)));
         assert!(!path.exists());
@@ -1247,6 +1431,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             Some("agavra/tuicr@main/worktree"),
+            &ExportDiff::default(),
         );
 
         assert!(
@@ -1271,6 +1456,7 @@ mod tests {
             &export,
             &[],
             Some("agavra/tuicr@main/worktree"),
+            &ExportDiff::default(),
         );
 
         assert!(
@@ -1291,6 +1477,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(!markdown.contains("## Session:"));
@@ -1310,6 +1497,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         // then
@@ -1373,6 +1561,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(
@@ -1416,6 +1605,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(markdown.contains("Comment types: QUESTION (ask for clarification)"));
@@ -1436,6 +1626,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         // then
@@ -1468,6 +1659,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         let expected = "\
@@ -1511,6 +1703,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         let expected = "\
@@ -1539,6 +1732,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(markdown
@@ -1561,6 +1755,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(markdown.contains(
@@ -1591,6 +1786,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(
@@ -1610,6 +1806,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         // Existing comments have commit_id = None — no (commit ...) suffix
@@ -1638,6 +1835,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         // then
@@ -1659,6 +1857,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         // then
@@ -1688,6 +1887,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         // then
@@ -1712,6 +1912,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         // then
@@ -1732,6 +1933,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         // then
@@ -1800,6 +2002,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
         let mut buffer: Vec<u8> = Vec::new();
 
@@ -1849,6 +2052,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         // then
@@ -1889,6 +2093,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         // then
@@ -1929,6 +2134,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         // then
@@ -1968,6 +2174,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         // then
@@ -2007,6 +2214,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         // then
@@ -2025,6 +2233,7 @@ mod tests {
             &legend_off(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(!markdown.contains("Comment types:"));
@@ -2056,6 +2265,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(markdown.contains("Comment types: PRAISE (positive feedback)"));
@@ -2099,6 +2309,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         // No `[TYPE]` marker on the comment and no legend line at all.
@@ -2197,6 +2408,7 @@ mod tests {
             &ExportConfig::default(),
             &threads,
             None,
+            &ExportDiff::default(),
         );
 
         // then
@@ -2233,6 +2445,7 @@ mod tests {
             &ExportConfig::default(),
             &[thread],
             None,
+            &ExportDiff::default(),
         );
 
         // then — a reader must not take it for a posted comment
@@ -2279,6 +2492,7 @@ mod tests {
             &ExportConfig::default(),
             &threads,
             None,
+            &ExportDiff::default(),
         );
 
         // then every continuation is indented under its marker; no raw \r
@@ -2331,6 +2545,7 @@ mod tests {
             &ExportConfig::default(),
             &[thread],
             None,
+            &ExportDiff::default(),
         );
 
         // then nothing escapes its list item
@@ -2365,6 +2580,7 @@ mod tests {
             &ExportConfig::default(),
             &threads,
             None,
+            &ExportDiff::default(),
         );
 
         // then — export succeeds even with no local comments
@@ -2403,6 +2619,7 @@ mod tests {
             &ExportConfig::default(),
             &threads,
             None,
+            &ExportDiff::default(),
         );
 
         // then — the section is omitted in non-PR modes
@@ -2448,6 +2665,7 @@ mod tests {
             &ExportConfig::default(),
             &[],
             None,
+            &ExportDiff::default(),
         );
 
         assert!(markdown.contains("Comment types: QUESTION (ask for clarification)"));
@@ -2785,5 +3003,455 @@ mod tests {
             CLIPBOARD_MECHANISMS.len(),
             "every config mechanism must map to a distinct CopyMethod"
         );
+    }
+
+    // code_context
+
+    fn code_context_on() -> ExportConfig {
+        ExportConfig {
+            code_context: Some(true),
+            ..ExportConfig::default()
+        }
+    }
+
+    fn diff_line(origin: LineOrigin, old: Option<u32>, new: Option<u32>, text: &str) -> DiffLine {
+        DiffLine {
+            origin,
+            content: text.to_string(),
+            raw_content: None,
+            old_lineno: old,
+            new_lineno: new,
+            highlighted_spans: None,
+        }
+    }
+
+    /// `src/lib.rs` with one hunk, `@@ -10,6 +10,7 @@`.
+    fn code_context_diff_file() -> DiffFile {
+        use LineOrigin::{Addition, Context, Deletion};
+        let lines = vec![
+            diff_line(Context, Some(10), Some(10), "fn total() -> u32 {"),
+            diff_line(Context, Some(11), Some(11), "    let x = 1;"),
+            diff_line(Deletion, Some(12), None, "    let y = 2;"),
+            diff_line(Addition, None, Some(12), "    let y = 3;"),
+            diff_line(Addition, None, Some(13), "    let z = 4;"),
+            diff_line(Context, Some(13), Some(14), "    x + y + z"),
+            diff_line(Context, Some(14), Some(15), "}"),
+            diff_line(Context, Some(15), Some(16), ""),
+        ];
+        let hunks = vec![DiffHunk {
+            header: "@@ -10,6 +10,7 @@".to_string(),
+            lines,
+            old_start: 10,
+            old_count: 6,
+            new_start: 10,
+            new_count: 7,
+        }];
+        DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            content_hash: DiffFile::compute_content_hash(&hunks),
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+        }
+    }
+
+    /// A session whose `src/lib.rs` holds the given line comments, keyed by
+    /// their range start.
+    fn code_context_session(comments: Vec<Comment>) -> ReviewSession {
+        let mut session = ReviewSession::new(
+            PathBuf::from("/tmp/test-repo"),
+            "abc1234def".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::WorkingTree,
+        );
+        let path = PathBuf::from("src/lib.rs");
+        session.add_file(path.clone(), FileStatus::Modified, 0);
+        let review = session.get_file_mut(&path).unwrap();
+        for comment in comments {
+            let line = comment.line_range.map(|r| r.start).unwrap();
+            review.add_line_comment(line, comment);
+        }
+        session
+    }
+
+    fn line_comment(text: &str, side: LineSide, start: u32, end: u32) -> Comment {
+        Comment::new_with_range(
+            text.to_string(),
+            CommentType::from_id("issue"),
+            Some(side),
+            LineRange::new(start, end),
+        )
+    }
+
+    fn export_with_code(session: &ReviewSession, files: &[DiffFile]) -> String {
+        generate_markdown(
+            session,
+            &DiffSource::WorkingTree,
+            &comment_types(),
+            &code_context_on(),
+            &[],
+            None,
+            &ExportDiff {
+                files,
+                subset_loaded: false,
+                single_commit: None,
+            },
+        )
+    }
+
+    #[test]
+    fn should_add_code_context_under_line_comment() {
+        let session = code_context_session(vec![line_comment("Name this", LineSide::New, 13, 13)]);
+        let md = export_with_code(&session, &[code_context_diff_file()]);
+        assert!(md.contains(
+            "1. **[ISSUE]** `src/lib.rs:13` - Name this\n\
+             \x20  ```diff\n\
+             \x20  @@ -12,3 +12,4 @@\n\
+             \x20  -    let y = 2;\n\
+             \x20  +    let y = 3;\n\
+             \x20  +    let z = 4;\n\
+             \x20       x + y + z\n\
+             \x20   }\n\
+             \x20  ```\n"
+        ));
+    }
+
+    #[test]
+    fn should_add_code_context_under_range_comment_clipped_at_hunk_end() {
+        // Only one line follows the range inside the hunk, so the trailing
+        // context stops there instead of reaching for lines the diff lacks.
+        let session = code_context_session(vec![line_comment("Simplify", LineSide::New, 14, 15)]);
+        let md = export_with_code(&session, &[code_context_diff_file()]);
+        assert!(md.contains(
+            "1. **[ISSUE]** `src/lib.rs:14-15` - Simplify\n\
+             \x20  ```diff\n\
+             \x20  @@ -13,3 +12,5 @@\n\
+             \x20  +    let y = 3;\n\
+             \x20  +    let z = 4;\n\
+             \x20       x + y + z\n\
+             \x20   }\n\
+             \x20   \n\
+             \x20  ```\n"
+        ));
+    }
+
+    #[test]
+    fn should_clip_code_context_at_hunk_start() {
+        let session = code_context_session(vec![line_comment("Rename", LineSide::New, 10, 10)]);
+        let md = export_with_code(&session, &[code_context_diff_file()]);
+        assert!(md.contains(
+            "   ```diff\n\
+             \x20  @@ -10,3 +10,2 @@\n\
+             \x20   fn total() -> u32 {\n\
+             \x20       let x = 1;\n\
+             \x20  -    let y = 2;\n\
+             \x20  ```\n"
+        ));
+    }
+
+    #[test]
+    fn should_read_deleted_line_context_from_old_side() {
+        let session =
+            code_context_session(vec![line_comment("Why drop this?", LineSide::Old, 12, 12)]);
+        let md = export_with_code(&session, &[code_context_diff_file()]);
+        assert!(md.contains(
+            "1. **[ISSUE]** `src/lib.rs:~12` - Why drop this?\n\
+             \x20  ```diff\n\
+             \x20  @@ -10,3 +10,4 @@\n\
+             \x20   fn total() -> u32 {\n\
+             \x20       let x = 1;\n\
+             \x20  -    let y = 2;\n\
+             \x20  +    let y = 3;\n\
+             \x20  +    let z = 4;\n\
+             \x20  ```\n"
+        ));
+    }
+
+    #[test]
+    fn should_not_add_code_context_to_file_or_review_comments() {
+        let mut session = code_context_session(Vec::new());
+        session.review_comments.push(Comment::new(
+            "Overall fine".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
+        session
+            .get_file_mut(&PathBuf::from("src/lib.rs"))
+            .unwrap()
+            .add_file_comment(Comment::new(
+                "Add docs".to_string(),
+                CommentType::from_id("suggestion"),
+                None,
+            ));
+        let md = export_with_code(&session, &[code_context_diff_file()]);
+        assert!(md.contains("Add docs"));
+        assert!(md.contains("Overall fine"));
+        assert!(!md.contains("```"));
+    }
+
+    #[test]
+    fn should_keep_export_byte_identical_when_code_context_is_off() {
+        let session = code_context_session(vec![
+            line_comment("Name this", LineSide::New, 13, 13),
+            line_comment("Why drop this?", LineSide::Old, 12, 12),
+        ]);
+        let files = [code_context_diff_file()];
+        let without_diff = generate_markdown(
+            &session,
+            &DiffSource::WorkingTree,
+            &comment_types(),
+            &ExportConfig::default(),
+            &[],
+            None,
+            &ExportDiff::default(),
+        );
+        let with_diff = generate_markdown(
+            &session,
+            &DiffSource::WorkingTree,
+            &comment_types(),
+            &ExportConfig::default(),
+            &[],
+            None,
+            &ExportDiff {
+                files: &files,
+                subset_loaded: false,
+                single_commit: None,
+            },
+        );
+        assert_eq!(with_diff, without_diff);
+        assert!(!with_diff.contains("```"));
+    }
+
+    fn export_scoped(
+        session: &ReviewSession,
+        subset_loaded: bool,
+        single_commit: Option<&str>,
+    ) -> String {
+        let files = [code_context_diff_file()];
+        generate_markdown(
+            session,
+            &DiffSource::WorkingTree,
+            &comment_types(),
+            &code_context_on(),
+            &[],
+            None,
+            &ExportDiff {
+                files: &files,
+                subset_loaded,
+                single_commit: single_commit.map(str::to_string),
+            },
+        )
+    }
+
+    fn stamped(mut comment: Comment, sha: &str) -> Comment {
+        comment.commit_id = Some(sha.to_string());
+        comment
+    }
+
+    #[test]
+    fn should_skip_code_context_for_comments_scoped_to_unloaded_commit() {
+        let session = code_context_session(vec![
+            stamped(
+                line_comment("Shown commit", LineSide::New, 13, 13),
+                "aaaaaaaaaaaa",
+            ),
+            stamped(
+                line_comment("Other commit", LineSide::New, 10, 10),
+                "bbbbbbbbbbbb",
+            ),
+        ]);
+        let md = export_scoped(&session, true, Some("aaaaaaaaaaaa"));
+        // Both comments still export; only the one whose commit is loaded
+        // carries code.
+        assert!(md.contains("`src/lib.rs:10` (commit bbbbbbb) - Other commit\n2. "));
+        assert!(md.contains("Shown commit\n   ```diff\n   @@ -12,3 +12,4 @@\n"));
+    }
+
+    #[test]
+    fn should_skip_code_context_for_unscoped_comment_over_commit_subset() {
+        // Written against the full diff, so a single commit's lines at the
+        // same number may be different code.
+        let session = code_context_session(vec![line_comment("Full diff", LineSide::New, 13, 13)]);
+        let md = export_scoped(&session, true, Some("aaaaaaaaaaaa"));
+        assert!(md.contains("`src/lib.rs:13` - Full diff\n"));
+        assert!(!md.contains("```"));
+        // The same comment over the full diff does get its code.
+        let md = export_scoped(&session, false, None);
+        assert!(md.contains("Full diff\n   ```diff\n"));
+    }
+
+    #[test]
+    fn should_skip_code_context_for_stamped_comment_inside_wider_subset() {
+        let session = code_context_session(vec![stamped(
+            line_comment("One commit", LineSide::New, 13, 13),
+            "aaaaaaaaaaaa",
+        )]);
+        let md = export_scoped(&session, true, None);
+        assert!(md.contains("(commit aaaaaaa) - One commit\n"));
+        assert!(!md.contains("```"));
+        // Nor over the full multi-commit diff.
+        let md = export_scoped(&session, false, None);
+        assert!(!md.contains("```"));
+    }
+
+    fn lib_file(hunks: Vec<DiffHunk>, status: FileStatus) -> DiffFile {
+        DiffFile {
+            old_path: (status != FileStatus::Added).then(|| PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status,
+            content_hash: DiffFile::compute_content_hash(&hunks),
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+        }
+    }
+
+    fn hunk(old: (u32, u32), new: (u32, u32), lines: Vec<DiffLine>) -> DiffHunk {
+        DiffHunk {
+            header: format!("@@ -{},{} +{},{} @@", old.0, old.1, new.0, new.1),
+            lines,
+            old_start: old.0,
+            old_count: old.1,
+            new_start: new.0,
+            new_count: new.1,
+        }
+    }
+
+    fn context_lines(range: std::ops::RangeInclusive<u32>) -> Vec<DiffLine> {
+        range
+            .map(|n| diff_line(LineOrigin::Context, Some(n), Some(n), &format!("line {n}")))
+            .collect()
+    }
+
+    #[test]
+    fn should_give_each_hunk_its_own_header_when_range_spans_hunks() {
+        let file = lib_file(
+            vec![
+                hunk((1, 3), (1, 3), context_lines(1..=3)),
+                hunk((10, 3), (10, 3), context_lines(10..=12)),
+            ],
+            FileStatus::Modified,
+        );
+        let session = code_context_session(vec![line_comment("Span", LineSide::New, 2, 11)]);
+        let md = export_with_code(&session, &[file]);
+        assert!(md.contains(
+            "1. **[ISSUE]** `src/lib.rs:2-11` - Span\n\
+             \x20  ```diff\n\
+             \x20  @@ -1,3 +1,3 @@\n\
+             \x20   line 1\n\
+             \x20   line 2\n\
+             \x20   line 3\n\
+             \x20  @@ -10,3 +10,3 @@\n\
+             \x20   line 10\n\
+             \x20   line 11\n\
+             \x20   line 12\n\
+             \x20  ```\n"
+        ));
+    }
+
+    #[test]
+    fn should_count_both_sides_of_interleaved_slice() {
+        use LineOrigin::{Addition, Context, Deletion};
+        let file = lib_file(
+            vec![hunk(
+                (1, 7),
+                (1, 8),
+                vec![
+                    diff_line(Context, Some(1), Some(1), "fn total() -> u32 {"),
+                    diff_line(Context, Some(2), Some(2), "    let x = 1;"),
+                    diff_line(Deletion, Some(3), None, "    let y = 2;"),
+                    diff_line(Deletion, Some(4), None, "    x + y"),
+                    diff_line(Addition, None, Some(3), "    let y = 3;"),
+                    diff_line(Addition, None, Some(4), "    let z = 4;"),
+                    diff_line(Addition, None, Some(5), "    x + y + z"),
+                    diff_line(Context, Some(5), Some(6), "}"),
+                    diff_line(Context, Some(6), Some(7), ""),
+                    diff_line(Context, Some(7), Some(8), "fn other() {}"),
+                ],
+            )],
+            FileStatus::Modified,
+        );
+        let session = code_context_session(vec![line_comment("Name this", LineSide::New, 4, 4)]);
+        let md = export_with_code(&session, &[file]);
+        assert!(md.contains(
+            "   ```diff\n\
+             \x20  @@ -4,2 +3,4 @@\n\
+             \x20  -    x + y\n\
+             \x20  +    let y = 3;\n\
+             \x20  +    let z = 4;\n\
+             \x20  +    x + y + z\n\
+             \x20   }\n\
+             \x20  ```\n"
+        ));
+    }
+
+    #[test]
+    fn should_name_line_zero_for_old_side_of_new_file() {
+        let lines = (1..=3)
+            .map(|n| diff_line(LineOrigin::Addition, None, Some(n), &format!("line {n}")))
+            .collect();
+        let file = lib_file(vec![hunk((0, 0), (1, 3), lines)], FileStatus::Added);
+        let session = code_context_session(vec![line_comment("New", LineSide::New, 2, 2)]);
+        let md = export_with_code(&session, &[file]);
+        assert!(md.contains("   @@ -0,0 +1,3 @@\n   +line 1\n   +line 2\n   +line 3\n   ```\n"));
+    }
+
+    #[test]
+    fn should_name_line_before_for_side_with_no_lines_in_slice() {
+        // Six additions between old lines 5 and 6. A slice that holds only
+        // additions names old line 5, the one before it, with a zero count.
+        let mut lines = vec![diff_line(LineOrigin::Context, Some(5), Some(5), "line 5")];
+        lines.extend(
+            (6..=11).map(|n| diff_line(LineOrigin::Addition, None, Some(n), &format!("add {n}"))),
+        );
+        lines.push(diff_line(LineOrigin::Context, Some(6), Some(12), "line 6"));
+        let file = lib_file(vec![hunk((5, 2), (5, 8), lines)], FileStatus::Modified);
+        let session = code_context_session(vec![line_comment("Mid", LineSide::New, 8, 8)]);
+        let md = export_with_code(&session, &[file]);
+        assert!(md.contains(
+            "   @@ -5,0 +6,5 @@\n   +add 6\n   +add 7\n   +add 8\n   +add 9\n   +add 10\n   ```\n"
+        ));
+    }
+
+    #[test]
+    fn should_indent_code_context_under_double_digit_list_marker() {
+        let mut session =
+            code_context_session(vec![line_comment("Name this", LineSide::New, 13, 13)]);
+        let review = session.get_file_mut(&PathBuf::from("src/lib.rs")).unwrap();
+        for n in 1..=9 {
+            review.add_file_comment(Comment::new(
+                format!("File note {n}"),
+                CommentType::from_id("note"),
+                None,
+            ));
+        }
+        let md = export_with_code(&session, &[code_context_diff_file()]);
+        assert!(md.contains(
+            "10. **[ISSUE]** `src/lib.rs:13` - Name this\n    ```diff\n    @@ -12,3 +12,4 @@\n"
+        ));
+        assert!(md.contains("\n         x + y + z\n     }\n    ```\n"));
+    }
+
+    #[test]
+    fn should_skip_code_context_when_line_is_not_in_loaded_diff() {
+        let session = code_context_session(vec![line_comment("Stale", LineSide::New, 99, 99)]);
+        let md = export_with_code(&session, &[code_context_diff_file()]);
+        assert!(md.contains("`src/lib.rs:99` - Stale\n"));
+        assert!(!md.contains("```"));
+    }
+
+    #[test]
+    fn should_lengthen_fence_past_backticks_in_code() {
+        let mut file = code_context_diff_file();
+        file.hunks[0].lines[4].content = "    let z = \"```\";".to_string();
+        let session = code_context_session(vec![line_comment("Odd", LineSide::New, 13, 13)]);
+        let md = export_with_code(&session, &[file]);
+        assert!(md.contains("   ````diff\n"));
+        assert!(md.contains("+    let z = \"```\";\n"));
+        assert!(md.contains("\n   ````\n"));
     }
 }

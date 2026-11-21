@@ -141,6 +141,9 @@ pub struct ExportConfig {
     pub legend: Option<bool>,
     /// Whether to emit the `## Session: <slug>` header.
     pub session_header: Option<bool>,
+    /// Whether to put the commented lines, plus a little surrounding diff,
+    /// in a fenced block under each line and range comment.
+    pub code_context: Option<bool>,
 }
 
 impl ExportConfig {
@@ -174,6 +177,10 @@ impl ExportConfig {
 
     pub fn session_header(&self) -> bool {
         self.session_header.unwrap_or(true)
+    }
+
+    pub fn code_context(&self) -> bool {
+        self.code_context.unwrap_or(false)
     }
 }
 
@@ -362,6 +369,7 @@ const EXPORT_KNOWN_KEYS: &[&str] = &[
     "remote_comments_header",
     "legend",
     "session_header",
+    "code_context",
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -879,6 +887,7 @@ fn parse_export(value: &Value, warnings: &mut Vec<String>) -> Option<ExportConfi
         ),
         legend: read_section_bool(table, "export", "legend", warnings),
         session_header: read_section_bool(table, "export", "session_header", warnings),
+        code_context: read_section_bool(table, "export", "code_context", warnings),
     };
 
     if cfg == ExportConfig::default() {
@@ -2714,6 +2723,7 @@ pr_search = 1
         assert_eq!(cfg.comments_header(), "## Local tuicr Comments");
         assert_eq!(cfg.remote_comments_header(), "## Existing GitHub Comments");
         assert!(cfg.legend());
+        assert!(!cfg.code_context());
     }
 
     #[test]
@@ -2748,6 +2758,7 @@ comments_header = "## Comments"
 remote_comments_header = "## Upstream"
 legend = false
 session_header = false
+code_context = true
 "###,
         );
         let export = outcome
@@ -2762,6 +2773,7 @@ session_header = false
         assert_eq!(export.remote_comments_header(), "## Upstream");
         assert!(!export.legend());
         assert!(!export.session_header());
+        assert!(export.code_context());
         assert!(outcome.warnings.is_empty());
     }
 
