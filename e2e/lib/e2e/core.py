@@ -362,6 +362,11 @@ class Scenario:
 
         return forge.gerrit_open(self, kind, **kw)
 
+    def gerrit_serve(self, kind: str, **kw: Any) -> tuple[Path, str]:
+        from . import forge
+
+        return forge.gerrit_serve(self, kind, **kw)
+
     def gerrit_stop(self) -> None:
         from . import forge
 

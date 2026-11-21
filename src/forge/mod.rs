@@ -145,6 +145,17 @@ pub(crate) fn local_range_diff(
     crate::vcs::git::raw::run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
+/// TLS settings for agents that talk to forge hosts directly over HTTPS.
+///
+/// Self-hosted Gerrit and Azure DevOps Server instances are often signed by a
+/// corporate CA installed in the OS trust store but absent from the bundled
+/// Mozilla roots, so verify against the platform's trust store instead.
+pub(crate) fn platform_tls_config() -> ureq::tls::TlsConfig {
+    ureq::tls::TlsConfig::builder()
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build()
+}
+
 /// Try to detect a GitHub forge repository for the local checkout at `repo_root`.
 ///
 /// Looks at the `origin` remote first, then falls back to any remote whose URL
