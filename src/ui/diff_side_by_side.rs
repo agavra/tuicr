@@ -15,8 +15,8 @@ use crate::ui::comment_panel;
 use crate::ui::diff_view::{
     FileBody, append_eof_gap, append_file_preamble, append_gap_and_hunk_header,
     apply_horizontal_scroll, comment_box_row, comment_type_presentation, cursor_indicator,
-    diff_stat_title, paint_cursor_line_highlight, paint_visual_selection_overlay,
-    populate_row_to_annotation, scroll_comment_input_into_view, skip_comment_box,
+    diff_stat_title, line_number_cell, paint_cursor_line_highlight, paint_visual_selection_overlay,
+    populate_row_to_annotation, scroll_comment_input_into_view, skip_comment_box, stage_cell,
 };
 use crate::ui::styles;
 use crate::ui::text_utils::{
@@ -214,6 +214,7 @@ struct SideSpec {
     lineno: Option<u32>,
     marker: &'static str,
     marker_style: Style,
+    stage: char,
 }
 
 fn sbs_row_prefixes(
@@ -224,23 +225,14 @@ fn sbs_row_prefixes(
     lw: usize,
 ) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
     let dim = styles::dim_style(theme);
-    let old_num = left
-        .lineno
-        .map(|n| format!("{n:>lw$}"))
-        .unwrap_or_else(|| " ".repeat(lw));
-    let new_num = right
-        .lineno
-        .map(|n| format!("{n:>lw$}"))
-        .unwrap_or_else(|| " ".repeat(lw));
-
     let left_prefix = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
-        Span::styled(format!("{old_num} "), dim),
+        Span::styled(line_number_cell(left.lineno, lw, left.stage), dim),
         Span::styled(left.marker.to_string(), left.marker_style),
     ];
     let right_prefix = vec![
         Span::styled(" │ ", dim),
-        Span::styled(format!("{new_num} "), dim),
+        Span::styled(line_number_cell(right.lineno, lw, right.stage), dim),
         Span::styled(right.marker.to_string(), right.marker_style),
     ];
     (left_prefix, right_prefix)
@@ -1013,11 +1005,13 @@ fn render_context_line_side_by_side(
                 lineno: ctx.display_lineno(diff_line.old_lineno, line_idx),
                 marker: " ",
                 marker_style: ctx_style,
+                stage: ' ',
             },
             SideSpec {
                 lineno: ctx.display_lineno(diff_line.new_lineno, line_idx),
                 marker: " ",
                 marker_style: ctx_style,
+                stage: ' ',
             },
             w,
         );
@@ -1188,11 +1182,13 @@ fn render_deletion_addition_pair_side_by_side(
                     lineno: left_lineno,
                     marker: left_marker,
                     marker_style: left_marker_style,
+                    stage: del_opt.map_or(' ', stage_cell),
                 },
                 SideSpec {
                     lineno: right_lineno,
                     marker: right_marker,
                     marker_style: right_marker_style,
+                    stage: add_opt.map_or(' ', stage_cell),
                 },
                 w,
             );
@@ -1320,6 +1316,7 @@ fn render_standalone_addition_side_by_side(
                 lineno: None,
                 marker: " ",
                 marker_style: Style::default(),
+                stage: ' ',
             },
             SideSpec {
                 lineno: ctx.display_lineno(diff_line.new_lineno, line_idx),
@@ -1329,6 +1326,7 @@ fn render_standalone_addition_side_by_side(
                     LineOrigin::Addition,
                     diff_line.highlighted_spans.is_some(),
                 ),
+                stage: stage_cell(diff_line),
             },
             w,
         );
@@ -1447,12 +1445,8 @@ fn add_deletion_spans(
     display_lineno: Option<u32>,
     search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) {
-    let line_num = display_lineno
-        .map(|n| format!("{n:>lw$}"))
-        .unwrap_or_else(|| " ".repeat(lw));
-
     spans.push(Span::styled(
-        format!("{line_num} "),
+        line_number_cell(display_lineno, lw, stage_cell(diff_line)),
         styles::dim_style(theme),
     ));
     spans.push(Span::styled(
@@ -1498,12 +1492,8 @@ fn add_addition_spans(
     display_lineno: Option<u32>,
     search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) {
-    let line_num = display_lineno
-        .map(|n| format!("{n:>lw$}"))
-        .unwrap_or_else(|| " ".repeat(lw));
-
     spans.push(Span::styled(
-        format!("{line_num} "),
+        line_number_cell(display_lineno, lw, stage_cell(diff_line)),
         styles::dim_style(theme),
     ));
     spans.push(Span::styled(
@@ -1789,7 +1779,7 @@ mod remote_comments_side_by_side_snapshot_tests {
     use crate::forge::traits::{ForgeRepository, PrSessionKey};
     use crate::model::{
         DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide, ReviewSession,
-        SessionDiffSource,
+        SessionDiffSource, StageState,
     };
     use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
@@ -1855,6 +1845,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 new_lineno: Some(1),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             },
             DiffLine {
                 origin: LineOrigin::Addition,
@@ -1863,6 +1854,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 new_lineno: Some(2),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             },
         ];
         let hunk = DiffHunk {
@@ -1993,6 +1985,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 new_lineno: Some(n),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             })
             .collect();
         let hunks = vec![DiffHunk {
@@ -2058,6 +2051,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 new_lineno: Some(4),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             }],
             old_start: 3,
             old_count: 1,
@@ -2200,6 +2194,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 new_lineno: None,
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             },
             DiffLine {
                 origin: LineOrigin::Addition,
@@ -2208,6 +2203,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 new_lineno: Some(1),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             },
         ];
         let hunks = vec![DiffHunk {
@@ -2239,6 +2235,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             new_lineno: None,
             raw_content: None,
             highlighted_spans: None,
+            stage: None,
         }];
         let hunks = vec![DiffHunk {
             header: "@@ -1,1 +0,0 @@".to_string(),
@@ -2272,6 +2269,71 @@ mod remote_comments_side_by_side_snapshot_tests {
 
     fn char_at(buf: &Buffer, x: u16, y: u16) -> String {
         buf[(x, y)].symbol().to_string()
+    }
+
+    fn with_stages(mut file: DiffFile, del: StageState, add: StageState) -> DiffFile {
+        for line in &mut file.hunks[0].lines {
+            line.stage = match line.origin {
+                LineOrigin::Deletion => Some(del),
+                LineOrigin::Addition => Some(add),
+                LineOrigin::Context => None,
+            };
+        }
+        file
+    }
+
+    fn rows(buf: &Buffer) -> Vec<String> {
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| char_at(buf, x, y)).collect())
+            .collect()
+    }
+
+    #[test]
+    fn should_draw_stage_markers_in_both_gutters_wrapped_or_not() {
+        for wrap in [false, true] {
+            let mut app = make_pr_app();
+            app.diff_files = vec![with_stages(
+                diff_file_with_pair("gone", "fresh"),
+                StageState::Staged,
+                StageState::Unstaged,
+            )];
+            app.set_diff_wrap(wrap);
+            app.rebuild_annotations();
+
+            let rows = rows(&draw_sbs(&mut app, 120, 20));
+            let row = rows
+                .iter()
+                .find(|row| row.contains("gone"))
+                .expect("pair row");
+            assert!(row.contains("1●▌gone"), "wrap={wrap}: {row:?}");
+            assert!(row.contains("1○▌fresh"), "wrap={wrap}: {row:?}");
+        }
+    }
+
+    #[test]
+    fn should_draw_stage_markers_on_unpaired_lines() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![with_stages(
+            diff_file_with_standalone_deletion("gone"),
+            StageState::Unstaged,
+            StageState::Staged,
+        )];
+        app.rebuild_annotations();
+        let rows = rows(&draw_sbs(&mut app, 120, 20));
+        assert!(rows.iter().any(|row| row.contains("1○▌gone")), "{rows:#?}");
+    }
+
+    #[test]
+    fn should_leave_the_stage_cell_blank_without_marks() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair("gone", "fresh")];
+        app.rebuild_annotations();
+        let rows = rows(&draw_sbs(&mut app, 120, 20));
+        let row = rows.iter().find(|row| row.contains("gone")).unwrap();
+        assert!(
+            row.contains("1 ▌gone") && row.contains("1 ▌fresh"),
+            "{row:?}"
+        );
     }
 
     #[test]
@@ -2529,6 +2591,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 new_lineno: Some(i as u32 + 1),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             })
             .collect();
         let new_count = lines.len() as u32;
@@ -2594,6 +2657,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 new_lineno: Some(i),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             })
             .collect();
         let hunks = vec![DiffHunk {
@@ -2699,6 +2763,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             new_lineno,
             raw_content: None,
             highlighted_spans: None,
+            stage: None,
         };
         let lines = vec![
             line(LineOrigin::Context, "alpha", Some(40), Some(50)),

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # with wrap on, a wrapped line cut off by the viewport bottom is still drawn, so its rows must be clickable.
 # Baseline's row->line map stopped before the partly visible line: clicking its visible rows did nothing.
+# Covers #883: the staged line has a marker in the existing gutter cell.
 from e2e import Scenario, because, grep, repos, scenario
 
 
@@ -23,5 +24,5 @@ def main(s: Scenario) -> None:
     # click the last visible diff row (bottom of the cut-off wrapped line 37)
     tui.click(60, 43).settle()
     with because("click on the partly visible wrapped line did not select it"):
-        tui.expect(r"▶ +37 +▌ word000")
+        tui.expect(r"▶ +37●▌ word000")
     tui.quit()

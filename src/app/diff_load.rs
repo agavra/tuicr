@@ -68,6 +68,7 @@ impl App {
                 new_lineno: Some(i as u32 + 1),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             })
             .collect();
         let line_count = diff_lines.len() as u32;
@@ -161,7 +162,45 @@ impl App {
         } else {
             diff_files
         };
-        Self::require_non_empty_diff_files(diff_files)
+        let mut diff_files = Self::require_non_empty_diff_files(diff_files)?;
+        if let Some((staged, unstaged)) = Self::stage_mark_side_diffs(vcs, repo_root, path_filter) {
+            crate::vcs::stage_marks::apply_stage_marks(&mut diff_files, &staged, &unstaged);
+        }
+        Ok(diff_files)
+    }
+
+    /// The staged and unstaged diffs that decide the stage marks
+    /// (`crate::vcs::stage_marks`), filtered by `.tuicrignore` and the path
+    /// filter exactly like the reviewed diff, so excluded files never reach the
+    /// marker pass. Every caller of `get_working_tree_diff_with_ignore` loads a
+    /// staged-plus-unstaged review. Backends without an index (jj, Mercurial),
+    /// or a failed fetch, return `None` and leave lines unmarked.
+    pub(in crate::app) fn stage_mark_side_diffs(
+        vcs: &dyn VcsBackend,
+        repo_root: &Path,
+        path_filter: Option<&str>,
+    ) -> Option<(Vec<DiffFile>, Vec<DiffFile>)> {
+        let side = |result: Result<Vec<DiffFile>>| match result {
+            Ok(files) => Some(files),
+            Err(TuicrError::NoChanges) => Some(Vec::new()),
+            Err(_) => None,
+        };
+        // Staged first: a backend without an index fails here, before
+        // `get_unstaged_diff_with_ignore` could fall back to the whole working
+        // tree and mark every line unstaged.
+        let staged = side(Self::get_staged_diff_with_ignore(
+            vcs,
+            repo_root,
+            probe_highlighter(),
+            path_filter,
+        ))?;
+        let unstaged = side(Self::get_unstaged_diff_with_ignore(
+            vcs,
+            repo_root,
+            probe_highlighter(),
+            path_filter,
+        ))?;
+        Some((staged, unstaged))
     }
 
     pub(in crate::app) fn get_staged_diff_with_ignore(
@@ -1652,6 +1691,8 @@ fn file_fingerprint(file: &DiffFile) -> u64 {
         file.is_too_large as u8,
     ]);
     hasher.write(&file.content_hash.to_le_bytes());
+    // Staging changes the marks but not the content.
+    hasher.write(&crate::vcs::stage_marks::stage_marks_hash(file).to_le_bytes());
     hasher.finish()
 }
 
@@ -1731,6 +1772,34 @@ mod tests {
         assert_ne!(
             diff_files_fingerprint(&before),
             diff_files_fingerprint(&after)
+        );
+    }
+
+    /// Staging changes only the marks, and the watcher must still see it.
+    #[test]
+    fn should_differ_when_only_the_stage_marks_change() {
+        let mut unstaged = file("a.rs");
+        unstaged.hunks = vec![crate::model::DiffHunk {
+            header: String::new(),
+            lines: vec![DiffLine {
+                origin: crate::model::LineOrigin::Addition,
+                content: "x".to_string(),
+                raw_content: None,
+                old_lineno: None,
+                new_lineno: Some(1),
+                highlighted_spans: None,
+                stage: Some(crate::model::StageState::Unstaged),
+            }],
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: 1,
+        }];
+        let mut staged = unstaged.clone();
+        staged.hunks[0].lines[0].stage = Some(crate::model::StageState::Staged);
+        assert_ne!(
+            diff_files_fingerprint(&[unstaged]),
+            diff_files_fingerprint(&[staged])
         );
     }
 

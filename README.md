@@ -17,6 +17,7 @@ post it to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps or Gerrit.
 ## Why tuicr
 
 - **One continuous diff.** Every changed file scrolls past in one stream, as on a GitHub PR page.
+- **Staged and unstaged markers.** In a combined Git review, the gutter marks changed lines as staged (`●`) or unstaged (`○`).
 - **PR-style comments.** Comment on a line, a range, a file or the whole review, and suggest code changes.
 - **Review tracking.** Mark files or hunks reviewed. The marks persist across sessions.
 - **git, jj and Mercurial.** uncommitted changes, commit ranges, or a forge PR/MR.

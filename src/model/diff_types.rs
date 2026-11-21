@@ -70,6 +70,13 @@ pub enum LineOrigin {
     Deletion,
 }
 
+/// Whether a changed line is in the Git index. See `crate::vcs::stage_marks`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageState {
+    Staged,
+    Unstaged,
+}
+
 #[derive(Debug, Clone)]
 pub struct DiffLine {
     pub origin: LineOrigin,
@@ -81,6 +88,8 @@ pub struct DiffLine {
     /// Optional syntax-highlighted spans for this line
     /// If None, use the default diff coloring
     pub highlighted_spans: Option<Vec<(Style, String)>>,
+    /// Set on changed lines of a Git staged-plus-unstaged review, else `None`.
+    pub stage: Option<StageState>,
 }
 
 #[derive(Debug, Clone)]
