@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Covers #431/#695: disabling untracked files removes phantom selector rows and preserves staged files on unborn HEAD.
+# Covers #431/#695: disabling untracked files keeps the selector rows empty and preserves staged files on unborn HEAD.
 from e2e import Scenario, repos, scenario
 
 
@@ -16,7 +16,7 @@ def main(s: Scenario) -> None:
         repos.git(repo, "commit", "-qam", "second")
         repos.write(repo / "untracked.txt", "excluded\n")
         tui = s.start(cwd=repo, name=name, keep=True)
-        tui.wait_for("second").reject("Unstaged changes|Staged changes")
+        tui.wait_for("second").expect(r"Unstaged changes.*\(no changes\)").expect(r"Staged changes.*\(no changes\)")
         tui.keys("Enter").expect("second commit").reject(r"untracked\.txt").quit()
         repo = repos.empty_repo(s.dir / f"unborn_{backend}")
         repos.write(repo / "new.txt", "untracked content\n")
@@ -25,5 +25,6 @@ def main(s: Scenario) -> None:
             assert result.rc == 1 and "No changes to review" in result.out, result.out
         repos.git(repo, "add", "new.txt")
         tui = s.start(cwd=repo, name=name, keep=True)
-        tui.wait_for("Staged changes").reject("Unstaged changes").keys("Enter")
+        tui.wait_for("Staged changes").expect(r"Unstaged changes.*\(no changes\)")
+        tui.reject(r"Staged changes.*\(no changes\)").keys("Enter")
         tui.expect(r"▢ A new\.txt").expect("untracked content").quit()
