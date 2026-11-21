@@ -87,6 +87,13 @@ impl App {
         if self.file_line_count_cache.is_empty() {
             self.populate_file_line_count_cache();
         }
+        // Which files are code-generated has to be known before the walk
+        // below decides whose body to emit. Detection is hooked here rather
+        // than at each of the fifteen `self.diff_files = ...` assignments
+        // because every one of them rebuilds annotations afterwards, and a
+        // missed call site would desynchronize the annotations from the
+        // render. Repeat calls over an unchanged file set do no work.
+        self.detect_generated_files();
 
         self.line_annotations.clear();
         self.colored_hunks.clear();
@@ -190,10 +197,12 @@ impl App {
                     .push(AnnotatedLine::FileHeader { file_idx });
             }
 
-            // Reviewed files normally collapse to their header in continuous
-            // view. A summary jump can reveal its target file without clearing
-            // the persisted marker. Single-file view also shows reviewed file
-            // bodies, under a banner that needs a matching annotation row.
+            // Reviewed and generated files normally collapse to their header in
+            // continuous view, and `Space` can collapse or expand any file. A
+            // summary jump, `--line`, or a new comment reveals its target file
+            // without clearing the persisted marker. Single-file view also
+            // shows reviewed file bodies, under a banner that needs a matching
+            // annotation row.
             if self.should_collapse_file(file_idx) {
                 continue;
             }
