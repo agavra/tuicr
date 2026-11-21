@@ -469,3 +469,19 @@ join more directories. Opening or closing a joined row affects the whole chain;
 expand-all, collapse-all, and full-path search continue to work. Long labels use
 the existing horizontal scrolling. The default is `false`; there is no runtime
 toggle.
+
+## Home Manager
+
+With Home Manager, enable tuicr with `programs.tuicr.enable = true;` and put the
+same settings in `programs.tuicr.settings`:
+
+```nix
+programs.tuicr = {
+  enable = true;
+  settings = {
+    theme = "catppuccin-mocha";
+    diff_view = "side-by-side";
+    mouse = true;
+  };
+};
+```

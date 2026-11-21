@@ -92,7 +92,8 @@ configuration options in `docs/CONFIG.md` only.
 
 | Document               | Update when adding/changing...                                                                                           |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `README.md`            | Keybindings, commands (`:*`), CLI flags, features list, installation methods, agent integration setup, forge limitations |
+| `README.md`            | Features list, installation methods, essential keys, agent integration setup, the forge table, critical config, docs index |
+| `docs/GITHUB.md`       | GitHub PR behaviour: setup, targets, submit events, limitations                                                          |
 | `src/ui/help_popup.rs` | Keybindings or commands (update the `help_text` vector)                                                                  |
 | `src/ui/status_bar.rs` | Keybindings worth advertising in the per-pane hint line                                                                  |
 | `docs/CLI.md`          | Any clap flag, subcommand, env var, stderr marker, or exit code: add a row to the matching table                          |
@@ -101,6 +102,7 @@ configuration options in `docs/CONFIG.md` only.
 | `docs/FORGES.md`       | Forge backend contracts, detection, session/submit rules, F*/G* gotchas (new forge-specific gotchas go here)             |
 | `e2e/COVERAGE.md`      | Adding an e2e scenario area, or closing a listed gap (authoring rules stay in `e2e/README.md`)                           |
 | `docs/CONFIG.md`       | Any `config.toml` key: add a row to the Options table and a line to the Full example block                               |
+| `docs/LIBRARY.md`      | Public library API (`ReviewStore`, `AddCommentRequest`); its Rust blocks compile as doctests via `src/lib.rs`            |
 
 ---
 
