@@ -22,5 +22,5 @@ def main(s: Scenario) -> None:
     tui.keys("d", "d").wait_for(r"Delete this saved review\?")
     tui.keys("y")
     tui.wait_gone("1 comments")
-    assert not s.session_has("delete me"), "dd left the session file"
+    assert not s.session_has("delete me", allow_missing=True), "dd left the session file"
     tui.quit()
