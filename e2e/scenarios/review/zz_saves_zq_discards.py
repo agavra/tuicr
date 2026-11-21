@@ -13,14 +13,14 @@ def main(s: Scenario) -> None:
         tui = s.start("-r", "HEAD~2..HEAD", cwd=repo, name=name)
         tui.wait_for("Files · 0/8").keys("Escape")
         tui.cursor_on("4 ▌ second line")
-        tui.keys("c").wait_for("COMMENT")
-        tui.keys(f"note for {k}").keys("Enter").wait_for(f"note for {k}")
+        tui.comment(f"note for {k}")
         tui.keys("r").wait_for("Files · 1/8")  # the comment autosaved; the mark is the unsaved part
         tui.keys(k)
         tui.wait_exit()
         if k == "ZZ":
-            assert s.session_has('"reviewed": true', name), "ZZ did not save the reviewed mark"
+            assert s.session_reviewed("README.md", name), "ZZ did not save the reviewed mark"
             assert "note for ZZ" in clip.text(), "ZZ did not copy the review"
         else:
-            assert not s.session_has('"reviewed": true', name), "ZQ saved the reviewed mark"
+            assert not s.session_reviewed("README.md", name), "ZQ saved the reviewed mark"
+            assert s.session_comments(name) == ["note for ZQ"], "ZQ lost the autosaved comment"
             assert not (d / "clipboard.txt").exists(), "ZQ copied the review"

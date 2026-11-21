@@ -22,7 +22,8 @@ def main(s: Scenario) -> None:
     tui.cursor_on("three").keys("{").settle()
     tui.keys("r").wait_for("Files · 1/2")
     tui.keys(")").wait_for(r"Commit Message \(").settle()
-    tui.expect("Files · 1/")  # reviewed mark lost after narrowing to one commit otherwise
+    # c2 alone: its commit message, a.txt and b.txt; the mark is lost after narrowing otherwise
+    tui.expect("Files · 1/3").expect(r"▣ M a\.txt")
     tui.keys(")").wait_gone(r"Commit Message \(").settle()
     tui.expect("Files · 1/2")  # reviewed mark lost after widening back otherwise
     tui.quit()

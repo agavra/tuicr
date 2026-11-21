@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# `ZZ` reports a failed save and stays open, like `:wq`, instead of quitting and losing the unsaved mark. Header:
-# panel G6-2.
+# `ZZ` reports a failed save and stays open, like `:wq`, instead of quitting and losing the unsaved mark: the mark is
+# still shown and a later `:w` saves it. Header: panel G6-2.
 import os
 from pathlib import Path
 
@@ -25,4 +25,10 @@ def main(s: Scenario) -> None:
     s.on_exit(chmod_tree, d, 0o200, 0)
     tui.keys("ZZ")
     tui.wait_for("Save failed")
-    tui.keys("Escape", ":q!", "Enter").wait_exit()
+    assert tui.alive(), "ZZ quit after the failed save"
+    tui.expect("Files · 1/8")  # the unsaved mark is still there
+    # once the store is writable again, the kept mark is what gets saved
+    chmod_tree(d, 0o200, 0)
+    tui.save()
+    assert s.session_reviewed("README.md"), "the reviewed mark kept after the failed ZZ was not saved"
+    tui.quit()
