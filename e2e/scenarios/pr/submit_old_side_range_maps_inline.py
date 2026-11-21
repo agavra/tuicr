@@ -9,13 +9,14 @@ from e2e import Scenario, scenario
 def main(s: Scenario) -> None:
     tui = s.pr_open()
     tui.keys("}").cursor_on("old line")
-    tui.keys("v").keys("k").settle().keys("c").wait_for("COMMENT", 3)
-    tui.keys("range-old").keys("Enter").wait_for("L1-L2")
+    tui.keys("v").keys("k").settle().comment("range-old")
+    tui.wait_for("L1-L2")
     tui.cmd("submit comment").wait_for("Submit review to GitHub|cannot be posted inline")
     tui.reject("cannot be posted inline")  # else: old-side range over context+deletion went to the resolver
     tui.wait_for("Submit review to GitHub").keys("y")
     tui.wait_for("Submitted GitHub review", 15)
-    c = tui.posts()[0]["payload"]["comments"]
-    print(c)
+    posts = tui.posts()
+    assert len(posts) == 1, f"expected exactly one review POST: {posts}"
+    c = posts[0]["payload"]["comments"]
     assert len(c) == 1 and c[0]["side"] == "LEFT" and c[0]["start_line"] == 1 and c[0]["line"] == 2, c
     tui.quit()
