@@ -43,6 +43,8 @@ Subsystem invariants, loaded on demand from `AGENTS.md`. Cross-cutting rules and
 
 ## Persistence (`src/persistence/`, `src/review_store.rs`)
 
+Local and PR session slug identity (`resolve_owner_repo`): `docs/FORGES.md` F12.
+
 - Sessions live in the platform data dir's `reviews/` (`ProjectDirs`; `~/.local/share/tuicr/reviews/` on Linux); `active_sessions.json` beside `index.json` records open TUIs (pid, slug, path, last-seen); the registry replaces only the current pid's entry. PR session files and manifest buckets: FORGES.md G13.
 - `ReviewStore` is the library facade; `add_comment_to_session()` is shared with `App::save_comment()` (which builds an `AddCommentRequest`).
 - `update_session_in_dir` (`tuicr review add|delete|clear`) writes a local session back to the exact file it loaded (never a re-derived slug path) and indexes it by path only when it lives under `reviews/`.
@@ -58,7 +60,7 @@ Subsystem invariants, loaded on demand from `AGENTS.md`. Cross-cutting rules and
 
 ## Clipboard and export (`src/output/markdown.rs`)
 
-- `copy_method_order`: config `clipboard = [...]` replaces the per-environment order, with OSC 52 appended when omitted. Per-environment defaults: CLI.md "Environment variables"; SSH (`SSH_TTY` or `SSH_CONNECTION`) and Rex use only OSC 52, since local tools would copy on the remote host.
+- `copy_method_order`: config `clipboard = [...]` replaces the per-environment order, with OSC 52 appended when omitted. Per-environment defaults: CLI.md "Environment variables"; on non-macOS, SSH (`SSH_TTY` or `SSH_CONNECTION`) and Rex use only OSC 52 (macOS keeps `pbcopy` first), since local tools would copy on the remote host.
 - `clipboard_command` runs through `sh -c` (`cmd /C` on Windows) before all of them, in its own process group, with a fixed 5 s `CLIPBOARD_COMMAND_TIMEOUT` (the stdin write runs on a thread so a non-reading command cannot outlast it); success needs the whole text written and exit 0. On timeout the group is killed and the child reaped.
 - Any failure falls back to that order and `ClipboardCopy::fallback_warning` names the failure and the method used; callers show it through `App::set_copy_status`, except the `:wq` copy offer, which quits at once and prints it to stderr after teardown (`App::pending_exit_warning`).
 - `:clip`/`:export` → `export_to_clipboard()` (stdout with `--stdout`). `[export] code_context` blocks come from the loaded hunks (`App::export_diff()`), never fetched.

@@ -5,7 +5,7 @@ Two purposes: orient coding agents in the tuicr codebase, and explain how to rea
 tuicr is a Rust TUI and library for code review; `src/lib.rs` is the public crate surface. Notes below are only what the code does not say. Read the matching doc before you touch:
 
 - `src/forge/`, PR mode, PR sessions or submit, or code assigning `diff_files` in PR mode: **`docs/FORGES.md`** (contracts, async/session/submit rules, gotchas F*, G*).
-- File tree filters, input modes and pickers, startup/themes/syntaxes/`tuicr update`, rendering and coloring, diff watch/reloads, session persistence, clipboard/export: **`docs/INTERNALS.md`**.
+- File tree filters, input modes and pickers, startup/themes/syntaxes/`tuicr update`, rendering and coloring, diff watch/reloads, session persistence, clipboard/export, TestBackend modal sizing in UI tests, release build linking: **`docs/INTERNALS.md`**.
 - e2e scenarios: **`e2e/README.md`** (API, reliability rules, fakes, debugging); areas in `e2e/COVERAGE.md`.
 
 `skills/tuicr/` is the repository-managed agent skill (launches tuicr in a cmux, Rex, tmux, Zellij, or Herdr split pane).
@@ -14,7 +14,7 @@ tuicr is a Rust TUI and library for code review; `src/lib.rs` is the public crat
 
 - Every user-visible bug fix or behaviour change adds or updates an e2e scenario `e2e/scenarios/<area>/<behaviour>.py`, named after the behaviour, with the PR/issue in its header comment. Unit tests are still required.
 - **Red first.** Write the scenario before touching the code, run it on the unchanged parent and watch it go red, failing on the assertion that names the behaviour (not a typo, a missing fixture or a timeout in setup). Only then make the change and watch it go green. A scenario you never saw red proves nothing: it may be passing for the wrong reason. Put both results (the red failure line, then the green PASS) in the PR's test plan. For a new feature the red run is the scenario failing because the feature is absent.
-- Run: `cargo build --release && TUICR_BIN=target/release/tuicr uv run --python 3.12 e2e/run.py [<area>/<behaviour>…]`. A new `e2e/scenarios/<area>/` needs a row in `e2e/COVERAGE.md`.
+- Run: `cargo build --release && TUICR_BIN=target/release/tuicr uv run --python 3.12 e2e/run.py [<area>/<behaviour>…]`. Scenarios are `.py` on `e2e/lib/e2e/` only. A new `e2e/scenarios/<area>/` needs a row in `e2e/COVERAGE.md` (which lists areas, not scenarios; `run.py` refuses to run without the row).
 - Forges are always faked (`e2e/fakeforge/`); a scenario touches no real forge, network or credentials.
 - Python changes pass the pinned ruff/ty checks in `CONTRIBUTING.md#python-checks` before commit.
 
@@ -49,6 +49,7 @@ Numbered once; forge/PR-mode gotchas (F*, G*) live in `docs/FORGES.md`.
 | `docs/INTERNALS.md` | Subsystem invariants and gotchas (non-forge) |
 | `AGENTS.md` | Cross-cutting invariants and general gotchas, repo-managed agent integrations |
 | `e2e/COVERAGE.md` | A new e2e scenario area, or closing a listed gap |
+| `docs/REVIEW_CLI.md` | `tuicr review` behaviour: `--repo` selector, `active`/`kind`, JSON input and output shapes |
 | `docs/LIBRARY.md` | Public library API (`ReviewStore`, `AddCommentRequest`); its Rust blocks compile as doctests |
 
 ---
