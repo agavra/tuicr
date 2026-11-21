@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Covers #892: a file-level inline comment (inline.path, no from/to) and a live reply to a deleted root
-# comment are kept. Baseline: the file-level thread and the reply (with its deleted root) are dropped.
+# comment are kept, the deleted root shown as a `[deleted]` placeholder without its text. Baseline: the file-level
+# thread and the reply (with its deleted root) are dropped.
 from e2e import Scenario, scenario
 
 COMMENTS = """\
@@ -21,4 +22,5 @@ def main(s: Scenario) -> None:
     tui.keys("}")
     tui.wait_for("BB-REPLY-TO-DELETED", 8)  # else: reply to a deleted root dropped
     tui.check(r"\[deleted\]", "no [deleted] placeholder root")
+    tui.reject(r"\bgone\b")  # else: the deleted root's text is shown instead of the placeholder
     tui.quit()

@@ -27,6 +27,7 @@ def main(s: Scenario) -> None:
         raise Failure("an untrusted CA must be refused with UnknownIssuer", repr(refused))
 
     if platform.system() != "Linux":
+        print(f"note: the OS-trusted-CA half runs on Linux only, not on {platform.system()}")
         return
     tui = s.start("pr", "1", cwd=repo, env={"GERRIT_URL": url, "SSL_CERT_FILE": str(tls.ca)})
     try:

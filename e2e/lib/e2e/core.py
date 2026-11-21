@@ -185,7 +185,7 @@ class Scenario:
         self.cols, self.rows = COLS, ROWS  # size of the next pane
         self.forge_logs: list[Path] = []
         self.forge_unexpected: list[str] = []  # UNEXPECTED calls from logs a restart truncated
-        self.allow_unexpected = False
+        self.allowed_unexpected: list[tuple[str, int, str]] = []  # (regex, expected count, why)
         self.deaths: list[str] = []  # TUIs whose process exited with no wait_exit accepting it (checked at teardown)
         self.gerrit_proc = None
         self._cleanups: list[tuple[Callable[..., object], tuple[object, ...]]] = []
@@ -202,9 +202,28 @@ class Scenario:
     def skip(self, reason: str) -> None:
         raise Skip(reason)
 
-    def allow_unexpected_forge_calls(self, why: str = "") -> None:
-        """A scenario that provokes calls the fakes have no fixture for, on purpose, declares it (say why)."""
-        self.allow_unexpected = True
+    def allow_unexpected_forge_calls(self, pattern: str, count: int, why: str) -> None:
+        """A scenario that provokes calls the fakes have no fixture for, on purpose, declares them: exactly `count`
+        UNEXPECTED notes whose log line matches the regex `pattern`, for the reason `why`. Any other UNEXPECTED note,
+        or a different number of matching ones, still fails the scenario at exit."""
+        if count < 1 or not why:
+            raise Failure("allow_unexpected_forge_calls needs a count >= 1 and a reason")
+        self.allowed_unexpected.append((pattern, count, why))
+
+    def _unreported_unexpected(self) -> list[str]:
+        """UNEXPECTED notes no allow_unexpected_forge_calls covers, and each allowance whose count was not met."""
+        bad = self._unexpected_calls()
+        problems: list[str] = []
+        for pattern, count, why in self.allowed_unexpected:
+            rx = re.compile(pattern)
+            hits = [ln for ln in bad if rx.search(ln)]
+            bad = [ln for ln in bad if not rx.search(ln)]
+            if len(hits) != count:
+                problems.append(
+                    f"allowed {count} unexpected call(s) matching /{pattern}/ ({why}), saw {len(hits)}"
+                    + "".join("\n  " + ln for ln in hits)
+                )
+        return problems + bad
 
     def _unexpected_calls(self) -> list[str]:
         bad = list(self.forge_unexpected)
@@ -487,8 +506,8 @@ def scenario(fn: Callable[[Scenario], None]) -> None:
             except Exception as e:  # noqa: BLE001 - cleanup must not mask the result
                 sys.stderr.write(f"e2e: cleanup {getattr(cleanup, '__name__', cleanup)} failed: {e}\n")
         # No scenario may pass while a fake forge saw a call its fixtures do not cover.
-        bad = s._unexpected_calls()
-        if rc == 0 and bad and not s.allow_unexpected:
+        bad = s._unreported_unexpected()
+        if rc == 0 and bad:
             sys.stderr.write(
                 "e2e: fake forge saw an unexpected call:\n"
                 f"  at {_rel(str(s.script))}:{fn.__code__.co_firstlineno}: "  # ty: ignore[unresolved-attribute]

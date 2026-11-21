@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Covers #891: (a) a discussion whose position.head_sha differs from the MR head is outdated: hidden by the
-# default `:comments unresolved`, shown muted with an "outdated" badge under `:comments all`. (b) a general comment that
-# got a reply (positionless discussion with individual_note=false) stays visible instead of being dropped.
+# default `:comments unresolved`, shown with an "outdated" badge under `:comments all` (its muted colour is left to the
+# renderer's unit tests). (b) a general comment that got a reply (positionless discussion with individual_note=false)
+# stays visible, reply included, instead of being dropped.
 # Baseline: outdated thread shown as active by default, replied general comment dropped.
 from e2e import Scenario, scenario
 
@@ -23,6 +24,7 @@ def main(s: Scenario) -> None:
     tui = s.forge_open("https://gitlab.com/octo/demo.git", env={"E2E_GL_DISCUSSIONS": str(disc)})
     # general comments render in the PR description pane (top); check before `}` scrolls them away
     tui.wait_for("GENERAL-ROOT-NOTE", 10)  # else: replied general comment dropped
+    tui.expect("GENERAL-REPLY-NOTE")  # else: the reply of the general thread dropped
     tui.keys("}")
     tui.wait_for("FRESH-INLINE-NOTE", 10)  # else: current-head thread missing
     tui.reject("STALE-INLINE-NOTE")  # else: outdated discussion shown as active by default

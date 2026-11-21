@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Fake Gerrit REST server (anonymous, 127.0.0.1). usage: fakeforge/gerrit.py <dir> <portfile> [<cert.pem> <key.pem>]
 Plain HTTP, or HTTPS when a certificate chain and key are given.
-Serves $dir/change.json for /changes/N/ and $dir/comments.json for /changes/N/comments, '[]'-style magic prefix
-included; logs every request path to $dir/gerrit.log. Every request is also logged to $dir/forge.log in the fake-CLI
-format ({"tool": "gerrit", "argv": [METHOD, path], "stdin": body}); an unknown route, an unsupported method or a
-handler crash adds an UNEXPECTED note there (404/405/500 answered), which fails the scenario like the CLI fakes."""
+Serves $dir/change.json for /changes/N/ and $dir/comments.json for /changes/N/comments, where N is the change's own
+`_number` (any other change is an unknown route), Gerrit's magic prefix included; logs every request path to
+$dir/gerrit.log. Every request is also logged to $dir/forge.log in the fake-CLI format
+({"tool": "gerrit", "argv": [METHOD, path], "stdin": body}); an unknown route, an unsupported method or a handler crash
+adds an UNEXPECTED note there (404/405/500 answered), which fails the scenario like the CLI fakes."""
 
 from __future__ import annotations
 
@@ -56,11 +57,8 @@ class H(http.server.BaseHTTPRequestHandler):
         record("GET", p, None)
         try:
             route = p.split("?")[0].rstrip("/")
-            f = None
-            if route.startswith("/changes/") and route.count("/") == 2:
-                f = "change.json"
-            elif route.endswith("/comments"):
-                f = "comments.json"
+            change = f"/changes/{json.load(open(os.path.join(d, 'change.json')))['_number']}"
+            f = {change: "change.json", change + "/comments": "comments.json"}.get(route)
             if f is None:
                 record("GET", p, None, "UNEXPECTED: no route for GET " + p)
                 self._reply(404, b"no")
