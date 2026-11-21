@@ -4,8 +4,9 @@
 import shlex
 import shutil
 
-from e2e import Scenario, repos, scenario
 from e2e.core import E2E_DIR, TOOL_PATH
+
+from e2e import Scenario, repos, scenario
 
 
 @scenario
