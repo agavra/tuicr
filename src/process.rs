@@ -28,10 +28,27 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    run_command_output_with_env(program, current_dir, args, &[])
+}
+
+/// Variant of `run_command_output` that sets `envs` on the child. Callers that
+/// only probe for an object in a partial clone use this to disable lazy
+/// promisor fetches: git < 2.44 ignores the variable, newer git fails fast.
+pub fn run_command_output_with_env<I, S>(
+    program: &str,
+    current_dir: Option<&Path>,
+    args: I,
+    envs: &[(&str, &str)],
+) -> CommandOutputResult<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let mut command = Command::new(program);
     if let Some(current_dir) = current_dir {
         command.current_dir(current_dir);
     }
+    command.envs(envs.iter().copied());
 
     let output = command.args(args).output().map_err(|err| {
         let kind = if err.kind() == std::io::ErrorKind::NotFound {

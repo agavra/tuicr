@@ -8,7 +8,23 @@
 use std::ffi::OsStr;
 use std::path::Path;
 
-use crate::process::run_command_output;
+use crate::process::{CommandOutputResult, run_command_output_with_env};
+
+/// Run git with lazy promisor fetches disabled.
+///
+/// In a partial clone (`--filter=blob:none`), `git cat-file -e` on a missing
+/// object does not just fail: it starts a lazy fetch with `noop` negotiation,
+/// which can take tens of seconds. These helpers only check whether the
+/// checkout has the object, and callers fall back to the forge when it does
+/// not, so a missing object must fail fast. Git older than 2.44 ignores the
+/// variable and keeps its previous behavior.
+pub(crate) fn run_git_probe<I, S>(repo_root: &Path, args: I) -> CommandOutputResult<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    run_command_output_with_env("git", Some(repo_root), args, &[("GIT_NO_LAZY_FETCH", "1")])
+}
 
 /// Whether `s` can name a git object by hex: 4 to 64 ASCII hex digits.
 ///
@@ -24,7 +40,7 @@ fn is_hex_object_id(s: &str) -> bool {
 /// already have passed [`is_hex_object_id`]; `--end-of-options` is the second
 /// defence should it not have.
 fn object_exists_unchecked(repo_root: &Path, spec: &str) -> bool {
-    run_command_output("git", Some(repo_root), cat_file_exists_args(spec)).is_ok()
+    run_git_probe(repo_root, cat_file_exists_args(spec)).is_ok()
 }
 
 /// Arguments of the existence probe. Split out because no option-shaped spec
@@ -36,9 +52,8 @@ fn cat_file_exists_args(spec: &str) -> Vec<&str> {
 
 /// `git show <spec>` without validation; see [`object_exists_unchecked`].
 fn show_object_unchecked(repo_root: &Path, spec: &str) -> Option<String> {
-    run_command_output(
-        "git",
-        Some(repo_root),
+    run_git_probe(
+        repo_root,
         ["show", "--end-of-options", spec]
             .iter()
             .map(|s| OsStr::new(*s)),
@@ -49,9 +64,8 @@ fn show_object_unchecked(repo_root: &Path, spec: &str) -> Option<String> {
 /// `git show -s --format=%B <spec>` without validation; see
 /// [`object_exists_unchecked`].
 fn show_message_unchecked(repo_root: &Path, spec: &str) -> Option<String> {
-    run_command_output(
-        "git",
-        Some(repo_root),
+    run_git_probe(
+        repo_root,
         ["show", "-s", "--format=%B", "--end-of-options", spec]
             .iter()
             .map(|s| OsStr::new(*s)),
@@ -101,6 +115,7 @@ pub(crate) fn read_commit_message(repo_root: &Path, sha: &str) -> Option<String>
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
+    use crate::process::run_command_output;
 
     pub(crate) fn git(dir: &Path, args: &[&str]) -> String {
         run_command_output("git", Some(dir), args.iter().map(|s| OsStr::new(*s)))
@@ -128,12 +143,37 @@ pub(crate) mod test_support {
         git(root, &args);
         git(root, &["rev-parse", "HEAD"]).trim().to_string()
     }
+
+    /// Clone `origin` without blobs and without a working tree, so the clone
+    /// holds its commits and trees but none of the file contents. Git fetches
+    /// a missing object lazily from this remote unless the caller opts out.
+    pub(crate) fn clone_without_blobs(origin: &Path, clone: &Path) {
+        git(origin, &["config", "uploadpack.allowFilter", "true"]);
+        let url = format!("file://{}", origin.display());
+        run_command_output(
+            "git",
+            None,
+            [
+                "clone",
+                "--quiet",
+                "--filter=blob:none",
+                "--no-checkout",
+                "--no-local",
+                &url,
+                clone.to_str().expect("utf-8 clone path"),
+            ]
+            .iter()
+            .map(|s| OsStr::new(*s)),
+        )
+        .expect("partial clone");
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{git, init_repo_with_commit};
+    use super::test_support::{clone_without_blobs, git, init_repo_with_commit};
     use super::*;
+    use crate::process::run_command_output;
     use std::path::PathBuf;
 
     #[test]
@@ -159,6 +199,21 @@ mod tests {
             read_blob(root, "deadbeef", &PathBuf::from("file.txt")),
             None
         );
+    }
+
+    /// In a `blob:none` partial clone a missing blob is not an error to git:
+    /// `cat-file -e` starts a lazy promisor fetch. The probe must disable that
+    /// and report the blob as absent so callers use the forge API instead.
+    #[test]
+    fn should_not_lazy_fetch_a_missing_blob_from_a_partial_clone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let origin = dir.path().join("origin");
+        std::fs::create_dir(&origin).expect("origin dir");
+        let sha = init_repo_with_commit(&origin, &["add file"]);
+        let clone = dir.path().join("clone");
+        clone_without_blobs(&origin, &clone);
+
+        assert_eq!(read_blob(&clone, &sha, Path::new("file.txt")), None);
     }
 
     #[test]

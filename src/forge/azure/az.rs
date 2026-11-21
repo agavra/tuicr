@@ -24,7 +24,7 @@ use serde_json::json;
 
 use crate::error::{Result, TuicrError};
 use crate::forge::forge_path;
-use crate::forge::local_git::{read_blob, read_commit_message};
+use crate::forge::local_git::{read_blob, read_commit_message, run_git_probe};
 use crate::forge::local_merge_base;
 use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::remote_url::{
@@ -252,12 +252,12 @@ fn default_transport() -> Box<dyn AzHttp> {
 /// absent locally or the command fails.
 fn local_diff(repo_root: &Path, a: &str, b: &str, sep: &str) -> Option<Vec<FilePatch>> {
     for sha in [a, b] {
-        let exists = run_command_output(
-            "git",
-            Some(repo_root),
+        if run_git_probe(
+            repo_root,
             ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
-        );
-        if exists.is_err() {
+        )
+        .is_err()
+        {
             return None;
         }
     }
