@@ -9,13 +9,16 @@ from e2e import Scenario, because, scenario
 @scenario
 def main(s: Scenario) -> None:
     tui = s.diff()
-    tui.type(";h").settle(0.2).type(";h").settle(0.2)
-    tui.keys("i").wait_for("└ i ", 3)
-    tui.type("ab").wait_for("└ i ab", 3)
+    tui.type(";h").settle()  # focus the file tree
+    tui.keys("i").wait_for("└ i ")
+    tui.type("ab").wait_for("└ i ab")
     # SGR press+release in the diff pane (col 60,row 20)
-    tui.click(60, 20).settle()
-    tui.keys("Escape").settle()
+    tui.click(60, 20)
+    with because("a diff click stole input from the open prompt"):
+        tui.type("c").wait_for("└ i abc")  # typed after the click: still lands in the prompt
+    tui.keys("Escape")
+    with because("Esc after a diff click did not cancel the prompt"):
+        tui.wait_gone("└ i abc")
     with because("Esc after a diff click hid the file list instead of cancelling the prompt"):
-        tui.expect("Files · 0/8")
-    tui.reject("└ i ab", 1)
+        tui.check("Files · 0/8", "the file list is gone")
     tui.quit()
