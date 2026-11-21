@@ -92,7 +92,8 @@ configuration options in `docs/CONFIG.md` only.
 
 | Document               | Update when adding/changing...                                                                                           |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `README.md`            | Keybindings, commands (`:*`), CLI flags, features list, installation methods, agent integration setup, forge limitations |
+| `README.md`            | Features list, installation methods, essential keys, agent integration setup, the forge table, critical config, docs index |
+| `docs/GITHUB.md`       | GitHub PR behaviour: setup, targets, submit events, limitations                                                          |
 | `src/ui/help_popup.rs` | Keybindings or commands (update the `help_text` vector)                                                                  |
 | `src/ui/status_bar.rs` | Keybindings worth advertising in the per-pane hint line                                                                  |
 | `docs/CLI.md`          | Any clap flag, subcommand, env var, stderr marker, or exit code: add a row to the matching table                          |

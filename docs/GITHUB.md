@@ -18,15 +18,15 @@ that host (`gh auth login --hostname ghe.example.com`); tuicr passes the host to
 
 ```bash
 tuicr pr                          # the PR for the branch checked out here
-tuicr pr 125                      # a PR on this checkout's repository
+tuicr pr 125                      # a PR on this checkout's repository (a fork's upstream parent)
 tuicr pr owner/repo#125           # a PR on another repository
 tuicr pr https://github.com/owner/repo/pull/125
 tuicr pr 125 --remote upstream    # resolve the repository from a named remote
 ```
 
 `tuicr` with no arguments opens the review target selector; its Pull Requests tab lists open PRs,
-and `r` cycles all open PRs, PRs requesting your review, and PRs requesting you by name (leaving
-out team requests). See [KEYBINDINGS.md](KEYBINDINGS.md#commit-selection--review-target-selector).
+and `r` cycles all open PRs, PRs requesting your review (or the `[forge] pr_search` query when set),
+and PRs requesting you by name (leaving out team requests). See [KEYBINDINGS.md](KEYBINDINGS.md#commit-selection--review-target-selector).
 
 GitHub is the fallback forge: a remote whose host no other forge claims is treated as GitHub,
 which is how Enterprise hosts are picked up. `--repo-url` overrides detection
@@ -49,7 +49,8 @@ your latest submitted review and marks the commits that review already covered w
 
 `:submit comment`, `:submit approve`, `:submit request-changes` and `:submit draft` skip the
 picker. The whole review, including multi-line comments and suggestions (`s` in visual mode), is
-created in one request against the head commit you reviewed. Review-level comments become the
+created in one request against the head commit you reviewed (in a commit subset, the newest
+selected commit). Review-level comments become the
 review body. Comments on a commit message cannot be posted inline, so they go into the review body.
 
 ## Existing comments

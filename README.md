@@ -19,7 +19,7 @@ post it to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps or Gerrit.
 - **One continuous diff.** Every changed file scrolls past in one stream, as on a GitHub PR page.
 - **PR-style comments.** Comment on a line, a range, a file or the whole review, and suggest code changes.
 - **Review tracking.** Mark files or hunks reviewed. The marks persist across sessions.
-- **Any VCS.** git, jj and Mercurial: uncommitted changes, commit ranges, or a forge PR/MR.
+- **git, jj and Mercurial.** uncommitted changes, commit ranges, or a forge PR/MR.
 - **Two ways out.** Copy numbered, agent-ready markdown, or push a real inline review to six forges.
 
 ## Install
@@ -65,7 +65,7 @@ tuicr pr 125                # or a PR/MR/change on any supported forge
 3. Press `r` to mark the file reviewed. The sidebar tracks progress.
 4. Press `y` to copy the review, then paste it into your coding agent.
    In a PR, run `:submit` instead to post the review on the forge.
-5. `:wq` saves and quits. Reopen the same target later and your comments and marks are still there.
+5. `:wq` saves and quits (with comments, it first offers to copy the review). Reopen the same target later and your comments and marks are still there.
 
 Press `?` at any time for the full key reference.
 
