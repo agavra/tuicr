@@ -139,11 +139,11 @@ impl App {
         }
         let local = self.parked_vcs.take().or_else(|| {
             let root = self.local_repo_root.as_deref()?;
-            let options = self.vcs_open_options.clone();
+            let options = &self.vcs_open_options;
             let vcs = crate::vcs::detect_vcs_in(
                 root,
                 options.git_backend_preference,
-                options.diff_whitespace_mode,
+                options.diff_options(),
             )
             .ok()?;
             let info = vcs.info().clone();
@@ -712,8 +712,11 @@ impl App {
         if let Some(line) = request.restore_overview_cursor {
             self.diff_state.cursor_line = line;
             self.ensure_cursor_visible();
+            // The restored cursor wins over a deferred minimal-mode landing.
+            self.pending_minimal_ui_start = false;
         } else if let Some(anchor) = &request.anchor {
             self.restore_pr_cursor_to_anchor(anchor);
+            self.pending_minimal_ui_start = false;
         }
         // A reload can shrink the diff; a stale cursor left past the new end
         // (same-head branch, or a restored overview line captured from the

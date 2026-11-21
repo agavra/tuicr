@@ -149,7 +149,10 @@ impl App {
         let vcs = crate::profile::time("startup.detect_vcs", || {
             detect_vcs(
                 options.git_backend_preference,
-                options.diff_whitespace_mode.clone(),
+                crate::vcs::VcsDiffOptions {
+                    whitespace_mode: options.diff_whitespace_mode.clone(),
+                    include_untracked: options.include_untracked,
+                },
             )
         })?;
         let vcs_info = vcs.info().clone();
@@ -493,6 +496,8 @@ impl App {
             relative_line_numbers: false,
             wrap_style: WrapStyle::default(),
             cursor_side: LineSide::New,
+            clipboard_override: None,
+            clipboard_command: None,
             file_list_state: FileListState::default(),
             comment_navigator_state: CommentNavigatorState::default(),
             diff_state: DiffState::default(),
@@ -579,6 +584,8 @@ impl App {
             pending_confirm: None,
             supports_keyboard_enhancement: false,
             show_file_list: true,
+            minimal_ui: false,
+            pending_minimal_ui_start: false,
             file_list_position: FileListPosition::default(),
             compact_folders: false,
             is_pristine_mode: false,
@@ -610,6 +617,7 @@ impl App {
             colored_hunks: HashSet::new(),
             output_to_stdout,
             pending_stdout_output: None,
+            pending_exit_warning: None,
             comment_cursor_screen_pos: None,
             comment_input_annotation_offset: None,
             update_info: None,
@@ -1028,14 +1036,10 @@ fn current_branch_for_launch_dir(
     dir: &std::path::Path,
     options: &VcsOpenOptions,
 ) -> Option<String> {
-    crate::vcs::detect_vcs_in(
-        dir,
-        options.git_backend_preference,
-        options.diff_whitespace_mode.clone(),
-    )
-    .ok()
-    .and_then(|vcs| vcs.info().branch_name.clone())
-    .filter(|branch| !branch.is_empty())
+    crate::vcs::detect_vcs_in(dir, options.git_backend_preference, options.diff_options())
+        .ok()
+        .and_then(|vcs| vcs.info().branch_name.clone())
+        .filter(|branch| !branch.is_empty())
 }
 
 /// The checkout root a `tuicr pr` launch directory belongs to, or `None`
@@ -1046,11 +1050,7 @@ pub(in crate::app) fn checkout_root_for_launch_dir(
     dir: &std::path::Path,
     options: &VcsOpenOptions,
 ) -> Option<PathBuf> {
-    crate::vcs::detect_vcs_in(
-        dir,
-        options.git_backend_preference,
-        options.diff_whitespace_mode.clone(),
-    )
-    .ok()
-    .map(|vcs| vcs.info().root_path.clone())
+    crate::vcs::detect_vcs_in(dir, options.git_backend_preference, options.diff_options())
+        .ok()
+        .map(|vcs| vcs.info().root_path.clone())
 }

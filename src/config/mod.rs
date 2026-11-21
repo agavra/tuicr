@@ -181,6 +181,9 @@ pub struct AppConfig {
     pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
+    /// Hide the brand header, idle status footer, and diff frame, and open
+    /// on the first file. Defaults to false, which keeps the current UI.
+    pub minimal_ui: Option<bool>,
     /// Which side of the diff the file list sits on: `"left"` (the default)
     /// or `"right"`.
     pub file_list_position: Option<String>,
@@ -216,6 +219,7 @@ pub struct AppConfig {
     /// `ignore_whitespace = "auto"`. Keys are stored already normalized
     /// (ASCII lowercase, no leading dot).
     pub ignore_whitespace_overrides: BTreeMap<String, bool>,
+    pub include_untracked: Option<bool>,
     pub wrap: Option<bool>,
     /// Where wrapped unified diff rows continue: `"flow"` (the default) or
     /// `"gutter"`.
@@ -258,6 +262,16 @@ pub struct AppConfig {
     /// used as the "viewer" identity for per-author coloring in the comment
     /// pane. Defaults to `"user"` when unset.
     pub username: Option<String>,
+    /// Ordered list of clipboard mechanisms to try for `:clip` / visual yank,
+    /// e.g. `["arboard", "osc52"]`. Overrides the automatic per-environment
+    /// detection. Allowed values: `"arboard"`, `"pbcopy"`, `"subprocess"`
+    /// (xclip / wl-copy), `"osc52"`. Omit the key (the default) to keep
+    /// automatic detection; an invalid or empty list also falls back to it.
+    pub clipboard: Option<Vec<String>>,
+    /// Shell command that receives copied text on stdin, tried before
+    /// `clipboard`. A command that fails or runs past 5 seconds is killed and
+    /// tuicr falls back to the normal order with a status-bar warning.
+    pub clipboard_command: Option<String>,
     /// `[forge]` section settings. Always present; `None` means "no override"
     /// and downstream code should treat it as `ForgeConfig::default()`.
     pub forge: Option<ForgeConfig>,
@@ -291,6 +305,7 @@ const KNOWN_KEYS: &[&str] = &[
     "backend",
     "comment_types",
     "show_file_list",
+    "minimal_ui",
     "file_list_position",
     "compact_folders",
     "show_pr_checks",
@@ -303,6 +318,7 @@ const KNOWN_KEYS: &[&str] = &[
     "initial_commit_selection",
     "ignore_whitespace",
     "ignore_whitespace_overrides",
+    "include_untracked",
     "wrap",
     "wrap_style",
     "relative_line_numbers",
@@ -324,6 +340,8 @@ const KNOWN_KEYS: &[&str] = &[
     "no_update_check",
     "single_file_view",
     "username",
+    "clipboard",
+    "clipboard_command",
     "forge",
     "export",
 ];
@@ -606,6 +624,48 @@ fn normalize_override_extension(raw_key: &str, warnings: &mut Vec<String>) -> Op
     Some(key.to_ascii_lowercase())
 }
 
+/// Read an ordered list of string values, each constrained to a set of allowed
+/// values. Order is preserved. Unknown elements are dropped with a warning; a
+/// non-array value is rejected with a warning. Returns `None` when the key is
+/// absent, is not an array, or yields no valid element — so the caller keeps
+/// its default behavior.
+fn read_enum_list(
+    table: &toml::Table,
+    key: &str,
+    allowed: &[&str],
+    warnings: &mut Vec<String>,
+) -> Option<Vec<String>> {
+    let val = table.get(key)?;
+    let Some(items) = val.as_array() else {
+        warnings.push(format!(
+            "Warning: Config key '{key}' must be an array of strings; ignoring value"
+        ));
+        return None;
+    };
+    let choices = allowed
+        .iter()
+        .map(|s| format!("\"{s}\""))
+        .collect::<Vec<_>>()
+        .join(" or ");
+    let mut result = Vec::new();
+    for item in items {
+        match item.as_str() {
+            Some(s) if allowed.contains(&s) => result.push(s.to_string()),
+            Some(s) => warnings.push(format!(
+                "Warning: Config key '{key}' entries must be {choices}; got \"{s}\", ignoring"
+            )),
+            None => warnings.push(format!(
+                "Warning: Config key '{key}' entries must be strings; ignoring value"
+            )),
+        }
+    }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
+}
+
 fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -642,6 +702,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .get("comment_types")
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
+        minimal_ui: read_bool(table, "minimal_ui", &mut warnings),
         file_list_position: read_enum(
             table,
             "file_list_position",
@@ -680,6 +741,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         ),
         ignore_whitespace,
         ignore_whitespace_overrides,
+        include_untracked: read_bool(table, "include_untracked", &mut warnings),
         wrap: read_bool(table, "wrap", &mut warnings),
         wrap_style: read_enum(table, "wrap_style", &["flow", "gutter"], &mut warnings),
         export_legend: read_bool(table, "export_legend", &mut warnings),
@@ -705,6 +767,13 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         no_update_check: read_bool(table, "no_update_check", &mut warnings),
         single_file_view: read_bool(table, "single_file_view", &mut warnings),
         username: read_string(table, "username", &mut warnings),
+        clipboard_command: read_string(table, "clipboard_command", &mut warnings),
+        clipboard: read_enum_list(
+            table,
+            "clipboard",
+            crate::output::markdown::CLIPBOARD_MECHANISMS,
+            &mut warnings,
+        ),
         forge: table
             .get("forge")
             .and_then(|v| parse_forge(v, &mut warnings)),
@@ -1077,6 +1146,100 @@ mod tests {
         );
     }
 
+    // clipboard
+
+    #[test]
+    fn should_parse_clipboard_ordered_list() {
+        let outcome = parse_config("clipboard = [\"arboard\", \"osc52\"]\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.clipboard.clone()),
+            Some(vec!["arboard".to_string(), "osc52".to_string()])
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_default_clipboard_to_none_when_absent() {
+        let outcome = parse_config("");
+        assert_eq!(outcome.config, Some(AppConfig::default()));
+        assert!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.clipboard.clone())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn should_drop_invalid_clipboard_elements_with_warning() {
+        let outcome = parse_config("clipboard = [\"arboard\", \"nope\"]\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.clipboard.clone()),
+            Some(vec!["arboard".to_string()])
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(
+            outcome.warnings[0].contains("clipboard") && outcome.warnings[0].contains("arboard"),
+            "warning should name the key and allowed values: {}",
+            outcome.warnings[0]
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_clipboard_with_wrong_type() {
+        let outcome = parse_config("clipboard = true\n");
+        assert_eq!(outcome.config, Some(AppConfig::default()));
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'clipboard' must be an array of strings; ignoring value"
+        );
+    }
+
+    #[test]
+    fn should_ignore_bare_string_clipboard_value() {
+        let outcome = parse_config("clipboard = \"arboard\"\n");
+        assert_eq!(outcome.config, Some(AppConfig::default()));
+        assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    #[test]
+    fn should_treat_empty_clipboard_list_as_auto() {
+        let outcome = parse_config("clipboard = []\n");
+        assert_eq!(outcome.config, Some(AppConfig::default()));
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_treat_all_invalid_clipboard_list_as_auto() {
+        let outcome = parse_config("clipboard = [\"nope\", \"nada\"]\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.clipboard.clone()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 2);
+    }
+
+    #[test]
+    fn should_parse_clipboard_command() {
+        let outcome = parse_config("clipboard_command = \"tmux load-buffer -\"\n");
+        assert_eq!(
+            outcome.config.and_then(|cfg| cfg.clipboard_command),
+            Some("tmux load-buffer -".to_string())
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
     #[test]
     fn should_parse_empty_config_as_defaults() {
         let outcome = parse_config("");
@@ -1172,6 +1335,26 @@ mod tests {
             None
         );
         assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    #[test]
+    fn should_parse_minimal_ui() {
+        let absent = parse_config("mouse = true\n");
+        assert_eq!(absent.config.unwrap().minimal_ui, None);
+        assert!(absent.warnings.is_empty());
+
+        for value in [true, false] {
+            let outcome = parse_config(&format!("minimal_ui = {value}\n"));
+            assert_eq!(outcome.config.unwrap().minimal_ui, Some(value));
+            assert!(outcome.warnings.is_empty());
+        }
+
+        let outcome = parse_config("minimal_ui = \"yes\"\n");
+        assert_eq!(outcome.config.unwrap().minimal_ui, None);
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Config key 'minimal_ui' must be a boolean; ignoring value"]
+        );
     }
 
     // file_list_position
@@ -1700,6 +1883,51 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'ignore_whitespace' must be true, false, or \"auto\"; got \"yes\", ignoring"
+        );
+    }
+
+    // include_untracked
+
+    #[test]
+    fn should_parse_include_untracked_true() {
+        let outcome = parse_config("include_untracked = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.include_untracked),
+            Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_include_untracked_false() {
+        let outcome = parse_config("include_untracked = false\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.include_untracked),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_include_untracked_with_invalid_type() {
+        let outcome = parse_config("include_untracked = \"yes\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.include_untracked),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'include_untracked' must be a boolean; ignoring value"
         );
     }
 

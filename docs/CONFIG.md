@@ -28,7 +28,9 @@ diff_view = "side-by-side"
 ignore_whitespace = "auto" # or true / false; omitted defaults to false
 commit_order = "descending"
 initial_commit_selection = "all"
+include_untracked = true
 show_file_list = true
+minimal_ui = false
 file_list_position = "left"
 compact_folders = false
 show_pr_checks = false
@@ -58,6 +60,14 @@ username = "user"
 diff_watch_interval_ms = 0
 
 backend = "libgit2"
+
+# Clipboard mechanism override. Omit for automatic per-environment detection
+# (the default). When set, it is an ordered list tried in turn.
+# clipboard = ["arboard", "osc52"]
+
+# Command that receives copied text on stdin, tried first. It gets 5 seconds;
+# on failure tuicr warns and falls back to the normal order.
+# clipboard_command = "tmux load-buffer -"
 
 comment_types = [
   { id = "note", label = "question", definition = "ask for clarification", color = "yellow" },
@@ -98,7 +108,9 @@ session_header = true
 | `initial_commit_selection` | `all`        | Which commits are selected when a multi-commit review first opens: `all`, or `oldest` to start on just the oldest commit and walk forward with `(` / `)`.  |
 | `ignore_whitespace`        | `false`      | Whitespace comparison for local Git, jj, and hg diffs: `false` compares normally, `true` ignores all whitespace, and `"auto"` chooses by file extension. PR diffs are unchanged. See [Whitespace comparison](#whitespace-comparison). |
 | `ignore_whitespace_overrides` | (none)    | Table of extension-to-boolean overrides, used only with `ignore_whitespace = "auto"`. `true` ignores whitespace; `false` compares normally. |
+| `include_untracked`        | `true`       | Include untracked files in local Git working-tree and unstaged reviews, including `-r ... -w` and selector status checks. Set `false` to skip the untracked-file scan; tracked and staged changes remain visible. |
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
+| `minimal_ui`               | `false`      | Diff-focused presentation: hides the brand header, the diff panel frame, and the status footer's contents while idle (the row stays reserved for commands and messages), and opens on the first file instead of the overview. Toggle with `:set minimal!`. |
 | `file_list_position`       | `left`       | `left` or `right`: which side of the diff the file list and comment navigator sit on. `<leader>h` / `<leader>l` move focus toward the pane on that side. |
 | `compact_folders` | `false` | Join single-child directory chains into one file-tree row. Restart tuicr after changing this setting. |
 | `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |
@@ -127,8 +139,17 @@ session_header = true
 | `username`                 | `"user"`     | Display name stamped on local comments and used as the viewer identity for local comment coloring.                                                         |
 | `diff_watch_interval_ms`   | `0`          | Poll interval for re-reading the local diff so uncommitted changes show without `:e`. The same tick refreshes the commit pane, including the "Staged changes" and "Unstaged changes" rows. A commit-range review, from `-r` or picked in the commit selector, keeps its range in the pane. With `-w` it refreshes only those two rows. Without it the pane never gains them. `0` (default) disables it. Ignored for PR and `--all-files` reviews. |
 | `backend`                  | `libgit2`    | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`.                                                                                |
+| `clipboard`                | `auto`       | Ordered list of clipboard mechanisms for `:clip` / visual yank, e.g. `["arboard", "osc52"]`. Values: `arboard`, `pbcopy`, `subprocess` (xclip/wl-copy), `osc52`. Omit the key for automatic per-environment detection. |
+| `clipboard_command`        | (none)       | Shell command that receives copied text on stdin, e.g. `"tmux load-buffer -"`. Tried before any other method. It must read all of the text and exit 0 within 5 seconds; a slower command is killed. If it fails or times out, tuicr copies with the normal order and warns, naming the failure and the method that copied instead: on the status bar, or on stderr after exit for the `:wq` copy. |
 | `comment_types`            | (none)       | Comment categories. Untyped by default. See [Comment types](#comment-types).                                                                               |
 | `export_legend`            | `true`       | Include the `Comment types:` legend in the exported review. Superseded by `legend` under [Export](#export).                                                |
+
+## Git diff generation
+
+The default `libgit2` backend uses patience diff and the indent heuristic to
+keep changes aligned with code blocks. Set `backend = "cli"` to use Git's diff
+output and its configured diff algorithm. These choices affect local Git
+reviews; pull-request diffs come from the forge.
 
 ## Whitespace comparison
 

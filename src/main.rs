@@ -196,11 +196,20 @@ fn main() -> anyhow::Result<()> {
         None => DiffWhitespaceMode::Normal,
     };
 
+    let include_untracked = config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.include_untracked)
+        .unwrap_or(true);
+
     let repo_url_override = match cli_args.remote.as_deref() {
         Some(name) => {
             let vcs = tuicr::vcs::GitBackend::discover(
                 git_backend_preference,
-                diff_whitespace_mode.clone(),
+                tuicr::vcs::VcsDiffOptions {
+                    whitespace_mode: diff_whitespace_mode.clone(),
+                    include_untracked,
+                },
             )?;
             Some(tuicr::forge::resolve_remote_repository(&vcs, name)?)
         }
@@ -263,6 +272,7 @@ fn main() -> anyhow::Result<()> {
                 pr_comments_visibility,
                 git_backend_preference,
                 diff_whitespace_mode,
+                include_untracked,
                 commit_selection,
                 pr_target: cli_args.pr_target.as_deref(),
                 pr_current_branch: cli_args.pr_current_branch,
@@ -367,6 +377,9 @@ fn main() -> anyhow::Result<()> {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
         }
+        if cfg.minimal_ui == Some(true) {
+            app.minimal_ui = true;
+        }
         // Start with the commit selector pane hidden. `(` / `)` still cycle the
         // selected commit while hidden; `<leader>s` / `:set commits!` reveal it.
         if cfg.show_commits == Some(false) {
@@ -399,7 +412,15 @@ fn main() -> anyhow::Result<()> {
         if cfg.single_file_view == Some(true) && !app.is_single_file_view {
             app.toggle_single_file_view();
         }
+        // Build ran before this flag existed on the app, so the opening
+        // cursor is still the overview landing. Queue the move onto the
+        // first file; it lands after the first render measures the viewport.
+        if app.minimal_ui {
+            app.apply_minimal_ui_start();
+        }
         app.export = cfg.resolved_export();
+        startup_warnings.extend(app.apply_clipboard_config(cfg.clipboard.as_deref()));
+        app.clipboard_command = cfg.clipboard_command.clone();
         if cfg.cursor_line == Some(false) {
             app.cursor_line_highlight = false;
         }
@@ -505,10 +526,13 @@ fn main() -> anyhow::Result<()> {
             terminal.draw(|frame| {
                 ui::render(frame, &mut app);
             })?;
-            // `--line` needs the viewport measured by the render above. When
-            // it moves the cursor, repaint inside the same synchronized
-            // update so the unpositioned frame is never presented.
-            if app.apply_pending_start_line() {
+            // Minimal mode's first-file landing and `--line` both need the
+            // viewport measured by the render above. When either moves the
+            // cursor, repaint inside the same synchronized update so the
+            // unpositioned frame is never presented. `--line` runs second so
+            // an explicit target wins.
+            let landed = app.apply_pending_minimal_ui_start();
+            if app.apply_pending_start_line() || landed {
                 terminal.draw(|frame| {
                     ui::render(frame, &mut app);
                 })?;
@@ -916,6 +940,9 @@ fn main() -> anyhow::Result<()> {
     }
     if let Err(e) = app.clear_active_session_marker() {
         eprintln!("Warning: failed to clear active review session marker: {e}");
+    }
+    if let Some(warning) = &app.pending_exit_warning {
+        eprintln!("Warning: {warning}");
     }
 
     // Always report how the review ended, even with zero comments, so a

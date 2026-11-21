@@ -1221,6 +1221,11 @@ pub struct App {
     /// new/right). Drives the `▶` caret placement and the side a new line
     /// comment attaches to. Ignored in unified view. Defaults to `New`.
     pub cursor_side: LineSide,
+    /// Ordered clipboard-mechanism override from the `clipboard` config key
+    /// (`None` = automatic detection). Set by [`App::apply_clipboard_config`].
+    pub(crate) clipboard_override: Option<Vec<crate::output::markdown::CopyMethod>>,
+    /// `clipboard_command` config key, tried before any other method.
+    pub clipboard_command: Option<String>,
 
     pub file_list_state: FileListState,
     pub comment_navigator_state: CommentNavigatorState,
@@ -1407,6 +1412,15 @@ pub struct App {
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,
+    /// Opt-in diff-focused presentation. Hides the brand header, the idle
+    /// status/key-hint footer contents, and the diff panel frame, and opens
+    /// on the first file. File-list visibility stays on `show_file_list`.
+    pub minimal_ui: bool,
+    /// Minimal mode's first-file landing, waiting for a render to measure
+    /// the diff viewport. Row heights (a wrapped PR description, review
+    /// comments) depend on its width, so the landing offset is only right
+    /// once it is known.
+    pub pending_minimal_ui_start: bool,
     pub file_list_position: FileListPosition,
     pub compact_folders: bool,
     /// `true` when the session was opened via `--all-files`. Drives the
@@ -1488,6 +1502,8 @@ pub struct App {
     pub output_to_stdout: bool,
     /// Pending output to print to stdout after TUI exits
     pub pending_stdout_output: Option<String>,
+    /// Warning raised as the TUI quits, printed to stderr after teardown.
+    pub pending_exit_warning: Option<String>,
     /// Calculated screen position for comment input cursor (col, row) for IME positioning.
     /// Set during render when in Comment mode, None otherwise.
     pub comment_cursor_screen_pos: Option<(u16, u16)>,
@@ -1983,6 +1999,16 @@ pub struct SummaryState {
 struct VcsOpenOptions {
     git_backend_preference: GitBackendPreference,
     diff_whitespace_mode: DiffWhitespaceMode,
+    include_untracked: bool,
+}
+
+impl VcsOpenOptions {
+    fn diff_options(&self) -> crate::vcs::VcsDiffOptions {
+        crate::vcs::VcsDiffOptions {
+            whitespace_mode: self.diff_whitespace_mode.clone(),
+            include_untracked: self.include_untracked,
+        }
+    }
 }
 
 impl Default for VcsOpenOptions {
@@ -1992,6 +2018,7 @@ impl Default for VcsOpenOptions {
         Self {
             git_backend_preference: GitBackendPreference::Libgit2,
             diff_whitespace_mode: DiffWhitespaceMode::default(),
+            include_untracked: true,
         }
     }
 }
@@ -2012,6 +2039,8 @@ pub struct AppStartupOptions<'a> {
     pub pr_comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
     pub git_backend_preference: GitBackendPreference,
     pub diff_whitespace_mode: DiffWhitespaceMode,
+    /// Whether untracked files are included in working-tree / unstaged diffs.
+    pub include_untracked: bool,
     /// Which commits are selected when a multi-commit review first opens.
     pub commit_selection: CommitSelectionStart,
     /// Direct PR target (`tuicr pr <target>`). Mutually exclusive with the
@@ -2033,6 +2062,7 @@ impl AppStartupOptions<'_> {
         VcsOpenOptions {
             git_backend_preference: self.git_backend_preference,
             diff_whitespace_mode: self.diff_whitespace_mode.clone(),
+            include_untracked: self.include_untracked,
         }
     }
 }
