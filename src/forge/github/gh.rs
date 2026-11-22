@@ -22,7 +22,7 @@ use crate::process::{
     CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
 };
 use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch};
-use crate::vcs::git::read_git_objects;
+use crate::vcs::git::read_git_objects_without_lazy_fetch;
 
 use super::models::{GhCompare, GhPrCommit, GhPullRequestFile, GhPullRequestSummary};
 use super::review_summaries::{
@@ -537,7 +537,10 @@ where
             .collect();
         let mut counts = vec![None; requests.len()];
         if let Some(root) = self.local_checkout.as_deref()
-            && let Ok(blobs) = read_git_objects(root, specs.iter().cloned().enumerate().collect())
+            && let Ok(blobs) = read_git_objects_without_lazy_fetch(
+                root,
+                specs.iter().cloned().enumerate().collect(),
+            )
         {
             for (i, content) in blobs {
                 counts[i] = Some(content.lines().count() as u32);

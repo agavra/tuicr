@@ -99,8 +99,9 @@ Azure DevOps exposes no single "unified diff" endpoint, so tuicr builds the PR d
 local clone with `git diff <base>...<head>`. Run tuicr from a checkout of the repo, and make
 sure the PR's base and source commits are fetched (`git fetch origin`). If they aren't
 present locally, tuicr will tell you to fetch and retry. Neither cloud nor self-hosted
-Azure adds an explicit fetch step when opening or refreshing a PR. Git's existing
-partial-clone lazy-fetch behavior is unchanged.
+Azure adds an explicit fetch step when opening or refreshing a PR. Object probes run with
+`GIT_NO_LAZY_FETCH=1`, so in a partial clone a missing commit fails fast instead of
+starting a promisor fetch; fetch the PR's commits explicitly.
 
 File content for context expansion is read from the local clone first, falling back to the
 REST API when a revision isn't present locally.
