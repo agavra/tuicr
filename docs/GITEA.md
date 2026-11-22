@@ -50,16 +50,22 @@ The second rule is what makes self-hosted instances work: a Gitea server at
 configured `tea` login is the signal. Add the login before opening a PR and the
 remote is recognized.
 
-## Gitea forks
+## Forgejo
 
-Forgejo and Codeberg are **not supported**. They are separate projects that
-currently serve a compatible API, and tuicr tests against neither.
+Forgejo — a Gitea fork serving the same REST v1 API — is supported through the
+same `tea` backend and is detected by name: any host containing `forgejo`
+(`forgejo.org`, `git.forgejo.example`, …) and `codeberg.org` (which runs
+Forgejo) are claimed as Forgejo and get `ForgeKind::Forgejo`, shown as the
+`forgejo` badge in the comments panel. `codeberg.org` is the default Forgejo
+host, so its PRs render unqualified (`owner/repo#125`); `forgejo.org` itself
+hosts no repositories and stays host-qualified.
 
-tuicr does not recognize their hostnames. If you add a `tea` login for such an
-instance, its remotes will route to this backend and will most likely work
-today — but that is a consequence of the API still being compatible, not a
-promise. Expect it to break as the projects diverge, and please don't file
-forks' incompatibilities as Gitea bugs.
+Setup is identical to Gitea: `tea logins add --url https://codeberg.org …`.
+
+**Slug change:** hosts containing `forgejo` used to be claimed as Gitea and
+keyed under `gt:` slugs; they now get `fj:` slugs. Existing sessions stored
+under the old `gt:` slug will not reattach — re-open the PR and it is stored
+under the new `fj:` slug.
 
 ## Submit a review
 

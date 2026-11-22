@@ -209,7 +209,7 @@ impl ForgeRepository {
             || self.host == "bitbucket.org"
             || self.host == "dev.azure.com"
             || self.host == "gitea.com"
-            || self.host == "forgejo.org"
+            || self.host == "codeberg.org"
         {
             self.slug()
         } else {
@@ -1184,20 +1184,22 @@ mod branch_lookup_tests {
             .unwrap_err();
         assert!(matches!(err, TuicrError::ForgeLimit(_)), "{err:?}");
     }
-}
 
-#[test]
-fn forgejo_kind_has_display_name_and_scopes() {
-    assert_eq!(ForgeKind::Forgejo.display_name(), "Forgejo");
-    assert_eq!(
-        ForgeKind::Forgejo.pr_list_scopes(),
-        &[
-            PullRequestListScope::Open,
-            PullRequestListScope::ReviewRequested
-        ]
-    );
-    let repo = ForgeRepository::forgejo("forgejo.org", "team", "service");
-    assert_eq!(repo.kind, ForgeKind::Forgejo);
-    assert_eq!(repo.slug(), "team/service");
-    assert_eq!(repo.display_name(), "team/service");
+    #[test]
+    fn forgejo_kind_has_display_name_and_scopes() {
+        assert_eq!(ForgeKind::Forgejo.display_name(), "Forgejo");
+        assert_eq!(
+            ForgeKind::Forgejo.pr_list_scopes(),
+            &[
+                PullRequestListScope::Open,
+                PullRequestListScope::ReviewRequested
+            ]
+        );
+        let repo = ForgeRepository::forgejo("codeberg.org", "team", "service");
+        assert_eq!(repo.kind, ForgeKind::Forgejo);
+        assert_eq!(repo.slug(), "team/service");
+        assert_eq!(repo.display_name(), "team/service");
+        let public = ForgeRepository::forgejo("forgejo.org", "team", "service");
+        assert_eq!(public.display_name(), "forgejo.org/team/service");
+    }
 }

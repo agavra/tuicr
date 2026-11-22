@@ -88,7 +88,10 @@ pub fn default_host(kind: ForgeKind) -> Option<&'static str> {
         ForgeKind::GitHub => Some("github.com"),
         ForgeKind::GitLab => Some("gitlab.com"),
         ForgeKind::Gitea => Some("gitea.com"),
-        ForgeKind::Forgejo => Some("forgejo.org"),
+        // codeberg.org is the default Forgejo host: forgejo.org itself hosts
+        // no repositories, so it stays host-qualified like any self-hosted
+        // instance.
+        ForgeKind::Forgejo => Some("codeberg.org"),
         ForgeKind::Bitbucket => Some("bitbucket.org"),
         ForgeKind::AzureDevOps => Some("dev.azure.com"),
         ForgeKind::Gerrit => None,
@@ -725,8 +728,12 @@ mod tests {
             ),
             (ForgeRepository::gitea("gitea.com", "o", "r"), "gt:o/r/pr/7"),
             (
-                ForgeRepository::forgejo("forgejo.org", "o", "r"),
+                ForgeRepository::forgejo("codeberg.org", "o", "r"),
                 "fj:o/r/pr/7",
+            ),
+            (
+                ForgeRepository::forgejo("forgejo.org", "o", "r"),
+                "fj:o/r/pr/7@forgejo.org",
             ),
             (
                 ForgeRepository::bitbucket("bitbucket.org", "o", "r"),
@@ -888,6 +895,19 @@ mod tests {
     fn should_roundtrip_pr_slug() {
         assert_roundtrip("gh:agavra/tuicr/pr/125");
         assert_roundtrip("gh:org/svc/pr/9999");
+    }
+
+    #[test]
+    fn should_note_forgejo_hosts_moved_from_gt_to_fj_slugs() {
+        // Hosts containing "forgejo" used to be claimed as Gitea and keyed
+        // under `gt:` slugs; they are Forgejo now (`fj:`), so sessions stored
+        // under the old `gt:` slug do not reattach — the PR re-opens under
+        // the new `fj:` slug.
+        assert_eq!(forge_code(ForgeKind::Gitea), "gt");
+        assert_eq!(forge_code(ForgeKind::Forgejo), "fj");
+        let legacy: Slug = "gt:o/r/pr/7@git.forgejo.example".parse().unwrap();
+        let current: Slug = "fj:o/r/pr/7@git.forgejo.example".parse().unwrap();
+        assert_ne!(legacy, current);
     }
 
     #[test]

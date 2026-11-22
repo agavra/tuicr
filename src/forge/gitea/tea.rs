@@ -281,11 +281,12 @@ fn select_login<'a>(logins: &'a [TeaLoginHost], host: &str) -> Option<&'a str> {
         .map(|login| login.name.as_str())
 }
 
-/// Whether `host` is a known Forgejo instance: the public `forgejo.org`,
-/// its subdomains, and self-hosted instances whose hostname says `forgejo`.
+/// Whether `host` is a known Forgejo instance: any hostname containing
+/// `forgejo` (which already covers `forgejo.org` and its subdomains) and
+/// `codeberg.org`, the largest public Forgejo instance.
 pub fn is_forgejo_host(host: &str) -> bool {
     let lower = host.to_ascii_lowercase();
-    lower == "forgejo.org" || lower.ends_with(".forgejo.org") || lower.contains("forgejo")
+    lower.contains("forgejo") || lower == "codeberg.org" || lower.ends_with(".codeberg.org")
 }
 
 /// Whether `host` should route to the Gitea backend.
@@ -298,9 +299,8 @@ pub fn is_forgejo_host(host: &str) -> bool {
 ///
 /// Forgejo is matched by name as well (see [`is_forgejo_host`]): it is a Gitea
 /// fork that serves the same REST v1 API and is served by the same `tea`
-/// backend, so tuicr claims it explicitly (issue #518). Codeberg is not
-/// matched by name: it stays reachable through a `tea` login, classified as
-/// Gitea, because it is an independent Gitea deployment.
+/// backend, so tuicr claims it explicitly (issue #518). Codeberg runs
+/// Forgejo, so `codeberg.org` is claimed as Forgejo too.
 pub fn is_gitea_host(host: &str) -> bool {
     let lower = host.to_ascii_lowercase();
     if lower.contains("gitea") || is_forgejo_host(&lower) {
@@ -1657,12 +1657,12 @@ mod tests {
     }
 
     #[test]
-    fn should_not_claim_codeberg_by_name() {
-        // Codeberg is an independent Gitea deployment, not a Gitea fork tuicr
-        // claims: routing it still requires an explicit `tea` login.
+    fn should_claim_codeberg_by_name_as_forgejo() {
+        // Codeberg runs Forgejo, so its host is claimed by name as Forgejo
+        // (issue #518) instead of falling through to a `tea` login or GitHub.
         assert_eq!(
             parse_gitea_remote_url("https://codeberg.org/team/service"),
-            None
+            Some(ForgeRepository::forgejo("codeberg.org", "team", "service"))
         );
     }
 
@@ -1674,8 +1674,9 @@ mod tests {
         assert!(is_forgejo_host("Forgejo.ORG"));
         assert!(is_forgejo_host("git.forgejo.org"));
         assert!(is_forgejo_host("forgejo.example.com"));
+        assert!(is_forgejo_host("codeberg.org"));
+        assert!(is_forgejo_host("git.codeberg.org"));
         assert!(!is_forgejo_host("gitea.com"));
-        assert!(!is_forgejo_host("codeberg.org"));
         assert!(!is_forgejo_host("github.com"));
     }
 
@@ -1692,6 +1693,19 @@ mod tests {
         assert_eq!(
             parse_gitea_remote_url("git@forgejo.org:team/service.git"),
             Some(ForgeRepository::forgejo("forgejo.org", "team", "service"))
+        );
+    }
+
+    #[test]
+    fn should_parse_codeberg_remote_as_forgejo_kind() {
+        // codeberg.org runs Forgejo, so it is claimed as Forgejo (not Gitea).
+        assert_eq!(
+            parse_gitea_remote_url("https://codeberg.org/team/service.git"),
+            Some(ForgeRepository::forgejo("codeberg.org", "team", "service"))
+        );
+        assert_eq!(
+            parse_gitea_remote_url("git@codeberg.org:team/service.git"),
+            Some(ForgeRepository::forgejo("codeberg.org", "team", "service"))
         );
     }
 
@@ -1726,9 +1740,13 @@ mod tests {
     }
 
     #[test]
-    fn forgejo_repositories_display_without_host_on_forgejo_org() {
-        let repo = ForgeRepository::forgejo("forgejo.org", "team", "service");
+    fn forgejo_repositories_display_without_host_on_codeberg_org() {
+        // codeberg.org is the default Forgejo host; forgejo.org itself hosts
+        // no repositories and stays host-qualified.
+        let repo = ForgeRepository::forgejo("codeberg.org", "team", "service");
         assert_eq!(repo.display_name(), "team/service");
+        let public = ForgeRepository::forgejo("forgejo.org", "team", "service");
+        assert_eq!(public.display_name(), "forgejo.org/team/service");
         let custom = ForgeRepository::forgejo("forgejo.example.com", "team", "service");
         assert_eq!(custom.display_name(), "forgejo.example.com/team/service");
     }
