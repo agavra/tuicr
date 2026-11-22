@@ -12,8 +12,9 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `k` / `↑` | Scroll up |
 | `h` / `←` | Scroll left |
 | `l` / `→` | Scroll right |
+| `Ctrl-e` / `Ctrl-y` | Scroll the view down / up one line; the cursor moves only to stay on screen |
 | `Ctrl-d` / `Ctrl-u` | Half page down / up |
-| `Ctrl-f` / `Ctrl-b` | Full page down / up |
+| `Ctrl-f` / `Ctrl-b` / `PageDown` / `PageUp` | Full page down / up |
 | `g` / `G` | Go to first / last file |
 | `{N}G` | Go to source line N in current file |
 | `{N}{motion}` | Vim-style count prefix — repeats `j` / `k` / `h` / `l` / `{` / `}` / `[` / `]` `N` times |
@@ -25,6 +26,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `n` / `N` | Next / previous search match (wraps around) |
 | `Esc` | Clear search-match highlighting; the pattern is kept so `n` / `N` still work |
 | `Enter` | Expand or collapse hidden context between hunks |
+| `Shift-Enter` | Expand the whole gap at the cursor at once (or collapse it) |
 | `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |
 | `zb` | Scroll cursor to bottom of screen |
@@ -34,6 +36,10 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 a search. Use it when the terminal leaves stale text on screen, for example after
 a font size change in a window that wasn't visible. tuicr also redraws in full
 whenever the terminal reports a resize.
+
+`Ctrl-c` also works in every mode: the first press shows "Press Ctrl+C again to
+exit" (and cancels a comment being typed), and a second press within 2 seconds
+quits at once, without the unsaved-changes warning `:q` gives.
 
 ## File picker
 
@@ -71,6 +77,10 @@ Press `?` to open help.
 | `/` | Search within help (case-insensitive) |
 | `n` / `N` | Next / previous help search match |
 | `j` / `k` | Scroll down / up |
+| `h` / `l` | Pan left / right |
+| `Ctrl-d` / `Ctrl-u` | Half page down / up |
+| `Ctrl-f` / `Ctrl-b` / `PageDown` / `PageUp` | Full page down / up |
+| `g` / `G` | Go to top / bottom |
 | `q` / `?` / `Esc` | Close help |
 
 ## File tree
@@ -148,6 +158,7 @@ considers files that pass the active filters.
 | `<leader>k` | Move focus up (comments to files, or diff/files to commit selector when visible) |
 | `<leader>j` | Move focus down (files to comments when visible, otherwise diff) |
 | `<leader>e` | Toggle file list visibility |
+| `<leader>f` | Toggle single-file view (also `:focus` / `:f`) |
 | `<leader>s` | Toggle commit selector visibility (also `:set commits!`) |
 | `<leader>n` | Toggle relative line numbers (also `:set relativenumber!`) |
 | `Enter` | Select file (when file list is focused) |
@@ -208,6 +219,7 @@ from the checkout, never copied.
 | `j` / `k` | Extend selection down / up |
 | `c` / `Enter` | Create comment for selected range |
 | `s` | Start an editable suggestion prefilled with the selected code lines |
+| `y` | Copy the selected source lines to the clipboard and leave visual mode |
 | `Esc` / `v` / `V` | Cancel selection |
 
 Range comments must stay within one file: if the selection spans files, `c` / `Enter` warns "Invalid selection" and cancels visual mode without creating a comment.
@@ -223,11 +235,15 @@ GitLab suggestions can include at most 100 lines above the final selected line.
 |-----|--------|
 | `Tab` / `Shift-Tab` | Cycle comment type forward / backward (per `comment_types` order) |
 | `Enter` / `Ctrl-Enter` / `Ctrl-s` | Save comment |
-| `Shift-Enter` / `Ctrl-j` | Insert newline |
+| `Shift-Enter` / `Alt-Enter` / `Ctrl-j` / `Ctrl-k` | Insert newline (with `comment_vim = true`, `Alt-Enter` saves instead) |
 | `←` / `→` | Move cursor left / right |
 | `↑` / `↓` | Move cursor up / down one displayed row (default editor) |
+| `Ctrl-a` / `Home` / `Cmd-←` | Move cursor to line start |
+| `Ctrl-e` / `End` / `Cmd-→` | Move cursor to line end |
+| `Ctrl-←` / `Alt-←` / `Alt-b` | Move cursor one word left |
+| `Ctrl-→` / `Alt-→` / `Alt-f` | Move cursor one word right |
 | `Ctrl-w` / `Alt-Backspace` / `Cmd-Backspace` | Delete word |
-| `Ctrl-u` | Clear line |
+| `Ctrl-u` | Clear the whole comment |
 | `Esc` / `Ctrl-c` | Cancel |
 
 In the default editor, Up/Down move through wrapped rows and explicit newlines.
@@ -263,8 +279,8 @@ In command mode,
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
 | `:summary` | Show all pending local-draft comments; `j`/`k` select, `dd` deletes, and `Enter` jumps |
 | `:diff` | Toggle diff view (unified / side-by-side) |
-| `:theme` | Open the runtime theme picker (live preview; `/` filters, `Enter` applies and saves, `Esc` reverts) |
-| `:theme <name>` | Apply and save `<name>` directly, without opening the picker |
+| `:theme` | Open the runtime theme picker (live preview; `/` filters, `Enter` keeps it for the session, `Esc` reverts) |
+| `:theme <name>` | Apply `<name>` for this session directly, without opening the picker |
 | `:focus` (`:f`) | Toggle single-file view |
 | `:stage` | Stage reviewed files (unstaged diffs only) |
 | `:vim` (`:set vim!`) / `:novim` (`:set novim`) / `:set vim` | Toggle / disable / enable vim modal editing in the comment box (overrides `comment_vim`) |
@@ -291,7 +307,7 @@ In command mode,
 | `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
 | `:set minimal` / `:set nominimal` | Enable / disable minimal UI (no header, idle footer, or diff frame) |
 | `:set minimal!` | Toggle minimal UI |
-| `:clear` | Clear all comments |
+| `:clear` | Clear all comments and reviewed marks |
 | `:clearc` | Clear comments without clearing reviewed marks |
 | `:help` (`:h`) | Open the help screen |
 | `:messages` | Open full details for the current error |
@@ -300,7 +316,7 @@ In command mode,
 | `:q` (`:quit`) | Quit (warns on unsaved comments; discards review-only state unless the saved session holds comments, e.g. added by `tuicr review add`) |
 | `:q!` (`:quit!`) | Force quit |
 | `:x` / `:wq` | Save and quit (prompts to copy if comments exist) |
-| `ZZ` | Save and quit (stays open and reports the error if the save fails, like `:wq`) |
+| `ZZ` | Save and quit; when comments exist, copies the review to the clipboard without the prompt `:wq` shows (stays open and reports the error if the save fails) |
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
 
@@ -309,9 +325,10 @@ Pressing bare `q` no longer quits by default; it prints a reminder to use `:q` i
 
 The summary replaces the diff while leaving the file sidebar visible when it is open. The first
 pending comment is selected when the summary opens. Use `j`/`k` to select the next
-or previous comment; the view scrolls automatically to keep the selection visible. `Enter` returns
-to the continuous diff and jumps to the selected comment, leaving single-file view if necessary,
-while `Esc` returns without jumping. Reviewed files and hunks are revealed for the jump without
+or previous comment and `g`/`G` to select the first or last; the view scrolls automatically to
+keep the selection visible. `Ctrl-d`/`Ctrl-u` and `Ctrl-f`/`Ctrl-b` (or `PageDown`/`PageUp`)
+scroll by half or full pages. `Enter` returns to the continuous diff and jumps to the selected
+comment, leaving single-file view if necessary, while `Esc` or `q` returns without jumping. Reviewed files and hunks are revealed for the jump without
 losing their reviewed state.
 Press `dd` to delete the selected local draft, including comments whose original file or line
 is absent from the current diff. Other comments are kept. Return with `Esc` and use `:w` to
@@ -419,6 +436,34 @@ widen or change the selection.
 |-----|--------|
 | `y` / `Enter` | Yes |
 | `n` / `Esc` | No |
+
+## Submit
+
+Bare `:submit` opens the action picker:
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move between Comment / Approve / Request changes / Draft |
+| `Enter` | Submit the selected event |
+| `Esc` | Cancel |
+
+When some local comments cannot be posted inline (their lines are not in the
+forge's diff), a resolver lists them first:
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move between comments |
+| `Enter` / `Space` | Toggle the comment between "Move to summary" and "Omit" |
+| `s` | Continue to the submit |
+| `Esc` | Cancel the submit |
+
+The final confirmation (`:submit <event>`) takes:
+
+| Key | Action |
+|-----|--------|
+| `y` / `Enter` | Submit |
+| `n` / `Esc` | Cancel |
+| `r` | Reload the PR, when the modal warns that its head moved since the review opened |
 
 ## Mouse
 

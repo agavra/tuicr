@@ -18,11 +18,13 @@ def main(s: Scenario) -> None:
     tui.wait_for("a.txt").keys("Escape")
     tui.cursor_on("2 ▌ a2 changed")
     tui.keys("v", "j", "j", "j", "j", "j", "j", "j").settle()
+    sel = tui.cursor_row()
+    assert grep(r"b\.txt|▌ b[0-9]", sel), f"precondition: the selection does not reach into b.txt\n{tui.screen()}"
     tui.keys("c").wait_for("Invalid selection|COMMENT")
     after = tui.screen()
     assert not grep("COMMENT", after), f"comment box opened for a cross-file selection\n{after}"
     assert grep("Invalid selection", after), f"no 'Invalid selection' warning\n{after}"
     # control: a single-file range still opens the comment box
-    tui.keys("v", "j").keys("c").wait_for("COMMENT")
+    tui.keys("v", "j").keys("c").wait_for("^ COMMENT ").wait_for(r"L[0-9]+-L[0-9]+ ")  # a range, not one line
     tui.keys("Escape")
     tui.quit()

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# with files in several `hg status` classes (modified z, added a, removed m),
-# each file's hunk must be shown under its own file. Needs real Mercurial (E2E_HG_DIR/hg), not
+# With files in several `hg status` classes (modified z, added a, removed m, untouched k), each file's hunk must be
+# shown under its own file, and the untouched file not at all. Needs real Mercurial (E2E_HG_DIR/hg), not
 # Sapling: SKIP without it, FAIL when E2E_REQUIRE_HG=1.
 import re
 
@@ -15,7 +15,7 @@ def main(s: Scenario) -> None:
     tui.wait_for("Unstaged changes")
     tui.keys("Enter")
     tui.wait_for(r"z\.txt")
-    tui.wait_for(r"(═══|---).*a\.txt")
+    tui.wait_for(r"(═══|---).*a\.txt").reject(r"k\.txt")
     # each file section header must be followed by its own content (a: added, m: removed, z: z_old->z_new)
     scr = tui.screen()
     pairing: list[str] = []
@@ -33,7 +33,6 @@ def main(s: Scenario) -> None:
                 pairing.append(f"{word} in {f}")
     print("\n".join(pairing))
     (s.dir / "pairing.txt").write_text("".join(p + "\n" for p in pairing))
-    assert all(want in pairing for want in ("a_added in a", "m_old in m", "z_new in z")), (
-        f"hunks paired with the wrong files\n{scr}"
-    )
+    want = ["a_added in a", "m_old in m", "z_new in z", "z_old in z"]
+    assert sorted(pairing) == want, f"hunks paired with the wrong files: {pairing}\n{scr}"
     tui.quit()

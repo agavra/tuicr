@@ -42,3 +42,4 @@ def main(s: Scenario) -> None:
     assert grep("cargo install tuicr", log.read_text()), (
         "Cargo install behind a symlinked home was not detected (cargo never ran)"
     )
+    assert p.returncode == 0, f"`tuicr update` through cargo exited {p.returncode}"

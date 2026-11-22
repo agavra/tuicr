@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # `:q` with only an unsaved reviewed mark discards the session, but not one holding a comment an agent added since the
-# last poll (polling is off here, so the TUI never saw it): it refuses and shows the comment instead. Header: panel
-# G6-1.
+# last poll (polling is off here, so the TUI never saw it): it refuses and merges the comment into the open review
+# (shown once the file is unfolded: the reviewed mark folds it). Header: panel G6-1.
 import json
 
 from e2e import Scenario, repos, scenario
@@ -32,5 +32,8 @@ def main(s: Scenario) -> None:
     tui.keys("r").wait_for("Files · 1/8")
     tui.keys(":q", "Enter")
     tui.wait_for("Saved session has comments")
-    assert s.session_has("agent note"), "quit deleted the agent's comment"
+    assert tui.alive(), ":q quit despite the agent's comment"
+    assert s.session_comments() == ["agent note"], f"quit lost the agent's comment: {s.session_comments()}"
+    # the refused quit merged the comment into the open review: unmark README.md (reviewed files are folded) to see it
+    tui.reject("agent note").keys("r").wait_for("Files · 0/8").wait_for("agent note")
     tui.quit()

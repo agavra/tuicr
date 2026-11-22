@@ -16,7 +16,10 @@ def main(s: Scenario) -> None:
     repos.git(r, "add", "big.txt")
     tui = s.start("-w", cwd=r)
     tui.wait_for(r"big.txt \[A\]").keys("Escape")
-    tui.keys(":set wrap", "Enter").wait_for("word014")
+    with because("line 37 did not wrap onto several rows"):
+        tui.keys(":set wrap", "Enter").wait_for("word030")  # past the pane's width: only a wrapped line shows it
+    # precondition: line 37 is cut off by the viewport bottom (its tail and the next line are below it)
+    tui.reject("word199").reject(r"38 +▌ last")
     scr = tui.screen()
     cursor = "\n".join(line for line in scr.split("\n") if "▶" in line)
     assert grep(r"big.txt \[A\]", cursor), f"precondition: cursor not on the header\n{scr}"

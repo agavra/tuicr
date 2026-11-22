@@ -15,7 +15,6 @@ def main(s: Scenario) -> None:
     tui.cmd("submit comment").wait_for("Submit review to GitHub").keys("y")
     tui.wait_for("Submitted GitHub review #1001")
     posts = tui.posts()
-    print(posts)
     assert len(posts) == 1, "expected exactly one POST"
     p = posts[0]
     b = p["payload"]

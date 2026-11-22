@@ -17,6 +17,7 @@ def main(s: Scenario) -> None:
     tui.keys("Escape").keys("Enter").keys("Enter")  # Normal mode: Enter arms, a second Enter saves
     tui.keys("m").wait_for("keepme")  # jump to the saved comment
     tui.save()
-    assert s.session_has("keepme"), f"comment not saved\n{s.session_json()}"
-    assert not s.session_has("dropme"), f"Ctrl-W did not delete the word\n{s.session_json()}"
+    assert s.session_comments() == ["keepme"], (
+        f"want the comment `keepme` (Ctrl-W drops `dropme`): {s.session_comments()}"
+    )
     tui.quit()

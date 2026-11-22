@@ -31,3 +31,9 @@ pub use review_store::{
     AddCommentRequest, CommentTarget, ReviewStore, SessionRef, SessionSummary,
     add_comment_to_session,
 };
+
+/// Compiles the examples in `docs/LIBRARY.md` as doctests so the published
+/// library guide cannot drift from the API.
+#[cfg(doctest)]
+#[doc = include_str!("../docs/LIBRARY.md")]
+pub struct LibraryGuideDoctests;

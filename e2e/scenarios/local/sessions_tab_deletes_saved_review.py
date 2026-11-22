@@ -9,8 +9,7 @@ def main(s: Scenario) -> None:
     tui = s.start(cwd=repo)
     tui.wait_for("Unstaged changes").keys("Enter")
     tui.wait_for("unstaged line").cursor_on("unstaged line")
-    tui.keys("c").wait_for("COMMENT")
-    tui.keys("delete me").keys("Enter").wait_for("delete me")
+    tui.comment("delete me")
     tui.quit()
     tui = s.start(cwd=repo, keep=True)
     tui.wait_for("Unstaged changes")
@@ -22,5 +21,5 @@ def main(s: Scenario) -> None:
     tui.keys("d", "d").wait_for(r"Delete this saved review\?")
     tui.keys("y")
     tui.wait_gone("1 comments")
-    assert not s.session_has("delete me"), "dd left the session file"
+    assert not s.session_has("delete me", allow_missing=True), "dd left the session file"
     tui.quit()

@@ -8,11 +8,11 @@ from e2e import Scenario, because, scenario
 @scenario
 def main(s: Scenario) -> None:
     tui = s.diff()
-    tui.type(";h").settle(0.2).type(";h").settle(0.2)
-    tui.keys("i").wait_for("└ i ", 3)
+    tui.type(";h").settle()  # focus the file tree
+    tui.keys("i").wait_for("└ i ")
     tui.paste("README")
     with because("pasted text did not reach the file-tree filter prompt"):
-        tui.expect("└ i README", 3)
+        tui.expect("└ i README")
     tui.keys("Enter")
-    tui.expect("Files · 0/1", 3)
+    tui.expect("Files · 0/1")
     tui.quit()

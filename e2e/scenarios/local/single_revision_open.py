@@ -13,10 +13,10 @@ def main(s: Scenario) -> None:
     tui.reject(r"README\.md").reject("feat: touch every file kind")  # an earlier commit
     tui.keys("Escape").expect("hello")
     tui.quit()
-    # an explicit SHA, of the middle commit: its own seven files + message, not the later commit's
+    # an explicit SHA, of the middle commit: its own seven files plus the message row (0/8), not the later commit's
     sha = repos.git(repo, "rev-parse", "HEAD~1")
     tui = s.start("-r", sha, cwd=repo)
     tui.wait_for(r"Commit Message \([0-9a-f]+\)").expect("feat: touch every file kind").expect("Files · 0/8")
     tui.expect(r"▢ M README\.md").expect(r"▢ D gone\.txt")
-    tui.reject("fix: greeting").reject(r"src/main\.rs")
+    tui.reject("fix: greeting").reject(r"main\.rs")  # the tree shows src/main.rs as `main.rs` under `src/`
     tui.quit()

@@ -1619,7 +1619,10 @@ pub fn handle_commit_selector_action(app: &mut App, action: Action) {
                 app.set_error(format!("Failed to load diff: {e}"));
             }
         }
-        Action::ExitMode => {
+        // Normal mode maps Esc to `ClearSearchHighlight`; in this pane it
+        // also returns focus to the diff.
+        Action::ClearSearchHighlight => {
+            app.clear_search_highlight();
             app.focused_panel = FocusedPanel::Diff;
         }
         _ => handle_shared_normal_action(app, action),

@@ -47,6 +47,7 @@ q_quits = false
 comment_tab_width = 4
 wrap = false
 wrap_style = "flow"
+export_legend = true # superseded by [export].legend
 relative_line_numbers = false
 cursor_line = true
 search_highlight = true
@@ -118,7 +119,7 @@ code_context = false
 | `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |
 | `show_pr_comments`         | `true`       | Whether PR conversation comments are fetched and shown. Set to `false` to skip PR comments.                                                         |
 | `pr_comments_visibility`   | `unresolved` | Default visibility for PR review comment threads: `unresolved` (default), `all` (resolved/outdated threads shown muted), or `hide`. Seeds each review that starts at the default; `:comments` still switches mid-session and a restored session keeps its saved visibility. |
-| `show_commits`             | `true`       | Whether the inline commit selector pane is visible on startup for multi-commit reviews. Toggle with `<leader>s` or `:set commits!`.                        |
+| `show_commits`             | `true`       | Whether the inline commit selector pane is shown when a multi-commit review opens, including reviews opened later from the selector or a PR. Toggle it for the current review with `<leader>s` or `:set commits!`. |
 | `show_reviewed`            | `true`       | Whether files already marked reviewed appear in the file tree and the diff. Set `false` to start a session showing only what is left. Toggle with `:set reviewed!`. |
 | `mouse`                    | `true`       | Wheel scrolling, clicks, and drag-to-select.                                                                                                               |
 | `mouse_scroll_lines`       | `3`          | Lines scrolled per mouse wheel tick in the diff, file list, comment list, help, and summary views; the commit list moves its cursor this many rows. Must be between 1 and 100; other values are ignored with a startup warning. |
@@ -141,7 +142,7 @@ code_context = false
 | `username`                 | `"user"`     | Display name stamped on local comments and used as the viewer identity for local comment coloring.                                                         |
 | `diff_watch_interval_ms`   | `0`          | Poll interval for re-reading the local diff so uncommitted changes show without `:e`. The same tick refreshes the commit pane, including the "Staged changes" and "Unstaged changes" rows. A commit-range review, from `-r` or picked in the commit selector, keeps its range in the pane. With `-w` it refreshes only those two rows. Without it the pane never gains them. `0` (default) disables it. Ignored for PR and `--all-files` reviews. |
 | `backend`                  | `libgit2`    | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`.                                                                                |
-| `clipboard`                | `auto`       | Ordered list of clipboard mechanisms for `:clip` / visual yank, e.g. `["arboard", "osc52"]`. Values: `arboard`, `pbcopy`, `subprocess` (xclip/wl-copy), `osc52`. Omit the key for automatic per-environment detection. |
+| `clipboard`                | (none)       | Ordered list of clipboard mechanisms for `:clip` / visual yank, e.g. `["arboard", "osc52"]`. Values: `arboard`, `pbcopy`, `subprocess` (xclip/wl-copy), `osc52`. Omit the key for automatic per-environment detection. |
 | `clipboard_command`        | (none)       | Shell command that receives copied text on stdin, e.g. `"tmux load-buffer -"`. Tried before any other method. It must read all of the text and exit 0 within 5 seconds; a slower command is killed. If it fails or times out, tuicr copies with the normal order and warns, naming the failure and the method that copied instead: on the status bar, or on stderr after exit for the `:wq` copy. |
 | `comment_types`            | (none)       | Comment categories. Untyped by default. See [Comment types](#comment-types).                                                                               |
 | `export_legend`            | `true`       | Include the `Comment types:` legend in the exported review. Superseded by `legend` under [Export](#export).                                                |
@@ -173,7 +174,7 @@ settings affect only local VCS diffs; pull-request diffs are unchanged.
 
 Bundled themes:
 
-`dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-light`, `github-dark`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`, `everforest-dark`, `everforest-light`, `gruvbox-dark`, `gruvbox-light`, `nord-dark`, `nord-light`, `nord-dark-high-contrast`, `nord-light-high-contrast`, `solarized-light`, `solarized-dark`, `tokyo-night-storm`, `tokyo-night-day`.
+`dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-light`, `github-dark`, `github-dark-colorblind`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`, `everforest-dark`, `everforest-light`, `gruvbox-dark`, `gruvbox-light`, `nord-dark`, `nord-light`, `nord-dark-high-contrast`, `nord-light-high-contrast`, `solarized-light`, `solarized-dark`, `tokyo-night-storm`, `tokyo-night-day`.
 
 Local themes:
 
@@ -468,3 +469,19 @@ join more directories. Opening or closing a joined row affects the whole chain;
 expand-all, collapse-all, and full-path search continue to work. Long labels use
 the existing horizontal scrolling. The default is `false`; there is no runtime
 toggle.
+
+## Home Manager
+
+With Home Manager, enable tuicr with `programs.tuicr.enable = true;` and put the
+same settings in `programs.tuicr.settings`:
+
+```nix
+programs.tuicr = {
+  enable = true;
+  settings = {
+    theme = "catppuccin-mocha";
+    diff_view = "side-by-side";
+    mouse = true;
+  };
+};
+```

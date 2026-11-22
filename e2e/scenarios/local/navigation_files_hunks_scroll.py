@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Local review: file tree, scroll, hunk nav, file nav. Uses a -r range for multi-file/hunk content.
+# Local review: file tree, j/k cursor moves, hunk nav, file nav. Uses a -r range for multi-file/hunk content.
 from e2e import Scenario, scenario
 
 
@@ -26,7 +26,7 @@ def main(s: Scenario) -> None:
     tui.keys("j", "j", "j").expect("▶ +3 +first line")
     tui.keys("k").expect("▶ +2 +│")
     # hunk nav inside src/main.rs (single hunk) and across files
-    tui.keys("G").keys("[").expect(r"▶.*(@@ -1,3 \+1,3 @@|═══ src/main)")
+    tui.keys("G").keys("[").expect(r"▶ +@@ -1,3 \+1,3 @@")
     # g lands on README's hunk header; ] skips the hunk-less data.bin to gone.txt, then notes_cjk; [ steps back
     tui.keys("g")
     cur(r"README\.md")

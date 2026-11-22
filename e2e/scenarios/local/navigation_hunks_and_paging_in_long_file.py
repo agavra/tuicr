@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-# One file with three distant hunks (lines 10, 100, 190 of 200): `]`/`[` step hunk by hunk inside the file and stop
-# at both
-# ends, Ctrl-d / Ctrl-u page the cursor down and back up to known rows (a no-op paging implementation cannot pass).
+# One file with three distant hunks (lines 10, 100, 190 of 200): `]`/`[` step hunk by hunk inside the file; `]` stops
+# at the last hunk and `[` past the first one returns to the file header (by design: `prev_hunk` falls back to the
+# top of the diff), Ctrl-d / Ctrl-u page the cursor down and back up to known rows (a no-op paging implementation cannot
+# pass).
 from e2e import Scenario, repos, scenario
 
 
@@ -41,10 +42,15 @@ def main(s: Scenario) -> None:
     at(r"@@ -97,7 \+97,7 @@")
     tui.keys("]")
     at(r"@@ -187,7 \+187,7 @@")
-    tui.keys("]").settle()
-    at(r"@@ -187,7 \+187,7 @@")  # last hunk: stays
-    tui.keys("[")
+    # `]` on the last hunk stays: the `[` after it then reaches the middle hunk. Had `]` wrapped to the first hunk or
+    # moved past the last one, `[` would land on the first or the last hunk instead.
+    tui.keys("]", "[")
     at(r"@@ -97,7 \+97,7 @@")
     tui.keys("[")
+    at(r"@@ -7,7 \+7,7 @@")
+    # `[` on the first hunk goes back to the top of the diff, and `]` from there to the first hunk again
+    tui.keys("[")
+    at(r"═══ many\.txt")
+    tui.keys("]")
     at(r"@@ -7,7 \+7,7 @@")
     tui.quit()

@@ -488,7 +488,7 @@ impl App {
         self.commit_list_scroll_offset = 0;
         self.visible_commit_count = review_commits.len();
         self.has_more_commit = false;
-        self.show_commit_selector = review_commits.len() > 1;
+        self.show_commit_selector = self.show_commits_on_open && review_commits.len() > 1;
         if !self.show_commit_selector && self.focused_panel == FocusedPanel::CommitSelector {
             self.focused_panel = FocusedPanel::Diff;
         }

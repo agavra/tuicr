@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # Configured `comment_types`: Tab / Shift-Tab cycle them (config order, then none) showing the config *label*; the
-# export
-# tags the comment with that label, leaves an untyped comment bare, and lists the type used, with its definition, in the
-# legend.
+# saved comment renders that label, the export tags the comment with it, leaves an untyped comment bare, and lists
+# only the type used, with its definition, in the legend.
 from e2e import TUICR_BIN, Scenario, grep, repos, scenario
 
 
@@ -39,16 +38,20 @@ def main(s: Scenario) -> None:
     tui.keys("Tab").wait_for(r"Add \[QUESTION\]")
     tui.keys("BTab").wait_for("Comment type: none")  # and Shift-Tab walks it backwards
     tui.keys("BTab").wait_for(r"Add \[NITPICK\]")
-    tui.keys("tiny detail").keys("Enter").wait_for("tiny detail")
-    tui.expect(r"\[NITPICK\]")  # the saved comment shows its label
+    tui.type("tiny detail").keys("Enter")
+    tui.wait_saved_comment("tiny detail")  # the editor (and its `Add [NITPICK]` title) is closed now
+    tui.expect(r"── \[NITPICK\] L4 ─")  # the saved comment's box shows its label
     tui.keys("g").cursor_on("3   first line")
     tui.keys("c").wait_for(r"Add \[QUESTION\]")
     tui.keys("Tab", "Tab", "Tab").wait_for("Comment type: none")
-    tui.keys("plain remark").keys("Enter").wait_for("plain remark")
+    tui.type("plain remark").keys("Enter")
+    tui.wait_saved_comment("plain remark")
     tui.cmd("clip").wait_exit()
     text = out.read_bytes().decode()
     assert grep(r"\*\*\[NITPICK\]\*\*.*README\.md:4.*tiny detail", text), f"export lacks the labelled comment:\n{text}"
     plain = [line for line in text.split("\n") if "plain remark" in line]
     assert not any("[" in line for line in plain), f"untyped comment got a tag:\n{plain}"
     assert plain, f"export lacks the untyped comment:\n{text}"
-    assert "Comment types: NITPICK (small tweaks)" in text, f"legend lacks the used type and its definition:\n{text}"
+    legend = [line for line in text.split("\n") if line.startswith("Comment types:")]
+    # only the type used, with its definition: not every configured type
+    assert legend == ["Comment types: NITPICK (small tweaks)"], f"legend is not exactly the used type: {legend}\n{text}"

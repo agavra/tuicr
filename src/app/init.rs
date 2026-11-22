@@ -632,6 +632,7 @@ impl App {
             pr_range_reload_state: None,
             pr_range_reload_rx: None,
             show_commit_selector: false,
+            show_commits_on_open: true,
             commit_order: CommitOrder::default(),
             commit_selection_start: CommitSelectionStart::default(),
             initial_comments_visibility: None,

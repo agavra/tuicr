@@ -19,7 +19,6 @@ comment_type_format = "**{label}:** "
     tui.cmd("submit comment").wait_for("Submit review to GitHub").keys("y")
     tui.wait_for("Submitted GitHub review #1001")
     posts = tui.posts()
-    print(posts)
     assert len(posts) == 1, "expected exactly one POST"
     assert [c["body"] for c in posts[0]["payload"]["comments"]] == ["**nitpick (non-blocking):** inline for submit"], (
         posts[0]["payload"]["comments"]

@@ -26,7 +26,7 @@ def main(s: Scenario) -> None:
 
     tui.cmd("set nominimal").wait_for(r"^ tuicr ").wait_for(r"^ NORMAL ")
 
-    tui.cmd("set minimal!").wait_gone(r"^ tuicr ").wait_for(FILE_HEADER)
+    tui.cmd("set minimal!").wait_gone(r"^ tuicr ").wait_gone(r"^ NORMAL ").wait_for(FILE_HEADER)
 
     tui.keys(";e").wait_for("Files · 0/8").settle(0.4)  # file list open: the diff panel stays unframed
     tui.reject(r"┌ README\.md")

@@ -36,6 +36,9 @@ Alternatively, if your tenant allows AAD access, just install the
 [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) and run
 `az login` — no PAT needed.
 
+With a PAT, tuicr verifies TLS against the operating system's trust store, so a server
+signed by a corporate CA installed there works without extra configuration.
+
 ## Azure DevOps Server / TFS (self-hosted)
 
 An on-premises server has no reserved hostname, so tuicr only recognizes it when you name
@@ -77,6 +80,14 @@ then `:submit` to push:
 - **Approve** — posts comments and casts an *Approved* vote (10).
 - **Request changes** — posts comments and casts a *Rejected* vote (-10).
 
+A review is posted as several requests: one thread per comment, then the vote. If one fails
+midway, the comments already posted are locked so a retry does not post them twice, and tuicr
+reports the partial submit rather than a clean failure.
+
+On the Pull Requests tab, `r` toggles between all active PRs and the ones where you are a
+reviewer (`searchCriteria.reviewerId`). If tuicr cannot resolve your user id from
+`connectionData`, the filtered view silently shows all active PRs.
+
 Existing comment threads (yours and other reviewers') are fetched when you open the PR and
 render inline on their lines; PR-level (conversation) comments show in the review summary.
 After you `:submit`, press `:e` to re-fetch and see your just-posted comments come back as
@@ -104,6 +115,8 @@ This is the first Azure DevOps slice. Not yet supported:
   push); otherwise submit fails before posting anything. Comments on the old (left) side also
   need the range's parent to be the PR's common base or another iteration head. Select all
   commits, or comment on the new side, to work around it.
+- **Outdated threads** — existing threads are never marked outdated, even after the lines
+  they were left on change.
 - **Draft reviews** — Azure DevOps has no draft-review primitive, so `:submit draft` behaves
   like Comment and posts immediately.
 - **Older on-premises servers** — REST API 7.1 requires Azure DevOps Server 2022.1

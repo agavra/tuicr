@@ -380,13 +380,12 @@ fn main() -> anyhow::Result<()> {
         if cfg.minimal_ui == Some(true) {
             app.minimal_ui = true;
         }
-        // Start with the commit selector pane hidden. `(` / `)` still cycle the
-        // selected commit while hidden; `<leader>s` / `:set commits!` reveal it.
-        if cfg.show_commits == Some(false) {
-            app.show_commit_selector = false;
-            if app.focused_panel == FocusedPanel::CommitSelector {
-                app.focused_panel = FocusedPanel::Diff;
-            }
+        // Keep the commit selector pane hidden for every multi-commit review,
+        // including ones opened later from the selector or a PR. `(` / `)`
+        // still cycle the selected commit while hidden; `<leader>s` /
+        // `:set commits!` reveal it for the current review.
+        if let Some(show) = cfg.show_commits {
+            app.apply_show_commits_config(show);
         }
         // Start with files already marked reviewed hidden. `init_` rather than
         // `set_` so startup leaves no status message behind; `H` /

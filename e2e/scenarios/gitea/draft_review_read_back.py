@@ -11,8 +11,11 @@ def main(s: Scenario) -> None:
     tui.wait_for("Review comment added")
     tui.cmd("submit draft").wait_for("Push pending|Submit review to").keys("y")
     tui.wait_for("Pushed pending Gitea review", 15)
-    tui.forge_expect(r'pulls/1/reviews"\], "stdin": "\{.*gt overall draft')  # else: no review POST
+    tui.forge_expect(r'pulls/1/reviews"\], "stdin": \{.*gt overall draft')  # else: no review POST
     # the PENDING review is read back and listed in the PR description panel (not pruned/hidden)
     tui.wait_for("gitea @me pending")  # else: pending review summary not read back
-    tui.expect("gt overall draft")
+    # the body shown is the read-back's (inside the pending-review box), not only the local comment
+    lines = tui.screen().splitlines()
+    at = next(i for i, ln in enumerate(lines) if "gitea @me pending" in ln)
+    assert any("gt overall draft" in ln for ln in lines[at + 1 : at + 3]), "\n".join(lines[at : at + 3])
     tui.quit()
