@@ -14,6 +14,9 @@ pub enum ForgeKind {
     GitLab,
     /// Gitea, reached through the `tea` CLI.
     Gitea,
+    /// Forgejo (a Gitea fork), reached through the same `tea` CLI because
+    /// Forgejo serves the Gitea-compatible REST v1 API.
+    Forgejo,
     /// Bitbucket Cloud only. Data Center speaks an unrelated REST 1.0 API and
     /// is rejected during remote-URL parsing.
     Bitbucket,
@@ -31,6 +34,7 @@ impl ForgeKind {
             ForgeKind::GitHub => "GitHub",
             ForgeKind::GitLab => "GitLab",
             ForgeKind::Gitea => "Gitea",
+            ForgeKind::Forgejo => "Forgejo",
             ForgeKind::Bitbucket => "Bitbucket",
             ForgeKind::AzureDevOps => "Azure DevOps",
             ForgeKind::Gerrit => "Gerrit",
@@ -50,6 +54,7 @@ impl ForgeKind {
             ],
             ForgeKind::GitLab
             | ForgeKind::Gitea
+            | ForgeKind::Forgejo
             | ForgeKind::Bitbucket
             | ForgeKind::AzureDevOps
             | ForgeKind::Gerrit => &[
@@ -103,6 +108,21 @@ impl ForgeRepository {
     ) -> Self {
         Self {
             kind: ForgeKind::Gitea,
+            host: host.into(),
+            owner: owner.into(),
+            name: name.into(),
+        }
+    }
+
+    /// Forgejo repositories are always `<owner>/<repo>` — no nested groups,
+    /// exactly like Gitea.
+    pub fn forgejo(
+        host: impl Into<String>,
+        owner: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ForgeKind::Forgejo,
             host: host.into(),
             owner: owner.into(),
             name: name.into(),
@@ -189,6 +209,7 @@ impl ForgeRepository {
             || self.host == "bitbucket.org"
             || self.host == "dev.azure.com"
             || self.host == "gitea.com"
+            || self.host == "forgejo.org"
         {
             self.slug()
         } else {
@@ -973,6 +994,7 @@ mod tests {
         for forge in [
             ForgeKind::GitLab,
             ForgeKind::Gitea,
+            ForgeKind::Forgejo,
             ForgeKind::Bitbucket,
             ForgeKind::AzureDevOps,
             ForgeKind::Gerrit,
@@ -1162,4 +1184,20 @@ mod branch_lookup_tests {
             .unwrap_err();
         assert!(matches!(err, TuicrError::ForgeLimit(_)), "{err:?}");
     }
+}
+
+#[test]
+fn forgejo_kind_has_display_name_and_scopes() {
+    assert_eq!(ForgeKind::Forgejo.display_name(), "Forgejo");
+    assert_eq!(
+        ForgeKind::Forgejo.pr_list_scopes(),
+        &[
+            PullRequestListScope::Open,
+            PullRequestListScope::ReviewRequested
+        ]
+    );
+    let repo = ForgeRepository::forgejo("forgejo.org", "team", "service");
+    assert_eq!(repo.kind, ForgeKind::Forgejo);
+    assert_eq!(repo.slug(), "team/service");
+    assert_eq!(repo.display_name(), "team/service");
 }

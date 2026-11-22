@@ -62,7 +62,9 @@ fn create_forge_backend(
             use crate::forge::gitlab::GitLabGlabBackend;
             Box::new(GitLabGlabBackend::new(Some(repo.clone())).with_local_checkout(local_checkout))
         }
-        ForgeKind::Gitea => {
+        ForgeKind::Gitea | ForgeKind::Forgejo => {
+            // Forgejo serves the Gitea-compatible REST v1 API, so the `tea`
+            // CLI backend works for both.
             use crate::forge::gitea::GiteaTeaBackend;
             Box::new(
                 GiteaTeaBackend::new(Some(repo.clone()))

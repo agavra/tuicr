@@ -281,6 +281,13 @@ fn select_login<'a>(logins: &'a [TeaLoginHost], host: &str) -> Option<&'a str> {
         .map(|login| login.name.as_str())
 }
 
+/// Whether `host` is a known Forgejo instance: the public `forgejo.org`,
+/// its subdomains, and self-hosted instances whose hostname says `forgejo`.
+pub fn is_forgejo_host(host: &str) -> bool {
+    let lower = host.to_ascii_lowercase();
+    lower == "forgejo.org" || lower.ends_with(".forgejo.org") || lower.contains("forgejo")
+}
+
 /// Whether `host` should route to the Gitea backend.
 ///
 /// Self-hosted instances have arbitrary hostnames, so a name check alone
@@ -289,13 +296,14 @@ fn select_login<'a>(logins: &'a [TeaLoginHost], host: &str) -> Option<&'a str> {
 /// check in front of it keeps `gitea.com` and the common `gitea.*` deployments
 /// working before the user has run `tea logins add`.
 ///
-/// Gitea forks are not matched by name on purpose. Forgejo and Codeberg serve
-/// a compatible API today and will route here if the user has a `tea` login
-/// for them, but recognizing them by hostname would advertise support tuicr
-/// does not test and cannot promise as those projects diverge.
+/// Forgejo is matched by name as well (see [`is_forgejo_host`]): it is a Gitea
+/// fork that serves the same REST v1 API and is served by the same `tea`
+/// backend, so tuicr claims it explicitly (issue #518). Codeberg is not
+/// matched by name: it stays reachable through a `tea` login, classified as
+/// Gitea, because it is an independent Gitea deployment.
 pub fn is_gitea_host(host: &str) -> bool {
     let lower = host.to_ascii_lowercase();
-    if lower.contains("gitea") {
+    if lower.contains("gitea") || is_forgejo_host(&lower) {
         return true;
     }
     // Consulting `tea` means spawning it. Skip that for the hosts we already
@@ -360,17 +368,19 @@ fn scp_gitea_host<'a>(host: &'a str, resolved: &'a str) -> Option<&'a str> {
     }
 }
 
-/// Gitea repositories are always exactly `<owner>/<repo>` — no nested groups,
-/// unlike GitLab.
+/// Gitea/Forgejo repositories are always exactly `<owner>/<repo>` — no nested
+/// groups, unlike GitLab. Forgejo hosts get `ForgeKind::Forgejo`, everything
+/// else stays Gitea.
 fn gitea_repository_from_path(host: &str, path: &str) -> Option<ForgeRepository> {
     let mut parts = path.split('/').filter(|part| !part.is_empty());
     let owner = parts.next()?;
     let repo = parts.next()?;
-    Some(ForgeRepository::gitea(
-        host,
-        owner,
-        strip_git_suffix(trim_url_suffix(repo)),
-    ))
+    let repo = strip_git_suffix(trim_url_suffix(repo));
+    if is_forgejo_host(host) {
+        Some(ForgeRepository::forgejo(host, owner, repo))
+    } else {
+        Some(ForgeRepository::gitea(host, owner, repo))
+    }
 }
 
 /// Parse a `tuicr pr` target that names a Gitea pull request.
@@ -1647,13 +1657,80 @@ mod tests {
     }
 
     #[test]
-    fn should_not_claim_a_fork_host_by_name() {
-        // Forgejo and Codeberg are compatible today but are separate projects.
-        // Routing them requires an explicit `tea` login, not a hostname guess.
+    fn should_not_claim_codeberg_by_name() {
+        // Codeberg is an independent Gitea deployment, not a Gitea fork tuicr
+        // claims: routing it still requires an explicit `tea` login.
         assert_eq!(
             parse_gitea_remote_url("https://codeberg.org/team/service"),
             None
         );
+    }
+
+    // ----- Forgejo support (issue #518) -----
+
+    #[test]
+    fn should_detect_forgejo_hosts() {
+        assert!(is_forgejo_host("forgejo.org"));
+        assert!(is_forgejo_host("Forgejo.ORG"));
+        assert!(is_forgejo_host("git.forgejo.org"));
+        assert!(is_forgejo_host("forgejo.example.com"));
+        assert!(!is_forgejo_host("gitea.com"));
+        assert!(!is_forgejo_host("codeberg.org"));
+        assert!(!is_forgejo_host("github.com"));
+    }
+
+    #[test]
+    fn should_parse_https_forgejo_remote_as_forgejo_kind() {
+        assert_eq!(
+            parse_gitea_remote_url("https://forgejo.org/team/service.git"),
+            Some(ForgeRepository::forgejo("forgejo.org", "team", "service"))
+        );
+    }
+
+    #[test]
+    fn should_parse_scp_style_forgejo_remote_as_forgejo_kind() {
+        assert_eq!(
+            parse_gitea_remote_url("git@forgejo.org:team/service.git"),
+            Some(ForgeRepository::forgejo("forgejo.org", "team", "service"))
+        );
+    }
+
+    #[test]
+    fn should_parse_self_hosted_forgejo_remote_as_forgejo_kind() {
+        assert_eq!(
+            parse_gitea_remote_url("https://git.company-forgejo.example/team/service"),
+            Some(ForgeRepository::forgejo(
+                "git.company-forgejo.example",
+                "team",
+                "service"
+            ))
+        );
+    }
+
+    #[test]
+    fn should_keep_gitea_kind_for_gitea_hosts() {
+        assert_eq!(
+            parse_gitea_remote_url("https://gitea.com/team/service"),
+            Some(ForgeRepository::gitea("gitea.com", "team", "service"))
+        );
+        // A host containing both names is ambiguous; gitea wins only when
+        // forgejo is absent.
+        assert_eq!(
+            parse_gitea_remote_url("https://gitea.forgejo.example/team/service"),
+            Some(ForgeRepository::forgejo(
+                "gitea.forgejo.example",
+                "team",
+                "service"
+            ))
+        );
+    }
+
+    #[test]
+    fn forgejo_repositories_display_without_host_on_forgejo_org() {
+        let repo = ForgeRepository::forgejo("forgejo.org", "team", "service");
+        assert_eq!(repo.display_name(), "team/service");
+        let custom = ForgeRepository::forgejo("forgejo.example.com", "team", "service");
+        assert_eq!(custom.display_name(), "forgejo.example.com/team/service");
     }
 
     #[test]

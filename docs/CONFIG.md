@@ -331,7 +331,7 @@ comment_types = [
 
 ## Forge
 
-Settings under the `[forge]` section control how tuicr submits reviews to GitHub, GitLab, Gitea,
+Settings under the `[forge]` section control how tuicr submits reviews to GitHub, GitLab, Gitea, Forgejo,
 Bitbucket, Azure DevOps, and Gerrit.
 
 ```toml
@@ -380,7 +380,7 @@ comment_type_format = "**{label}:** "
 ```
 
 This applies to inline line comments, file-level comments, and review-level comments pushed via
-`:submit`. The prefix works the same way on GitLab, Gitea, Bitbucket, Azure DevOps, and Gerrit
+`:submit`. The prefix works the same way on GitLab, Gitea, Forgejo, Bitbucket, Azure DevOps, and Gerrit
 submissions.
 
 ## Export
