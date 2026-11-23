@@ -3,8 +3,8 @@
 **A code review TUI with vim keybindings: review any diff like a GitHub pull request, right from your terminal.**
 
 Your own changes, a teammate's PR, or your coding agent's work: comment on lines, ranges and files,
-then post the review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps or Gerrit, or copy it to the
-clipboard for your agent.
+then post the review to GitHub, GitLab, Heptapod, Gitea, Bitbucket, Azure DevOps or Gerrit, or copy
+it to the clipboard for your agent.
 
 [![Crates.io](https://img.shields.io/crates/v/tuicr)](https://crates.io/crates/tuicr)
 [![License](https://img.shields.io/crates/l/tuicr)](./LICENSE)
@@ -22,7 +22,7 @@ clipboard for your agent.
 - **PR-style comments.** Comment on a line, a range, a file or the whole review, and suggest code changes.
 - **Review tracking.** Mark files or hunks reviewed. The marks persist across sessions.
 - **git, jj and Mercurial.** Uncommitted changes, commit ranges, or a forge PR/MR.
-- **Two ways out.** Copy numbered, agent-ready markdown, or push a real inline review to six forges.
+- **Two ways out.** Copy numbered, agent-ready markdown, or push a real inline review to seven forges.
 
 ## Install
 
@@ -112,6 +112,7 @@ and Draft. Inline comments land on their lines; review-level comments become the
 |---|---|---|---|
 | GitHub | [`gh`](https://cli.github.com/) (`gh auth login`) | Draft leaves a pending review | [docs/GITHUB.md](docs/GITHUB.md) |
 | GitLab | [`glab`](https://gitlab.com/gitlab-org/cli) | Draft posts draft notes; Request changes needs you as an assigned reviewer | [docs/GITLAB.md](docs/GITLAB.md) |
+| Heptapod | [`glab`](https://gitlab.com/gitlab-org/cli) (`glab auth login --hostname <host>`) | Same REST API as GitLab; `hg` checkouts route local reads through `hg cat` / `hg diff -r` | [docs/GITLAB.md](docs/GITLAB.md#heptapod) |
 | Gitea | [`tea`](https://gitea.com/gitea/tea) (`tea logins add`) | Draft leaves a pending review; ranges collapse to their last line | [docs/GITEA.md](docs/GITEA.md) |
 | Bitbucket Cloud | `bkt` | Draft posts pending comments; Data Center unsupported | [docs/BITBUCKET.md](docs/BITBUCKET.md) |
 | Azure DevOps | `AZURE_DEVOPS_EXT_PAT`, or `az login` | Approve / Request changes cast a vote; no drafts, so Draft posts like Comment; needs a local clone | [docs/AZURE.md](docs/AZURE.md) |
@@ -162,7 +163,7 @@ All options, the theme list, local themes, Home Manager settings and `.tuicrigno
 | Write comments in the TUI | ✅ | ✅ | ✅ | ❌ | ❌ |
 | Vim keybindings | ✅ | ❌ | partial¹ | ❌ | ❌ |
 | Push inline review to GitHub | ✅ | ❌ | ❌ | partial² | ❌ |
-| Push inline review to GitLab, Gitea, Bitbucket, Azure DevOps, Gerrit | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Push inline review to GitLab, Heptapod, Gitea, Bitbucket, Azure DevOps, Gerrit | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Agent-ready markdown export | ✅ | via CLI skill | ❌ | ❌ | ❌ |
 | git | ✅ | ✅ | ✅ | ❌ | ✅ |
 | jj | ✅ | ✅ | ✅ | ❌ | ❌ |

@@ -90,6 +90,9 @@ pub fn default_host(kind: ForgeKind) -> Option<&'static str> {
         ForgeKind::Gitea => Some("gitea.com"),
         ForgeKind::Bitbucket => Some("bitbucket.org"),
         ForgeKind::AzureDevOps => Some("dev.azure.com"),
+        // Always self-hosted (foss.heptapod.net hosts the community
+        // edition, but it is nobody's default), so no unqualified slugs.
+        ForgeKind::Heptapod => None,
         ForgeKind::Gerrit => None,
     }
 }
@@ -103,6 +106,7 @@ pub fn forge_code(kind: ForgeKind) -> &'static str {
         ForgeKind::Bitbucket => "bb",
         ForgeKind::AzureDevOps => "az",
         ForgeKind::Gerrit => "ge",
+        ForgeKind::Heptapod => "hp",
     }
 }
 
@@ -252,6 +256,7 @@ impl FromStr for Slug {
                 "bb" => ForgeKind::Bitbucket,
                 "az" => ForgeKind::AzureDevOps,
                 "ge" => ForgeKind::Gerrit,
+                "hp" => ForgeKind::Heptapod,
                 other => return Err(SlugParseError::UnknownForge(other.to_string())),
             };
             return parse_pr(forge, rest).map(Slug::Pr);

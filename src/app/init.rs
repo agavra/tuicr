@@ -834,35 +834,16 @@ impl App {
         display_options: PrDisplayOptions,
         vcs_open_options: VcsOpenOptions,
     ) -> Result<Self> {
-        use crate::forge::azure::az::parse_pull_request_target_azure;
-        use crate::forge::bitbucket::bkt::parse_pull_request_target_bitbucket;
         use crate::forge::canonical::pr_target_repository;
-        use crate::forge::gerrit::api::parse_pull_request_target_gerrit;
-        use crate::forge::gitea::tea::parse_pull_request_target_gitea;
-        use crate::forge::github::gh::{SystemGhRunner, parse_pull_request_target};
-        use crate::forge::gitlab::glab::parse_pull_request_target_gitlab;
+        use crate::forge::github::gh::SystemGhRunner;
         use crate::forge::pr_open::open_pull_request;
 
-        // Bitbucket first: its URL shape (`/pull-requests/<n>`) is distinct,
-        // and the GitHub parser would otherwise claim the host. Gitea next:
-        // its `/pulls/<n>` URL differs from GitHub's singular `/pull/<n>`, but
-        // only the Gitea parser knows which self-hosted hosts are Gitea, and
-        // it must see a host-qualified `host/owner/repo#N` before GitHub's
-        // parser claims it. GitHub then handles numeric / `owner/repo#N` /
-        // GitHub URLs, GitLab handles `/-/merge_requests/<n>`, and the Azure
-        // (`/pullrequest/<n>`) and Gerrit (`/c/<project>/+/<n>`) URL shapes
-        // fall through last.
+        // Parser order (Heptapod first, ahead of GitHub's catch-all) lives
+        // and is regression-tested in `forge::parse_pull_request_target_any`.
         // `None` is `tuicr pr` with no target: the PR is looked up below,
         // once the repository and backend are known.
         let parsed = target
-            .map(|target| {
-                parse_pull_request_target_bitbucket(target)
-                    .or_else(|_| parse_pull_request_target_gitea(target))
-                    .or_else(|_| parse_pull_request_target(target))
-                    .or_else(|_| parse_pull_request_target_gitlab(target))
-                    .or_else(|_| parse_pull_request_target_azure(target))
-                    .or_else(|_| parse_pull_request_target_gerrit(target))
-            })
+            .map(crate::forge::parse_pull_request_target_any)
             .transpose()?;
 
         // Resolution order when the target lacks an explicit repo

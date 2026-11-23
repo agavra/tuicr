@@ -50,7 +50,7 @@ pub struct CliArgs {
 #[command(
     name = "tuicr",
     version,
-    about = "A code review TUI with vim keybindings. Submit to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit, or export to the clipboard.",
+    about = "A code review TUI with vim keybindings. Submit to GitHub, GitLab, Heptapod, Gitea, Bitbucket, Azure DevOps, or Gerrit, or export to the clipboard.",
     after_help = "Press ? in the application for keybinding help.",
     disable_help_subcommand = true
 )]
@@ -135,8 +135,8 @@ struct TuiOptions {
     no_update_check: bool,
 
     /// Override the forge repo for PR operations. Accepts GitHub, GitLab,
-    /// Gitea, Bitbucket, Azure DevOps, or Gerrit URLs (HTTPS, SCP-style SSH,
-    /// or ssh:// forms).
+    /// Heptapod, Gitea, Bitbucket, Azure DevOps, or Gerrit URLs (HTTPS,
+    /// SCP-style SSH, or ssh:// forms).
     #[arg(
         long = "repo-url",
         value_name = "URL",
@@ -523,15 +523,16 @@ fn non_empty_theme_name(s: &str) -> Result<String, String> {
 }
 
 /// Reject `--repo-url` values that don't parse as a supported forge remote URL
-/// (GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit) so the failure is
-/// surfaced at startup rather than when the PR tab is opened.
+/// (GitHub, GitLab, Heptapod, Gitea, Bitbucket, Azure DevOps, or Gerrit) so the
+/// failure is surfaced at startup rather than when the PR tab is opened.
 fn parse_repo_url(s: &str) -> Result<String, String> {
     if crate::forge::parse_any_remote_url(s).is_some() {
         Ok(s.to_string())
     } else {
         Err(format!(
-            "--repo-url value '{s}' is not a recognized GitHub, GitLab, Gitea, Bitbucket, \
-             Azure DevOps, or Gerrit URL. Expected forms like: https://github.com/owner/repo, \
+            "--repo-url value '{s}' is not a recognized GitHub, GitLab, Heptapod, Gitea, \
+             Bitbucket, Azure DevOps, or Gerrit URL. Expected forms like: \
+             https://github.com/owner/repo, \
              git@gitlab.com:owner/repo, https://gitea.com/owner/repo, \
              https://bitbucket.org/workspace/repo, \
              https://dev.azure.com/org/project/_git/repo, or \
@@ -598,6 +599,7 @@ mod tests {
         for forge in [
             "GitHub",
             "GitLab",
+            "Heptapod",
             "Gitea",
             "Bitbucket",
             "Azure DevOps",
@@ -1161,7 +1163,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
         assert!(
             err.to_string()
-                .contains("not a recognized GitHub, GitLab, Gitea, Bitbucket, Azure"),
+                .contains("not a recognized GitHub, GitLab, Heptapod, Gitea, Bitbucket, Azure"),
             "unexpected error: {err}"
         );
     }

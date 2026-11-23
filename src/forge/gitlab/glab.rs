@@ -921,7 +921,7 @@ pub fn parse_pull_request_target_gitlab(input: &str) -> Result<PullRequestTarget
 
 /// How far host recognition may go to decide a remote is GitLab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HostLookup {
+pub(crate) enum HostLookup {
     /// Consult `glab`'s configured host and `~/.ssh/config` when the hostname
     /// alone is inconclusive.
     WithConfig,
@@ -966,7 +966,7 @@ pub fn parse_gitlab_remote_url_by_hostname(remote_url: &str) -> Option<ForgeRepo
     parse_gitlab_remote(remote_url, HostLookup::HostnameOnly)
 }
 
-fn parse_gitlab_remote(remote_url: &str, lookup: HostLookup) -> Option<ForgeRepository> {
+pub(crate) fn parse_gitlab_remote(remote_url: &str, lookup: HostLookup) -> Option<ForgeRepository> {
     let trimmed = trim_url_suffix(remote_url.trim());
     if trimmed.is_empty() {
         return None;
@@ -1129,7 +1129,7 @@ fn parse_gitlab_repo_hash_target(target: &str) -> Option<PullRequestTarget> {
     ))
 }
 
-fn gitlab_repository_from_path(host: &str, path: &str) -> Option<ForgeRepository> {
+pub(crate) fn gitlab_repository_from_path(host: &str, path: &str) -> Option<ForgeRepository> {
     let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
     if parts.len() < 2 {
         return None;

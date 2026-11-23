@@ -3,7 +3,7 @@
 # (clap help text undersold Gitea, Bitbucket and Gerrit).
 from e2e import Scenario, scenario
 
-FORGES = ["GitHub", "GitLab", "Gitea", "Bitbucket", "Azure DevOps", "Gerrit"]
+FORGES = ["GitHub", "GitLab", "Heptapod", "Gitea", "Bitbucket", "Azure DevOps", "Gerrit"]
 
 
 @scenario
