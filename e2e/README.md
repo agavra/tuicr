@@ -137,7 +137,7 @@ columns are ignored), `colors_hash(*rows)` (rows are `1` or `(3, 30)`; no argume
 `pane_exists()`, `exit_status()`; waits and checks `wait_for` (alias `expect`), `wait_gone`, `reject(pattern, window=)`,
 `check(pattern, message)` (no polling), `settle(quiet=0.25)`, `wait_screen_change(before)`, `wait_exit(timeout,
 status=0|"any")`; flows `quit()`, `cmd("w")`, `save()`, `comment(text, key="c")` (types literally, returns once the
-editor closed and the status line says the comment was added), `cursor_on(regex)`; fake-forge log (see below)
+editor closed back to `^ NORMAL ` with no status-line error and `text` is in the autosaved session JSON on disk), `cursor_on(regex)`; fake-forge log (see below)
 `forge_mark()`, `forge_calls(where=, since=, notes=)`, `forge_count(regex)`, `forge_expect` / `forge_reject`,
 `wait_forge_log(regex, timeout, count=1)`, `posts()` (review POSTs of the fake `gh`), `forge_posts(tool)`,
 `mutations(tool)`. Timeouts default to `E2E_TIMEOUT` (10 s). Module functions: `wait_file(path)`, `wait_grep(path, regex)`,

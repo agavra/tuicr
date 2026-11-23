@@ -180,6 +180,7 @@ out to.
 | `TERM_PROGRAM` | When set to `rex`, prefer OSC 52 clipboard writes (non-macOS only; macOS keeps `pbcopy` first) |
 | `XDG_SESSION_TYPE` | Picks `wl-copy` on Wayland or `xclip` on X11 |
 | `CARGO_HOME` | Cargo root `tuicr update` uses to tell whether the binary is a Cargo install (default `~/.cargo`) |
+| `XDG_STATE_HOME` | State directory `tuicr update` checks for Home Manager generations (default `~/.local/state`) |
 
 Set `TUICR_PROFILE` to `1`, `true`, `on`, or `yes` to log to
 `tuicr-profile.<timestamp>.log` in the system temp directory. Any other

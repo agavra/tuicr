@@ -822,7 +822,7 @@ pub fn parse_github_remote_url(remote_url: &str) -> Option<ForgeRepository> {
         .map(|(_, rest)| rest)
         .unwrap_or(without_scheme);
     let (host, path) = without_user.split_once('/')?;
-    repository_from_path(strip_port(host), path)
+    repository_from_path(normalize_ssh_transport_host(strip_port(host)), path)
 }
 
 fn parse_numeric_target(target: &str) -> Option<PullRequestTarget> {
@@ -1717,6 +1717,15 @@ Match host github-work
         let repo = repository_from_path(&resolved, path).unwrap();
         assert_eq!(repo.host, "github.com");
         assert_eq!(repo.slug(), "agavra/tuicr");
+    }
+
+    #[test]
+    fn parses_ssh_scheme_url_with_ssh_over_443_transport_host() {
+        let repo =
+            parse_github_remote_url("ssh://git@ssh.github.com:443/agavra/tuicr.git").unwrap();
+        assert_eq!(repo.host, "github.com");
+        assert_eq!(repo.owner, "agavra");
+        assert_eq!(repo.name, "tuicr");
     }
 
     #[test]

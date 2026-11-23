@@ -54,6 +54,9 @@ const AZ_RESOURCE: &str = "499b84ac-1321-427f-aa17-267ca6975798";
 /// Canonical Azure DevOps cloud host. `*.visualstudio.com` URLs are normalized
 /// to this so all API URLs share one shape.
 const DEFAULT_AZURE_HOST: &str = "dev.azure.com";
+/// Ceiling on continuation-token pages for `list_pull_request_commits`
+/// (100 pages x 100 commits = 10,000 commits), matching GitLab/Bitbucket.
+const MAX_COMMIT_PAGES: usize = 100;
 /// Env vars checked (in order) for a Personal Access Token.
 const PAT_ENV_VARS: &[&str] = &["AZURE_DEVOPS_EXT_PAT", "AZURE_DEVOPS_PAT"];
 /// Env var naming a self-hosted Azure DevOps Server / TFS instance.
@@ -73,10 +76,31 @@ pub enum AzHttpError {
 
 pub type AzHttpResult<T> = std::result::Result<T, AzHttpError>;
 
+/// Raw 2xx response body plus any `x-ms-continuationtoken` pagination header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AzHttpResponse {
+    pub body: String,
+    pub continuation_token: Option<String>,
+}
+
 /// HTTP transport for the Azure DevOps REST API. `url` already carries the
 /// `api-version` query parameter. Returns the raw 2xx response body.
 pub trait AzHttp: Send + Sync {
     fn request(&self, method: &str, url: &str, body: Option<&str>) -> AzHttpResult<String>;
+
+    /// Like [`request`], also returning the `x-ms-continuationtoken` response
+    /// header when the transport exposes HTTP headers.
+    fn request_with_continuation(
+        &self,
+        method: &str,
+        url: &str,
+        body: Option<&str>,
+    ) -> AzHttpResult<AzHttpResponse> {
+        self.request(method, url, body).map(|body| AzHttpResponse {
+            body,
+            continuation_token: None,
+        })
+    }
 }
 
 /// Direct REST transport using a Personal Access Token (HTTP Basic auth:
@@ -103,6 +127,16 @@ impl PatHttp {
 
 impl AzHttp for PatHttp {
     fn request(&self, method: &str, url: &str, body: Option<&str>) -> AzHttpResult<String> {
+        self.request_with_continuation(method, url, body)
+            .map(|response| response.body)
+    }
+
+    fn request_with_continuation(
+        &self,
+        method: &str,
+        url: &str,
+        body: Option<&str>,
+    ) -> AzHttpResult<AzHttpResponse> {
         let result = match method.to_ascii_uppercase().as_str() {
             "GET" => self
                 .agent
@@ -134,6 +168,13 @@ impl AzHttp for PatHttp {
             body: err.to_string(),
         })?;
         let status = response.status().as_u16();
+        let continuation_token = response
+            .headers()
+            .get("x-ms-continuationtoken")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
         let text = response
             .into_body()
             .read_to_string()
@@ -143,7 +184,10 @@ impl AzHttp for PatHttp {
             })?;
 
         if (200..300).contains(&status) {
-            Ok(text)
+            Ok(AzHttpResponse {
+                body: text,
+                continuation_token,
+            })
         } else if status == 401 || status == 403 {
             Err(AzHttpError::Auth(text))
         } else {
@@ -373,6 +417,12 @@ impl AzureDevOpsBackend {
     fn get(&self, repo: &ForgeRepository, url: String) -> Result<String> {
         self.http
             .request("GET", &with_api_version(&url), None)
+            .map_err(|err| map_http_error(err, &repo.host))
+    }
+
+    fn get_with_continuation(&self, repo: &ForgeRepository, url: String) -> Result<AzHttpResponse> {
+        self.http
+            .request_with_continuation("GET", &with_api_version(&url), None)
             .map_err(|err| map_http_error(err, &repo.host))
     }
 
@@ -699,11 +749,48 @@ impl ForgeBackend for AzureDevOpsBackend {
 
     fn list_pull_request_commits(&self, pr: &PullRequestDetails) -> Result<Vec<PullRequestCommit>> {
         let base = git_api_base(&pr.repository);
-        let url = format!("{base}/pullRequests/{}/commits", pr.number);
-        let list: AzList<AzGitCommitRef> = self.get_json(&pr.repository, url)?;
-        Ok(list
-            .value
+        let mut raw_commits = Vec::new();
+        let mut continuation_token: Option<String> = None;
+        let mut pages = 0usize;
+
+        loop {
+            let url = match &continuation_token {
+                Some(token) => format!(
+                    "{base}/pullRequests/{}/commits?continuationToken={}",
+                    pr.number,
+                    encode_query_value(token),
+                ),
+                None => format!("{base}/pullRequests/{}/commits", pr.number),
+            };
+            let response = self.get_with_continuation(&pr.repository, url)?;
+            let list: AzList<AzGitCommitRef> = serde_json::from_str(&response.body)?;
+            raw_commits.extend(list.value);
+            pages += 1;
+
+            match response.continuation_token {
+                Some(next) => {
+                    if pages >= MAX_COMMIT_PAGES {
+                        return Err(TuicrError::ForgeLimit(format!(
+                            "Azure DevOps pull request commits exceed {MAX_COMMIT_PAGES} pages; refusing to use a partial list"
+                        )));
+                    }
+                    if continuation_token.as_deref() == Some(next.as_str()) {
+                        return Err(TuicrError::ForgeLimit(
+                            "Azure DevOps pull request commits pagination repeated continuation token; refusing to use a partial list"
+                                .to_string(),
+                        ));
+                    }
+                    continuation_token = Some(next);
+                }
+                None => break,
+            }
+        }
+
+        // Azure returns PR commits newest-first; the ForgeBackend contract is
+        // oldest-first (prepare_open_pr reverses once for display).
+        Ok(raw_commits
             .into_iter()
+            .rev()
             .map(|mut commit| {
                 if commit.comment_truncated {
                     // The clone already holds the PR's commits; avoid a REST round trip
@@ -965,12 +1052,8 @@ fn parse_azure_remote_url_with(
     }
 
     let without_scheme = strip_scheme(trimmed).unwrap_or(trimmed);
-    let without_user = without_scheme
-        .rsplit_once('@')
-        .map(|(_, rest)| rest)
-        .unwrap_or(without_scheme);
-    let (host, path) = without_user.split_once('/')?;
-    let host = strip_port(host);
+    let (authority, path) = without_scheme.split_once('/')?;
+    let host = strip_port(authority.rsplit_once('@').map_or(authority, |(_, h)| h));
     if !is_cloud_host(host) && !is_server(host) {
         return None;
     }
@@ -1146,6 +1229,21 @@ mod tests {
         assert_eq!(repo, azure_repo());
     }
 
+    #[test]
+    fn parses_https_dev_azure_remote_with_at_sign_in_project_or_repo() {
+        let repo =
+            parse_azure_remote_url("https://dev.azure.com/myorg/my@project/_git/my@repo").unwrap();
+        assert_eq!(
+            repo,
+            ForgeRepository::azure("dev.azure.com", "myorg/my@project", "my@repo")
+        );
+
+        let with_user =
+            parse_azure_remote_url("https://myorg@dev.azure.com/myorg/my@project/_git/my@repo.git")
+                .unwrap();
+        assert_eq!(with_user, repo);
+    }
+
     fn tfs_repo(owner: &str, name: &str) -> ForgeRepository {
         ForgeRepository::azure("tfs.example.com", owner, name)
     }
@@ -1317,6 +1415,7 @@ mod tests {
         calls: Mutex<Vec<(String, String, Option<String>)>>,
         lookups: Mutex<Vec<String>>,
         responses: Mutex<Vec<AzHttpResult<String>>>,
+        continuation_tokens: Mutex<Vec<Option<String>>>,
         iterations: String,
     }
 
@@ -1327,6 +1426,7 @@ mod tests {
                 lookups: Mutex::new(Vec::new()),
                 iterations: ITERATIONS.to_string(),
                 responses: Mutex::new(responses.into_iter().map(Ok).collect()),
+                continuation_tokens: Mutex::new(Vec::new()),
             }
         }
     }
@@ -1358,6 +1458,25 @@ mod tests {
                 responses.remove(0)
             }
         }
+
+        fn request_with_continuation(
+            &self,
+            method: &str,
+            url: &str,
+            body: Option<&str>,
+        ) -> AzHttpResult<AzHttpResponse> {
+            let body = self.request(method, url, body)?;
+            let mut tokens = self.continuation_tokens.lock().unwrap();
+            let continuation_token = if tokens.is_empty() {
+                None
+            } else {
+                tokens.remove(0)
+            };
+            Ok(AzHttpResponse {
+                body,
+                continuation_token,
+            })
+        }
     }
 
     /// A transport the test can inspect after the backend has used it.
@@ -1370,6 +1489,13 @@ mod tests {
             )))
         }
 
+        fn with_pages(pages: Vec<(String, Option<String>)>) -> Self {
+            let (bodies, tokens): (Vec<_>, Vec<_>) = pages.into_iter().unzip();
+            let http = RecordingHttp::with_responses(bodies);
+            *http.continuation_tokens.lock().unwrap() = tokens;
+            Self(std::sync::Arc::new(http))
+        }
+
         fn with_iterations(responses: Vec<String>, iterations: &str) -> Self {
             let mut http = RecordingHttp::with_responses(responses);
             http.iterations = iterations.to_string();
@@ -1379,6 +1505,15 @@ mod tests {
     impl AzHttp for SharedHttp {
         fn request(&self, method: &str, url: &str, body: Option<&str>) -> AzHttpResult<String> {
             self.0.request(method, url, body)
+        }
+
+        fn request_with_continuation(
+            &self,
+            method: &str,
+            url: &str,
+            body: Option<&str>,
+        ) -> AzHttpResult<AzHttpResponse> {
+            self.0.request_with_continuation(method, url, body)
         }
     }
 
@@ -1527,13 +1662,14 @@ mod tests {
 
     #[test]
     fn should_keep_the_commit_list_when_a_full_message_fetch_fails() {
-        // given
+        // given: Azure returns commits newest-first
         let shared = SharedHttp::new(vec![
             r#"{"count":3,"value":[
-                {"commitId":"aaaa","comment":"First subject\n\nPartial body","commentTruncated":true},
+                {"commitId":"cccc","comment":"Third sub","commentTruncated":true},
                 {"commitId":"bbbb","comment":"Second subject\n\nComplete body."},
-                {"commitId":"cccc","comment":"Third sub","commentTruncated":true}
-            ]}"#.to_string(),
+                {"commitId":"aaaa","comment":"First subject\n\nPartial body","commentTruncated":true}
+            ]}"#
+            .to_string(),
         ]);
         shared.0.responses.lock().unwrap().extend([
             Err(AzHttpError::Failed {
@@ -1573,6 +1709,92 @@ mod tests {
         assert_eq!(commits[0].summary, "Subject");
         assert_eq!(commits[0].body, None);
         assert_eq!(shared.0.calls.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn should_return_pull_request_commits_oldest_first() {
+        // given: Azure returns PR commits newest-first
+        let shared = SharedHttp::new(vec![
+            r#"{"count":3,"value":[
+                {"commitId":"cccc","comment":"Third (newest)"},
+                {"commitId":"bbbb","comment":"Second"},
+                {"commitId":"aaaa","comment":"First (oldest)"}
+            ]}"#
+            .to_string(),
+        ]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+
+        // when
+        let commits = backend.list_pull_request_commits(&pr_details()).unwrap();
+
+        // then
+        let oids: Vec<&str> = commits.iter().map(|c| c.oid.as_str()).collect();
+        assert_eq!(oids, vec!["aaaa", "bbbb", "cccc"]);
+    }
+
+    #[test]
+    fn should_follow_continuation_tokens_when_listing_pull_request_commits() {
+        // given: two newest-first pages linked by x-ms-continuationtoken
+        let shared = SharedHttp::with_pages(vec![
+            (
+                r#"{"count":2,"value":[
+                    {"commitId":"4444","comment":"Fourth"},
+                    {"commitId":"3333","comment":"Third"}
+                ]}"#
+                .to_string(),
+                Some("tok+2&next".to_string()),
+            ),
+            (
+                r#"{"count":2,"value":[
+                    {"commitId":"2222","comment":"Second"},
+                    {"commitId":"1111","comment":"First"}
+                ]}"#
+                .to_string(),
+                None,
+            ),
+        ]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+
+        // when
+        let commits = backend.list_pull_request_commits(&pr_details()).unwrap();
+
+        // then: reversed across all pages to oldest-first
+        let oids: Vec<&str> = commits.iter().map(|c| c.oid.as_str()).collect();
+        assert_eq!(oids, vec!["1111", "2222", "3333", "4444"]);
+        let calls = shared.0.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(
+            calls[1].1.contains("continuationToken=tok%2B2%26next"),
+            "expected encoded continuationToken in second request, got {}",
+            calls[1].1
+        );
+    }
+
+    #[test]
+    fn should_return_forge_limit_when_pull_request_commits_exceed_max_pages() {
+        // given: MAX_COMMIT_PAGES pages and still a continuation token remaining
+        let pages = (0..MAX_COMMIT_PAGES)
+            .map(|i| {
+                (
+                    format!(r#"{{"count":1,"value":[{{"commitId":"c{i:04}","comment":"c{i}"}}]}}"#),
+                    Some(format!("tok-{i}")),
+                )
+            })
+            .collect();
+        let shared = SharedHttp::with_pages(pages);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+
+        // when
+        let err = backend
+            .list_pull_request_commits(&pr_details())
+            .expect_err("exceeding MAX_COMMIT_PAGES must fail with ForgeLimit");
+
+        // then
+        assert!(matches!(err, TuicrError::ForgeLimit(_)), "got {err:?}");
+        assert_eq!(shared.0.calls.lock().unwrap().len(), MAX_COMMIT_PAGES);
     }
 
     // Iteration 4 shares iteration 3's head commit (the later one wins);
@@ -2098,6 +2320,7 @@ mod tests {
                     body: "boom".to_string(),
                 }),
             ]),
+            continuation_tokens: Mutex::new(Vec::new()),
         };
         let backend = AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(http));
         let mut second = inline(11, GhSide::Right);
@@ -2136,6 +2359,7 @@ mod tests {
                     body: "boom".to_string(),
                 }),
             ]),
+            continuation_tokens: Mutex::new(Vec::new()),
         };
         let backend = AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(http));
         let comments = [inline(10, GhSide::Right)];
@@ -2169,6 +2393,7 @@ mod tests {
                 status: Some(500),
                 body: "boom".to_string(),
             })]),
+            continuation_tokens: Mutex::new(Vec::new()),
         }));
         let backend =
             AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));

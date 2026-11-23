@@ -20,7 +20,7 @@ use crate::error::{Result, TuicrError};
 use crate::forge::local_git::read_blob;
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::remote_url::{
-    parse_scp_like_remote, read_ssh_hostname, strip_scheme, trim_url_suffix,
+    parse_scp_like_remote, read_ssh_hostname, strip_port, strip_scheme, trim_url_suffix,
 };
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
@@ -658,6 +658,7 @@ pub fn parse_bitbucket_remote_url(remote_url: &str) -> Option<ForgeRepository> {
         .map(|(_, rest)| rest)
         .unwrap_or(without_scheme);
     let (host, path) = without_user.split_once('/')?;
+    let host = strip_port(host);
     if !is_bitbucket_cloud_host(host) {
         return None;
     }
@@ -1718,8 +1719,10 @@ mod tests {
             "https://someuser@bitbucket.org/example-workspace/repo.git",
             "git@bitbucket.org:example-workspace/repo.git",
             "ssh://git@bitbucket.org/example-workspace/repo.git",
-            // SSH-over-443 transport host maps back to Cloud.
+            // SSH-over-443 transport host and explicit SSH ports map back to Cloud.
             "git@altssh.bitbucket.org:example-workspace/repo.git",
+            "ssh://git@altssh.bitbucket.org:443/example-workspace/repo.git",
+            "ssh://git@bitbucket.org:22/example-workspace/repo.git",
         ] {
             assert_eq!(
                 parse_bitbucket_remote_url(url).as_ref(),
