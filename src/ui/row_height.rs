@@ -372,9 +372,8 @@ fn full_row_text(app: &App, idx: usize, annotation: &AnnotatedLine) -> String {
             // only unified single-file view emits the `↓ next-file` hint.
             if app.diff_view_mode == DiffViewMode::Unified
                 && app.is_single_file_view
-                && let Some(f) = app.diff_files.get(app.diff_state.current_file_idx + 1)
+                && let Some(path) = diff_view::next_visible_file_path(app)
             {
-                let path = f.display_path().display().to_string();
                 format!(
                     "{indicator}{}",
                     diff_view::spacing_next_file_hint_text(
