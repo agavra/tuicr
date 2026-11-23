@@ -3,7 +3,7 @@
 **A code review TUI with vim keybindings: review any diff like a GitHub pull request, right from your terminal.**
 
 Your own changes, a teammate's PR, or your coding agent's work: comment on lines, ranges and files,
-then post the review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps or Gerrit, or copy it to the
+then post the review to GitHub, GitLab, Gitea, Forgejo, Bitbucket, Azure DevOps or Gerrit, or copy it to the
 clipboard for your agent.
 
 [![Crates.io](https://img.shields.io/crates/v/tuicr)](https://crates.io/crates/tuicr)
@@ -113,6 +113,7 @@ and Draft. Inline comments land on their lines; review-level comments become the
 | GitHub | [`gh`](https://cli.github.com/) (`gh auth login`) | Draft leaves a pending review | [docs/GITHUB.md](docs/GITHUB.md) |
 | GitLab | [`glab`](https://gitlab.com/gitlab-org/cli) | Draft posts draft notes; Request changes needs you as an assigned reviewer | [docs/GITLAB.md](docs/GITLAB.md) |
 | Gitea | [`tea`](https://gitea.com/gitea/tea) (`tea logins add`) | Draft leaves a pending review; ranges collapse to their last line | [docs/GITEA.md](docs/GITEA.md) |
+| Forgejo | [`tea`](https://gitea.com/gitea/tea) (`tea logins add`) — Forgejo serves the Gitea-compatible API; `codeberg.org` is the default host | Same as Gitea | [docs/GITEA.md](docs/GITEA.md) |
 | Bitbucket Cloud | `bkt` | Draft posts pending comments; Data Center unsupported | [docs/BITBUCKET.md](docs/BITBUCKET.md) |
 | Azure DevOps | `AZURE_DEVOPS_EXT_PAT`, or `az login` | Approve / Request changes cast a vote; no drafts, so Draft posts like Comment; needs a local clone | [docs/AZURE.md](docs/AZURE.md) |
 | Gerrit | `GERRIT_USERNAME` / `GERRIT_PASSWORD` | Approve votes Code-Review +2, Request changes -1; Draft keeps Gerrit drafts; needs a local clone | [docs/GERRIT.md](docs/GERRIT.md) |

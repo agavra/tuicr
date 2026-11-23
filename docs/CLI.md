@@ -32,7 +32,7 @@ subcommand.
 Without a target, `tuicr pr` reviews the open PR for the branch checked out in
 the current directory, like `gh pr view`. It finds the PR on the same repository
 a bare number would use (`--repo-url` / `--remote` first, then the checkout's
-`origin`, or its upstream for a fork). GitHub, GitLab, Gitea, Bitbucket and Azure
+`origin`, or its upstream for a fork). GitHub, GitLab, Gitea, Forgejo, Bitbucket and Azure
 DevOps match the PR whose head branch is the checked-out branch, scanning at most
 1,000 open PRs. Gerrit matches the `Change-Id` trailer of the `HEAD` commit. The
 command fails, naming `tuicr pr <number>` as the way out, when no PR matches, when
@@ -88,7 +88,7 @@ local-review flags `-r`, `-w`, `-p`, `--file` and `-A`.
 | `--version` | `-V` | | Print the version and exit |
 | `--help` | `-h` | | Print help and exit |
 
-`--repo-url` accepts GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, and Gerrit repos in HTTPS,
+`--repo-url` accepts GitHub, GitLab, Gitea, Forgejo, Bitbucket, Azure DevOps, and Gerrit repos in HTTPS,
 SCP-style SSH, or `ssh://` form — for example
 `https://github.com/owner/repo`, `git@gitlab.com:owner/repo`, or
 `https://dev.azure.com/org/project/_git/repo`. It is what to reach for when the

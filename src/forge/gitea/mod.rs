@@ -1,10 +1,10 @@
 //! Gitea backend, driven by the `tea` CLI.
 //!
-//! Scoped to Gitea itself. Forks such as Forgejo and Codeberg currently serve
-//! a compatible REST v1 API and will be routed here when the user has a `tea`
-//! login for them, but tuicr does not claim to support them: they are
-//! independent projects free to diverge, and nothing here is tested against
-//! them.
+//! Scoped to Gitea itself and to Forgejo (issue #518): Forgejo is a Gitea fork
+//! that serves the same REST v1 API, so both are served by `tea`. Repositories
+//! on Forgejo hosts get `ForgeKind::Forgejo`; everything else is
+//! `ForgeKind::Gitea`. Codeberg is *not* claimed: it is an independent Gitea
+//! deployment and stays reachable through a `tea` login as Gitea.
 
 pub mod models;
 pub mod tea;
