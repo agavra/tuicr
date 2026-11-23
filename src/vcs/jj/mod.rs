@@ -262,18 +262,7 @@ impl VcsBackend for JjBackend {
             return Ok(Vec::new());
         }
 
-        let fileset = jj_fileset_arg(file_path);
-        let content = if let Some(commit) = ref_commit {
-            run_jj_command(
-                &self.info.root_path,
-                ["file", "show", "-r", commit, &fileset],
-            )?
-        } else if file_status == FileStatus::Deleted {
-            run_jj_command(&self.info.root_path, ["file", "show", "-r", "@-", &fileset])?
-        } else {
-            std::fs::read_to_string(self.info.root_path.join(file_path))?
-        };
-
+        let content = self.read_file_content(file_path, file_status, ref_commit)?;
         Ok(slice_context_lines(&content, start_line, end_line))
     }
 
@@ -283,17 +272,7 @@ impl VcsBackend for JjBackend {
         file_status: FileStatus,
         ref_commit: Option<&str>,
     ) -> Result<u32> {
-        let fileset = jj_fileset_arg(file_path);
-        let content = if let Some(commit) = ref_commit {
-            run_jj_command(
-                &self.info.root_path,
-                ["file", "show", "-r", commit, &fileset],
-            )?
-        } else if file_status == FileStatus::Deleted {
-            run_jj_command(&self.info.root_path, ["file", "show", "-r", "@-", &fileset])?
-        } else {
-            std::fs::read_to_string(self.info.root_path.join(file_path))?
-        };
+        let content = self.read_file_content(file_path, file_status, ref_commit)?;
         Ok(content.lines().count() as u32)
     }
 
@@ -546,9 +525,48 @@ fn jj_show_batch(root: &Path, rev: &str, paths: &[PathBuf]) -> Result<HashMap<Pa
     Ok(parse_batched_files(&output))
 }
 
-/// Whether `rev` has more than one parent, so that `{rev}-` names several
-/// revisions and can't be passed where jj expects exactly one.
-fn is_merge(root: &Path, rev: &str) -> Result<bool> {
+impl JjBackend {
+    fn read_file_content(
+        &self,
+        file_path: &Path,
+        file_status: FileStatus,
+        ref_commit: Option<&str>,
+    ) -> Result<String> {
+        let fileset = jj_fileset_arg(file_path);
+        if let Some(commit) = ref_commit {
+            run_jj_command(
+                &self.info.root_path,
+                ["file", "show", "-r", commit, &fileset],
+            )
+        } else if file_status == FileStatus::Deleted {
+            if is_merge(&self.info.root_path, "@")? {
+                // `@-` resolves to multiple revisions on a merge working copy,
+                // so `jj file show -r @-` fails. Probe each parent individually
+                // and degrade to empty content if no single parent holds it.
+                for parent in parent_commit_ids(&self.info.root_path, "@")? {
+                    if let Ok(content) = run_jj_command(
+                        &self.info.root_path,
+                        ["file", "show", "-r", &parent, &fileset],
+                    ) {
+                        return Ok(content);
+                    }
+                }
+                Ok(String::new())
+            } else {
+                run_jj_command(&self.info.root_path, ["file", "show", "-r", "@-", &fileset])
+            }
+        } else {
+            crate::vcs::read_workdir_file(&self.info.root_path, file_path).ok_or_else(|| {
+                TuicrError::VcsCommand(format!(
+                    "failed to read {} from the working tree",
+                    file_path.to_string_lossy()
+                ))
+            })
+        }
+    }
+}
+
+fn parent_commit_ids(root: &Path, rev: &str) -> Result<Vec<String>> {
     let revset = format!("parents({})", rev);
     let output = run_jj_command(
         root,
@@ -561,7 +579,18 @@ fn is_merge(root: &Path, rev: &str) -> Result<bool> {
             "commit_id ++ \"\\n\"",
         ],
     )?;
-    Ok(output.lines().filter(|l| !l.trim().is_empty()).count() > 1)
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// Whether `rev` has more than one parent, so that `{rev}-` names several
+/// revisions and can't be passed where jj expects exactly one.
+fn is_merge(root: &Path, rev: &str) -> Result<bool> {
+    Ok(parent_commit_ids(root, rev)?.len() > 1)
 }
 
 /// `jj_show_batch`, except that a merge's base has no single revision to
@@ -1751,5 +1780,67 @@ mod tests {
                 commit.short_id
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_jj_context_and_line_count_do_not_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let Some(temp) = setup_test_repo() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        fs::write(
+            &secret,
+            "TOP_SECRET
+line 2
+",
+        )
+        .unwrap();
+        symlink(&secret, temp.path().join("link.txt")).unwrap();
+
+        let backend = JjBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create backend");
+
+        assert!(
+            backend
+                .file_line_count(Path::new("link.txt"), FileStatus::Added, None)
+                .is_err(),
+            "file_line_count must not follow symlinks"
+        );
+        assert!(
+            backend
+                .fetch_context_lines(Path::new("link.txt"), FileStatus::Added, None, 1, 2)
+                .is_err(),
+            "fetch_context_lines must not follow symlinks"
+        );
+    }
+
+    #[test]
+    fn test_jj_deleted_file_context_and_line_count_on_merge_working_copy() {
+        let Some(temp) = setup_test_repo_with_merge() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+        // Delete a file that came from one of the merge parents while @ is a merge.
+        fs::remove_file(temp.path().join("right.txt")).unwrap();
+
+        let backend = JjBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create jj backend");
+
+        let count = backend
+            .file_line_count(Path::new("right.txt"), FileStatus::Deleted, None)
+            .expect("file_line_count on deleted file in merge working copy should succeed");
+        assert_eq!(count, 1);
+
+        let lines = backend
+            .fetch_context_lines(Path::new("right.txt"), FileStatus::Deleted, None, 1, 1)
+            .expect("fetch_context_lines on deleted file in merge working copy should succeed");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].content, "right");
     }
 }
