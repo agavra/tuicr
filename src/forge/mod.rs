@@ -105,16 +105,14 @@ pub(crate) fn local_merge_base(repo_root: &Path, base_sha: &str, head_sha: &str)
     use std::ffi::OsStr;
 
     for sha in [base_sha, head_sha] {
-        crate::process::run_command_output(
-            "git",
-            Some(repo_root),
+        local_git::run_git_probe(
+            repo_root,
             ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
         )
         .ok()?;
     }
-    let output = crate::process::run_command_output(
-        "git",
-        Some(repo_root),
+    let output = local_git::run_git_probe(
+        repo_root,
         ["merge-base", base_sha, head_sha]
             .iter()
             .map(|s| OsStr::new(*s)),
@@ -134,9 +132,8 @@ pub(crate) fn local_range_diff(
     use std::ffi::OsStr;
 
     for sha in [start_sha, end_sha] {
-        crate::process::run_command_output(
-            "git",
-            Some(repo_root),
+        local_git::run_git_probe(
+            repo_root,
             ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
         )
         .ok()?;
@@ -320,6 +317,25 @@ pub(crate) static GIT_SSH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forge::local_git::test_support::{clone_without_blobs, git, init_repo_with_commit};
+
+    #[test]
+    fn local_merge_base_does_not_lazy_fetch_a_missing_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        std::fs::create_dir(&origin).unwrap();
+        let first = init_repo_with_commit(&origin, &["one"]);
+        let clone = dir.path().join("clone");
+        clone_without_blobs(&origin, &clone);
+
+        std::fs::write(origin.join("file.txt"), "three\n").unwrap();
+        git(&origin, &["commit", "-qam", "two"]);
+        let second = git(&origin, &["rev-parse", "HEAD"]).trim().to_string();
+
+        // Without GIT_NO_LAZY_FETCH=1 the probe fetches `second` from origin,
+        // then merge-base returns `first`. The probe must fail fast instead.
+        assert_eq!(local_merge_base(&clone, &first, &second), None);
+    }
 
     #[test]
     fn local_range_diff_needs_both_shas_in_the_checkout() {

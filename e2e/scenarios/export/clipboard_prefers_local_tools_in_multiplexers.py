@@ -31,11 +31,14 @@ def main(s: Scenario) -> None:
         tui.cursor_on("4 ▌ second line").comment("clipboard ordering")
         tui.cmd("clip").wait_for("Review copied to clipboard")
         if override or (ssh and sys.platform != "darwin"):
+            tui.check(r"Review copied to clipboard \(via terminal\)", "the relay copy is not reported as one")
             assert wait_file(relay).read_text() == expected, "relay did not receive the complete export"
             assert not clipboard.copied, "relay copy still invoked a local tool"
         else:
             actual = clipboard.text()
             assert "`README.md:4` - clipboard ordering" in actual, actual
+            # The relay is `tmux load-buffer` under TMUX but an OSC 52 escape under Zellij: the status names either.
+            tui.reject(r"\(via terminal\)")
             assert not relay.exists(), "relay ran before the local tool"
             if expected is not None:
                 assert actual == expected, "multiplexer changed the export"

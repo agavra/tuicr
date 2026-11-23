@@ -662,6 +662,14 @@ fn paint_annotation_group(
         .min(paint.inner_right);
 
     let Some(content) = app.content_for_side(ann_idx, side) else {
+        // A side-by-side row can be empty on the selection's side; nothing
+        // there to tint.
+        if matches!(
+            app.line_annotations.get(ann_idx),
+            Some(AnnotatedLine::SideBySideLine { .. })
+        ) {
+            return;
+        }
         // Headers and other non-content rows aren't bound by the pane
         // gutter; tint the full inner width.
         for which_row in 0..group_height {

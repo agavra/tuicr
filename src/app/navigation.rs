@@ -658,8 +658,8 @@ impl App {
         }
     }
 
-    /// In SBS, picks Old or New per `side`, falling back to the other pane
-    /// if the requested one is empty. Unified diff rows ignore `side`.
+    /// In SBS, picks Old or New per `side`; `None` when that pane is empty on
+    /// the row. Unified diff rows ignore `side`.
     pub fn content_for_side(&self, ann_idx: usize, side: LineSide) -> Option<&str> {
         self.diff_line_for_side(ann_idx, side)
             .map(|line| line.content.as_str())
@@ -698,8 +698,8 @@ impl App {
                 let add = add_line_idx.and_then(|i| hunk.lines.get(i));
                 let del = del_line_idx.and_then(|i| hunk.lines.get(i));
                 match side {
-                    LineSide::New => add.or(del),
-                    LineSide::Old => del.or(add),
+                    LineSide::New => add,
+                    LineSide::Old => del,
                 }
             }
             AnnotatedLine::ExpandedContext { gap_id, line_idx } => {

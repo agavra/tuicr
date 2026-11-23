@@ -120,6 +120,27 @@ def main() -> None:
             "unexpected_named_cli_call_fails_scenario",
             r"unexpected call:\s+at \S*unexpected_named_cli_call_fails_scenario\.py:\d+",
         ),
+        (
+            "failing_assertion_fails",
+            r"timed out after 1s waiting for /goodbye/ in \S+ Screen:\s+at \S*failing_assertion_fails\.py:\d+",
+        ),
+        (
+            "unobserved_death_fails_scenario",
+            r"without a wait_exit accepting its status:[\s\S]*with status 3 unobserved",
+        ),
+        (
+            "unobserved_death_after_restart_fails_scenario",
+            r"without a wait_exit accepting its status:[\s\S]*with status 4 unobserved",
+        ),
+        ("fake_crash_fails_scenario", r"unexpected call:[\s\S]*UNEXPECTED: fake crashed: Traceback.*FileNotFoundError"),
+        (
+            "gerrit_unknown_route_fails_scenario",
+            r"unexpected call:[\s\S]*UNEXPECTED: no route for GET /changes/1/drafts",
+        ),
+        (
+            "gerrit_unsupported_method_fails_scenario",
+            r"unexpected call:[\s\S]*UNEXPECTED: unsupported method POST /changes/1/revisions/x/review",
+        ),
     ):
         log = root / "out/detect" / f"{scen_name}.log"
         text = log.read_text() if log.exists() else ""
@@ -144,7 +165,7 @@ def main() -> None:
         failed = True
     else:
         print("ok   child process tree was killed")
-    if "rc=124" in run_txt.read_text():
+    if re.search(r"^FAIL detect/hung_scenario_is_killed_with_children .*rc=124", run_txt.read_text(), re.M):
         print("ok   timeout reported as rc=124")
     else:
         print("FAIL timeout not reported as rc=124")
@@ -174,6 +195,50 @@ def main() -> None:
     check("syntax-error run exits 1", 1, run(bad_env))
     got = {e["name"]: e["result"] for e in json.loads((root / "bad/out/results.json").read_text())}
     check("syntax-error scenario FAILs, later one still PASSes", {"d/a_broken": "FAIL", "d/b_good": "PASS"}, got)
+
+    print("-- a scenario must prove it ran (E2E-RAN sentinel); a quarantine never hides a skip or a timeout")
+    gen_dir = root / "gen-scen"
+    (gen_dir / "d").mkdir(parents=True)
+    body = "from e2e import Scenario, scenario\n\n{q}\n@scenario\ndef main(s: Scenario) -> None:\n    {stmt}\n"
+    for name, q, stmt in (
+        ("no_decorator", "", "pass"),
+        ("exit_zero_early", "", "raise SystemExit(0)"),
+        ("quarantined_skip", 'QUARANTINE = "x"\n', 's.skip("quarantined and skipped")'),
+        ("quarantined_hang", 'QUARANTINE = "x"\n', "__import__('time').sleep(60)"),
+        ("ok", "", "pass"),
+    ):
+        text = body.format(q=q, stmt=stmt)
+        if name == "no_decorator":  # exits 0 without ever running a scenario body
+            text = "import sys\n\nsys.exit(0)\n"
+        (gen_dir / f"d/{name}.py").write_text(text)
+    gen = {"E2E_SCENARIO_DIR": str(gen_dir), "E2E_SCENARIO_TIMEOUT": "4"}
+    check("run with unproven passes exits 1", 1, run({**gen, **sub("gen")}))
+    got = {e["name"]: e["result"] for e in json.loads((root / "gen/out/results.json").read_text())}
+    check(
+        "no sentinel and sys.exit(0) FAIL, quarantined skip is SKIP, quarantined hang FAILs",
+        {
+            "d/exit_zero_early": "FAIL",
+            "d/no_decorator": "FAIL",
+            "d/ok": "PASS",
+            "d/quarantined_hang": "FAIL",
+            "d/quarantined_skip": "SKIP",
+        },
+        got,
+    )
+    check(
+        "a quarantined skip with E2E_REQUIRE_SKIPS_ZERO=1 exits 1",
+        1,
+        run({**gen, **sub("gen2"), "E2E_REQUIRE_SKIPS_ZERO": "1"}, "quarantined_skip"),
+    )
+    log = (root / "gen/out/d/no_decorator.log").read_text()
+    check("the missing sentinel is named in the log", True, "without the E2E-RAN line" in log)
+
+    print("-- the reject window scales with E2E_TIMEOUT")
+    check(
+        "reject window follows E2E_TIMEOUT=25",
+        0,
+        run({**scen("scenarios"), **sub("rw"), "E2E_TIMEOUT": "25"}, "reject_fails_when_text_present"),
+    )
 
     print("-- empty E2E_SOCKET/E2E_OUT fall back to their defaults")
     check(

@@ -23,8 +23,7 @@ def main(s: Scenario) -> None:
     assert grep(r"^ +49 ▌ line 49", scr) and grep(r"^ +9[01] ▌ line 9[01]", scr), (
         f"line 70 is not centered in the viewport\n{scr}"
     )
-    tui.keys("c").wait_for("COMMENT")
-    tui.keys("annotated at seventy").keys("Enter").wait_for("annotated at seventy")
+    tui.comment("annotated at seventy")
     tui.cmd("clip").wait_exit()
     text = out.read_bytes().decode()
     assert grep(r"long\.txt:70.*annotated at seventy", text), f"export lacks the anchored comment:\n{text}"

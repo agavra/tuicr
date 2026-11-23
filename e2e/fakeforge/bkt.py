@@ -1,7 +1,8 @@
 """Fake `bkt` for PR #1 of bitbucket.org/octo/demo. Fixtures: data/bitbucket/.
 
 The diff and file contents are the GitHub fixtures' (README.md + src/greet.rs).
-POSTed comments, `pr approve` and request-changes are only logged (the body is the `--input` argument).
+POSTed comments, `pr approve` and request-changes are only logged (the body is the `--input` argument). `pr diff` and
+`pr approve` are answered only for PR 1 of octo/demo (`--workspace octo --repo demo`).
 Knob (env): E2E_BB_COMMENTS=<json file>: the list served for /comments.
 """
 
@@ -14,15 +15,16 @@ from .core import Fake
 
 HEAD = "2" * 40
 REPO = "/2.0/repositories/octo/demo"
+REPO_ARGS = ["--workspace", "octo", "--repo", "demo"]
 
 
 def handle(f: Fake) -> None:
     argv = f.argv
     f.start()
     github = os.path.join(os.environ["E2E_DATA"], "github")
-    if argv[:2] == ["pr", "diff"]:
+    if argv == ["pr", "diff", "1", *REPO_ARGS]:
         f.out(open(os.path.join(github, "pr_diff.patch")).read())
-    if argv[:3] == ["pr", "approve", "1"]:  # participant state change: logged only
+    if argv == ["pr", "approve", "1", *REPO_ARGS]:  # participant state change: logged only
         f.out("")
     if argv[:1] != ["api"]:
         f.unexpected(" ".join(argv))

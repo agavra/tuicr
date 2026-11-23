@@ -9,4 +9,4 @@ EXPECTED = "FAIL"  # asserted by e2e/selftest/run.py
 @scenario
 def main(s: Scenario) -> None:
     tui = s.start_cmd(["sh", "-c", "gh api repos/octo/demo/nonexistent >/dev/null 2>&1; sleep 30"])
-    tui.wait_forge_log("UNEXPECTED", 10)
+    tui.wait_forge_log("UNEXPECTED", 10, notes=True)

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # `e` hands the file at the cursor's line to $EDITOR. A terminal editor (vim family) takes the screen and the diff
-# reloads
-# when it exits; a windowed one (code) is launched with --goto and the diff only picks the edit up on `:e`.
+# reloads when it exits; a windowed one (code) is launched with --goto and the diff only picks the edit up on `:e`.
 # The "editors" are stubs that record their arguments and append a line to the file.
-from e2e import Scenario, Tui, grep, repos, scenario, wait_file
+from e2e import Scenario, Tui, grep, repos, scenario, wait_file, wait_grep
 
 
 @scenario
@@ -34,6 +33,7 @@ def main(s: Scenario) -> None:
     wait_file(d / "ed/code.args")
     args = (d / "ed/code.args").read_bytes().decode()
     assert grep(r"^--goto .*/README\.md:5$", args), f"code got: {args}"
+    wait_grep(repo / "README.md", "edited by code")  # the edit has landed on disk
     win.reject("edited by code", 1)  # a windowed editor does not trigger a reload
     win.cmd("e").wait_for("edited by code")  # `:e` does
     win.quit()

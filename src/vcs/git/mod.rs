@@ -23,8 +23,8 @@ use super::traits::{
 use cli::GitCliBackend;
 pub use libgit2::Libgit2Backend;
 
-// Re-exported for UI/app gap calculations.
-pub(crate) use cli::read_git_objects;
+// Re-exported for forge reads that must not lazy-fetch missing objects.
+pub(crate) use cli::read_git_objects_without_lazy_fetch;
 pub use context::calculate_gap;
 
 /// RevisionExpression is Git's parsed view of a user-supplied revision string.
