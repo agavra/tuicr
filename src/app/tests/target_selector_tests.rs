@@ -5001,3 +5001,16 @@ fn esc_stays_in_startup_target_selector_without_selection() {
     // then — stays in selector instead of showing an empty diff
     assert_eq!(app.input_mode, InputMode::CommitSelect);
 }
+
+#[test]
+fn poll_pr_draft_delete_clears_receiver_on_disconnect() {
+    let mut app = build_app();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_draft_delete_rx = Some(rx);
+    drop(tx);
+
+    app.poll_pr_draft_delete_events();
+
+    assert!(app.pr_draft_delete_rx.is_none());
+    assert!(!app.has_pending_pr_work());
+}
