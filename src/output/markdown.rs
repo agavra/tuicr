@@ -313,6 +313,7 @@ fn copy_with_command(
     timeout: Duration,
     fallback: impl FnOnce(&str) -> Result<&'static str>,
 ) -> Result<ClipboardCopy> {
+    let command = command.filter(|c| !c.trim().is_empty());
     let failure = match command.map(|command| run_clipboard_command(command, text, timeout)) {
         Some(Ok(())) => {
             return Ok(ClipboardCopy {
