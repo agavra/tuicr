@@ -178,6 +178,13 @@ impl App {
     }
 
     fn enter_target_selector_inner(&mut self, initial_tab: TargetTab) -> Result<()> {
+        let opened_from_selector = self.input_mode == InputMode::CommitSelect
+            || (self.input_mode == InputMode::Command
+                && self.command_return_mode == InputMode::CommitSelect);
+        if !opened_from_selector {
+            self.selector_opened_from_review = true;
+        }
+
         // Save inline selection state if we have review commits
         if !self.review_commits.is_empty() {
             self.saved_inline_selection = self.commit_selection_range;
@@ -241,6 +248,7 @@ impl App {
 
     pub fn exit_commit_select_mode(&mut self) -> Result<()> {
         self.input_mode = InputMode::Normal;
+        self.selector_opened_from_review = false;
 
         // If we have review commits, restore the inline selector state
         if !self.review_commits.is_empty() {

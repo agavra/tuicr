@@ -1515,7 +1515,7 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
             if app.cancel_pr_open() {
                 return;
             }
-            if app.commit_selection_range.is_none() {
+            if !app.selector_opened_from_review && app.commit_selection_range.is_none() {
                 return;
             }
             if let Err(e) = app.exit_commit_select_mode() {
