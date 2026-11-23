@@ -7,14 +7,7 @@ from e2e import Scenario, repos, scenario
 def main(s: Scenario) -> None:
     repo = repos.git_repo(s.dir / "repo")
     repos.git(repo, "remote", "add", "origin", "https://github.com/octo/demo.git")
-    foreign = s.start(
-        "pr",
-        "https://github.com/other/project/pull/1",
-        cwd=repo,
-        name=s.name + "_foreign",
-        # macOS stores reviews under HOME rather than XDG_DATA_HOME.
-        env={"HOME": str(s.dir / "home"), "XDG_DATA_HOME": str(s.dir / "data")},
-    )
+    foreign = s.start("pr", "https://github.com/other/project/pull/1", cwd=repo)
     foreign.wait_for("PR Description", 20).cursor_on("new line").comment("foreign PR session")
     foreign.quit()
     repos.git(repo, "remote", "set-url", "origin", "https://github.com/other/project.git")
