@@ -1741,9 +1741,7 @@ mod tests {
 
         let outside = tempfile::tempdir().unwrap();
         let secret = outside.path().join("secret.txt");
-        fs::write(&secret, "TOP_SECRET
-line 2
-").unwrap();
+        fs::write(&secret, "TOP_SECRET\nline 2\n").unwrap();
         symlink(&secret, temp.path().join("link.txt")).unwrap();
 
         let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
@@ -1871,10 +1869,8 @@ line 2
         let hl = SyntaxHighlighter::default();
 
         let merge_ids = [merge_rev.trim().to_string()];
-        let range = ResolvedRevisionRange::from_commit_ids(
-            &merge_ids,
-            RevisionDiffTarget::CommitList,
-        );
+        let range =
+            ResolvedRevisionRange::from_commit_ids(&merge_ids, RevisionDiffTarget::CommitList);
         let range_files = backend
             .get_commit_range_diff(&range, &hl)
             .expect("get_commit_range_diff should succeed when oldest commit is a merge");

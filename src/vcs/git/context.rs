@@ -168,9 +168,7 @@ mod tests {
 
         let outside = tempfile::tempdir().unwrap();
         let secret = outside.path().join("secret.txt");
-        std::fs::write(&secret, "TOP_SECRET
-line 2
-").unwrap();
+        std::fs::write(&secret, "TOP_SECRET\nline 2\n").unwrap();
 
         let repo_dir = tempfile::tempdir().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();

@@ -298,7 +298,11 @@ impl FileBackend {
     /// ensuring the canonical target remains inside `root_path`.
     fn resolve_confined_file(&self, file_path: &Path) -> Option<PathBuf> {
         let joined = self.info.root_path.join(file_path);
-        if !std::fs::symlink_metadata(&joined).ok()?.file_type().is_file() {
+        if !std::fs::symlink_metadata(&joined)
+            .ok()?
+            .file_type()
+            .is_file()
+        {
             return None;
         }
         let canonical = std::fs::canonicalize(&joined).ok()?;
@@ -741,15 +745,12 @@ mod tests {
         let outer = tempfile::tempdir().unwrap();
         let outer_canon = outer.path().canonicalize().unwrap();
         let secret = outer_canon.join("secret.txt");
-        fs::write(&secret, "TOP_SECRET
-line 2
-").unwrap();
+        fs::write(&secret, "TOP_SECRET\nline 2\n").unwrap();
 
         let repo = outer_canon.join("repo");
         fs::create_dir(&repo).unwrap();
         let kept = repo.join("kept.txt");
-        fs::write(&kept, "ok
-").unwrap();
+        fs::write(&kept, "ok\n").unwrap();
         let internal_link = repo.join("link_inside.txt");
         symlink(&kept, &internal_link).unwrap();
         let external_link = repo.join("link_outside.txt");
@@ -758,7 +759,13 @@ line 2
         let backend = FileBackend::new_pristine(vec![kept], repo).unwrap();
         assert!(
             backend
-                .fetch_context_lines(Path::new("link_inside.txt"), FileStatus::Modified, None, 1, 1)
+                .fetch_context_lines(
+                    Path::new("link_inside.txt"),
+                    FileStatus::Modified,
+                    None,
+                    1,
+                    1
+                )
                 .unwrap()
                 .is_empty(),
             "fetch_context_lines must not follow symlinks"

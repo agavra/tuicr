@@ -215,13 +215,11 @@ mod tests {
 
         let outside = tempfile::tempdir().unwrap();
         let secret = outside.path().join("secret.txt");
-        fs::write(&secret, "TOP_SECRET
-").unwrap();
+        fs::write(&secret, "TOP_SECRET\n").unwrap();
 
         let dir = tempfile::tempdir().unwrap();
         init_git_repo(dir.path());
-        fs::write(dir.path().join("kept.txt"), "ok
-").unwrap();
+        fs::write(dir.path().join("kept.txt"), "ok\n").unwrap();
         symlink(&secret, dir.path().join("link.txt")).unwrap();
         git_add_commit(dir.path());
 
