@@ -208,6 +208,16 @@ pub(super) fn unified_line_origin_marker(dl: &DiffLine) -> &'static str {
     }
 }
 
+/// Next visible file after `app.diff_state.current_file_idx` in `app.diff_files`,
+/// skipping files hidden by the active file-tree filter.
+pub(super) fn next_visible_file_path(app: &App) -> Option<String> {
+    app.diff_files
+        .get(app.diff_state.current_file_idx + 1..)?
+        .iter()
+        .find(|f| app.file_passes_filter(f))
+        .map(|f| f.display_path().display().to_string())
+}
+
 /// Body text of the `Spacing` inter-file row in unified single-file view —
 /// a hint naming the key that moves into the next file. Where the terminal
 /// reports key releases, `j`/Down walks on after a release, so the hint is
@@ -305,6 +315,9 @@ fn render_empty_review_placeholder(frame: &mut Frame, app: &App, area: Rect) {
     let Some(text) = app.empty_review_placeholder() else {
         return;
     };
+    if !app.line_annotations.is_empty() || app.input_mode == crate::app::InputMode::Comment {
+        return;
+    }
     // Inside the pane's border, on its middle row.
     if area.width <= 2 || area.height <= 2 {
         return;

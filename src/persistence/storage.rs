@@ -315,12 +315,35 @@ fn delete_inactive_session_except_pid_in_dir(
         if is_session_active_for_other_pid_unlocked(reviews_dir, path, own_pid) {
             return Ok(DeleteOutcome::Active);
         }
-        Ok(if delete_session_unlocked(path, reviews_dir)? {
+        // Normalize before deleting so symlink canonicalization still succeeds.
+        let target = normalize_active_path(path);
+        let deleted = delete_session_unlocked(path, reviews_dir)?;
+        if let Some(pid) = own_pid {
+            clear_active_session_for_pid_and_path_unlocked(reviews_dir, pid, &target)?;
+        }
+        Ok(if deleted {
             DeleteOutcome::Deleted
         } else {
             DeleteOutcome::Missing
         })
     })
+}
+
+fn clear_active_session_for_pid_and_path_unlocked(
+    reviews_dir: &Path,
+    pid: u32,
+    target: &Path,
+) -> Result<()> {
+    let mut active = load_active_sessions_unlocked(reviews_dir).unwrap_or_default();
+    let before = active.sessions.len();
+    active.sessions.retain(|entry| {
+        !(entry.pid == pid
+            && (entry.path == target || normalize_active_path(&entry.path) == target))
+    });
+    if active.sessions.len() != before {
+        save_active_sessions_unlocked(reviews_dir, &active)?;
+    }
+    Ok(())
 }
 
 /// Remove the session at `path` and its manifest entry. The caller must hold
@@ -1771,6 +1794,72 @@ mod tests {
 
         assert_eq!(outcome, DeleteOutcome::Active);
         assert!(path.exists());
+    }
+
+    #[test]
+    fn should_remove_own_pid_entry_from_active_sessions_when_deleting_open_session() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        mark_session_active_in_dir(&session, &path, &reviews_dir).unwrap();
+
+        let outcome = delete_inactive_session_except_own_pid_in_dir(&path, &reviews_dir).unwrap();
+        assert_eq!(outcome, DeleteOutcome::Deleted);
+
+        // Recreate a session at the same deterministic path while this process is still alive:
+        // a stale own-PID entry in active_sessions.json must not resurrect and block deletion.
+        let recreated = save_session(&session).unwrap();
+        assert_eq!(recreated, path);
+        let active = active_session_paths_in_dir(&reviews_dir).unwrap();
+        assert!(
+            !active.contains(&normalize_path_for_comparison(&path)),
+            "deleted session path should not remain in active_sessions.json"
+        );
+        assert_eq!(
+            delete_inactive_session_in_dir(&path, &reviews_dir).unwrap(),
+            DeleteOutcome::Deleted
+        );
+    }
+
+    #[test]
+    fn should_keep_own_pid_active_entry_when_deleting_a_different_session() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let repo = make_repo();
+        let open_session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let other_session = make_local_session(
+            repo,
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::Staged,
+            None,
+        );
+        let open_path = save_session(&open_session).unwrap();
+        let other_path = save_session(&other_session).unwrap();
+        mark_session_active_in_dir(&open_session, &open_path, &reviews_dir).unwrap();
+
+        let outcome =
+            delete_inactive_session_except_own_pid_in_dir(&other_path, &reviews_dir).unwrap();
+        assert_eq!(outcome, DeleteOutcome::Deleted);
+
+        let active = active_session_paths_in_dir(&reviews_dir).unwrap();
+        assert!(
+            active.contains(&normalize_path_for_comparison(&open_path)),
+            "deleting a different session must keep the currently open session active"
+        );
     }
 
     #[test]

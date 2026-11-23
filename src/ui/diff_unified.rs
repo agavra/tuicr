@@ -747,9 +747,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         // mode) where the indicator is already pulling its weight.
         let indicator = cursor_indicator(line_idx, current_line_idx);
         let next_hint_path = if app.is_single_file_view {
-            app.diff_files
-                .get(app.diff_state.current_file_idx + 1)
-                .map(|f| f.display_path().display().to_string())
+            crate::ui::diff_view::next_visible_file_path(app)
         } else {
             None
         };
@@ -1992,6 +1990,117 @@ mod remote_comments_snapshot_tests {
         assert!(
             !body.contains('\u{2193}'),
             "expected no Down hint in:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_skip_filtered_out_file_in_single_file_next_hint() {
+        let mut app = single_file_view_on_first_of(&[
+            "a.rs",
+            "very_long_filtered_out_path_that_would_wrap.rs",
+            "c.rs",
+        ]);
+        app.supports_keyboard_enhancement = false;
+        app.begin_file_tree_prompt(crate::app::FileTreePrompt::Exclude);
+        app.file_tree_prompt_insert_str("filtered_out");
+        app.commit_file_tree_prompt();
+        app.diff_state.wrap_lines = true;
+        app.diff_state.viewport_width = 20;
+
+        let body = body_text(&draw_unified_diff(&mut app));
+        assert!(
+            body.contains("}  c.rs"),
+            "expected next-file hint to skip filtered file and name c.rs in:\n{body}"
+        );
+        assert!(
+            !body.contains("filtered_out"),
+            "expected filtered-out file not to appear in next-file hint:\n{body}"
+        );
+        let spacing_idx = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, AnnotatedLine::Spacing))
+            .expect("spacing annotation");
+        assert_eq!(
+            crate::ui::row_height::annotation_row_height(&app, spacing_idx),
+            1,
+            "row_height should measure the visible c.rs hint, not the long filtered-out path"
+        );
+    }
+
+    #[test]
+    fn should_omit_single_file_next_hint_when_remaining_files_are_filtered_out() {
+        let mut app = single_file_view_on_first_of(&[
+            "a.rs",
+            "very_long_filtered_out_path_that_would_wrap.rs",
+        ]);
+        app.supports_keyboard_enhancement = false;
+        app.begin_file_tree_prompt(crate::app::FileTreePrompt::Exclude);
+        app.file_tree_prompt_insert_str("filtered_out");
+        app.commit_file_tree_prompt();
+        app.diff_state.wrap_lines = true;
+        app.diff_state.viewport_width = 20;
+
+        let body = body_text(&draw_unified_diff(&mut app));
+        assert!(
+            !body.contains("filtered_out"),
+            "expected no next-file hint when all later files are filtered out:\n{body}"
+        );
+        assert!(
+            !body.contains("}  "),
+            "expected no next-file key hint on the last visible file:\n{body}"
+        );
+        let spacing_idx = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, AnnotatedLine::Spacing))
+            .expect("spacing annotation");
+        assert_eq!(
+            crate::ui::row_height::annotation_row_height(&app, spacing_idx),
+            1,
+            "row_height should measure a blank indicator when no later file passes the filter"
+        );
+    }
+
+    #[test]
+    fn empty_review_placeholder_does_not_overwrite_review_comments_or_comment_editor() {
+        let mut app = make_revision_app(Vec::new());
+        app.diff_source = DiffSource::Staged;
+        app.rebuild_annotations();
+
+        // Truly empty staged review renders the placeholder.
+        let empty = body_text(&draw(&mut app));
+        assert!(
+            empty.contains("No staged changes"),
+            "expected placeholder on empty staged review:\n{empty}"
+        );
+
+        // Opening the review-level comment editor suppresses the placeholder.
+        app.input_mode = InputMode::Comment;
+        app.comment_is_review_level = true;
+        let editing = body_text(&draw(&mut app));
+        assert!(
+            !editing.contains("No staged changes"),
+            "placeholder should not overwrite open comment editor:\n{editing}"
+        );
+
+        // Persisted review-level comments suppress the placeholder even in Normal mode.
+        app.input_mode = InputMode::Normal;
+        app.comment_is_review_level = false;
+        app.session.review_comments.push(crate::model::Comment::new(
+            "overall note".to_string(),
+            crate::model::CommentType::None,
+            None,
+        ));
+        app.rebuild_annotations();
+        let with_comment = body_text(&draw(&mut app));
+        assert!(
+            with_comment.contains("overall note"),
+            "expected review-level comment to remain visible:\n{with_comment}"
+        );
+        assert!(
+            !with_comment.contains("No staged changes"),
+            "placeholder should not overwrite review-level comments:\n{with_comment}"
         );
     }
 

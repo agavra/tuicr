@@ -505,6 +505,23 @@ fn read_string(table: &toml::Table, key: &str, warnings: &mut Vec<String>) -> Op
     }
 }
 
+/// Read a non-blank string value from the table, pushing a warning if the type
+/// is wrong or the value is empty/whitespace-only.
+fn read_non_empty_string(
+    table: &toml::Table,
+    key: &str,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let raw = read_string(table, key, warnings)?;
+    if raw.trim().is_empty() {
+        warnings.push(format!(
+            "Warning: Config key '{key}' cannot be empty; ignoring value"
+        ));
+        return None;
+    }
+    Some(raw)
+}
+
 /// Read a single-character leader key, pushing a warning if the value is unusable.
 fn read_leader(table: &toml::Table, warnings: &mut Vec<String>) -> Option<char> {
     let raw = read_string(table, "leader", warnings)?;
@@ -822,7 +839,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         no_update_check: read_bool(table, "no_update_check", &mut warnings),
         single_file_view: read_bool(table, "single_file_view", &mut warnings),
         username: read_string(table, "username", &mut warnings),
-        clipboard_command: read_string(table, "clipboard_command", &mut warnings),
+        clipboard_command: read_non_empty_string(table, "clipboard_command", &mut warnings),
         clipboard: read_enum_list(
             table,
             "clipboard",
@@ -1340,6 +1357,23 @@ mod tests {
             Some("tmux load-buffer -".to_string())
         );
         assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_blank_clipboard_command() {
+        for raw in ["", "   \t "] {
+            let outcome = parse_config(&format!("clipboard_command = \"{raw}\"\n"));
+            assert_eq!(
+                outcome.config.and_then(|cfg| cfg.clipboard_command),
+                None,
+                "expected None for {raw:?}"
+            );
+            assert_eq!(outcome.warnings.len(), 1);
+            assert_eq!(
+                outcome.warnings[0],
+                "Warning: Config key 'clipboard_command' cannot be empty; ignoring value"
+            );
+        }
     }
 
     #[test]
