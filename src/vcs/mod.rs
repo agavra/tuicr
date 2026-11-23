@@ -588,12 +588,18 @@ mod tests {
     }
 
     fn make_vue_file(idx: usize) -> (DiffFile, String, String) {
-        let old = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\n\
-                   import { ref } from 'vue'\nconst msg = ref('hi')\nconst other = 1\n</script>\n";
-        let new = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\n\
-                   import { ref } from 'vue'\nconst msg = ref('hello')\nconst other = 1\n</script>\n";
-        let file = vue_diff_file(idx, "const msg = ref('hi')", "const msg = ref('hello')", 7);
-        (file, old.to_string(), new.to_string())
+        let deleted = format!("const msg{idx} = ref('hi-{idx}')");
+        let added = format!("const msg{idx} = ref('hello-{idx}')");
+        let old = format!(
+            "<template>\n  <div>{{{{ msg{idx} }}}}</div>\n</template>\n\n<script setup>\n\
+             import {{ ref }} from 'vue'\n{deleted}\nconst other = 1\n</script>\n"
+        );
+        let new = format!(
+            "<template>\n  <div>{{{{ msg{idx} }}}}</div>\n</template>\n\n<script setup>\n\
+             import {{ ref }} from 'vue'\n{added}\nconst other = 1\n</script>\n"
+        );
+        let file = vue_diff_file(idx, &deleted, &added, 7);
+        (file, old, new)
     }
 
     fn highlight_n_vue_files(n: usize) -> Vec<DiffFile> {
@@ -760,19 +766,35 @@ mod tests {
         // Each file's highlighted spans must land on that file's hunk lines,
         // not a neighbour's. Distinguishable by line content.
         let files = highlight_n_vue_files(6);
+        assert_eq!(files.len(), 6);
         for (i, file) in files.iter().enumerate() {
             let path = file.new_path.as_ref().unwrap();
             assert_eq!(path.to_str().unwrap(), format!("Comp{i}.vue"));
+            let deleted = file
+                .hunks
+                .iter()
+                .flat_map(|h| &h.lines)
+                .find(|l| l.origin == crate::model::diff_types::LineOrigin::Deletion)
+                .expect("deletion line");
+            let deleted_spans = deleted
+                .highlighted_spans
+                .as_ref()
+                .unwrap_or_else(|| panic!("file {i} deletion unhighlighted"));
+            let deleted_text: String = deleted_spans.iter().map(|(_, s)| s.as_str()).collect();
+            assert_eq!(deleted_text, format!("const msg{i} = ref('hi-{i}')"));
+
             let added = file
                 .hunks
                 .iter()
                 .flat_map(|h| &h.lines)
                 .find(|l| l.origin == crate::model::diff_types::LineOrigin::Addition)
                 .expect("addition line");
-            assert!(
-                added.highlighted_spans.is_some(),
-                "file {i} addition unhighlighted"
-            );
+            let added_spans = added
+                .highlighted_spans
+                .as_ref()
+                .unwrap_or_else(|| panic!("file {i} addition unhighlighted"));
+            let added_text: String = added_spans.iter().map(|(_, s)| s.as_str()).collect();
+            assert_eq!(added_text, format!("const msg{i} = ref('hello-{i}')"));
         }
     }
 }

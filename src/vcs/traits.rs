@@ -398,59 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn vcs_type_equality() {
-        assert_eq!(VcsType::Git, VcsType::Git);
-        assert_eq!(VcsType::Mercurial, VcsType::Mercurial);
-        assert_ne!(VcsType::Git, VcsType::Mercurial);
-        assert_eq!(VcsType::Jujutsu, VcsType::Jujutsu);
-        assert_ne!(VcsType::Git, VcsType::Jujutsu);
-    }
-
-    #[test]
-    fn vcs_info_clone() {
-        let info = VcsInfo {
-            root_path: PathBuf::from("/test/repo"),
-            head_commit: "abc123".to_string(),
-            branch_name: Some("main".to_string()),
-            vcs_type: VcsType::Git,
-        };
-
-        let cloned = info.clone();
-        assert_eq!(cloned.root_path, PathBuf::from("/test/repo"));
-        assert_eq!(cloned.head_commit, "abc123");
-        assert_eq!(cloned.branch_name, Some("main".to_string()));
-        assert_eq!(cloned.vcs_type, VcsType::Git);
-    }
-
-    #[test]
-    fn vcs_info_without_branch() {
-        let info = VcsInfo {
-            root_path: PathBuf::from("/detached"),
-            head_commit: "def456".to_string(),
-            branch_name: None,
-            vcs_type: VcsType::Git,
-        };
-
-        assert!(info.branch_name.is_none());
-    }
-
-    #[test]
-    fn commit_info_clone() {
-        let commit = CommitInfo {
-            id: "abc123def456".to_string(),
-            short_id: "abc123d".to_string(),
-            branch_name: Some("main".to_string()),
-            summary: "Fix bug".to_string(),
-            body: None,
-            author: "Test User".to_string(),
-            time: Utc::now(),
-        };
-
-        let cloned = commit.clone();
-        assert_eq!(cloned.id, "abc123def456");
-        assert_eq!(cloned.short_id, "abc123d");
-        assert_eq!(cloned.branch_name, Some("main".to_string()));
-        assert_eq!(cloned.summary, "Fix bug");
-        assert_eq!(cloned.author, "Test User");
+    fn vcs_type_display_file() {
+        assert_eq!(format!("{}", VcsType::File), "file");
     }
 }

@@ -34,6 +34,10 @@ pub use review_store::{
     add_comment_to_session,
 };
 
+/// Serializes test-only process environment mutations across modules.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Compiles the examples in `docs/LIBRARY.md` as doctests so the published
 /// library guide cannot drift from the API.
 #[cfg(doctest)]

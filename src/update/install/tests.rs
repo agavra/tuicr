@@ -688,32 +688,43 @@ fn rejects_unsafe_executable_swap_inputs_before_touching_the_target() {
     std::fs::write(&executable, b"old").unwrap();
     let called = Cell::new(false);
 
-    assert!(matches!(
-        stage_and_swap(&executable, b"", |_| {
-            called.set(true);
-            Ok(())
-        }),
-        Err(UpdateError::Replace { .. })
-    ));
+    let err = stage_and_swap(&executable, b"", |_| {
+        called.set(true);
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(
+        matches!(&err, UpdateError::Replace { detail, .. } if detail == "downloaded executable is empty"),
+        "unexpected error for empty contents: {err:?}"
+    );
     assert!(!called.get());
     assert_eq!(std::fs::read(&executable).unwrap(), b"old");
 
-    assert!(matches!(
-        stage_and_swap(Path::new("relative-tuicr"), b"new", |_| Ok(())),
-        Err(UpdateError::Replace { .. })
-    ));
-    assert!(matches!(
-        stage_and_swap(&temp.path().join("missing"), b"new", |_| Ok(())),
-        Err(UpdateError::Replace { .. })
-    ));
-    assert!(matches!(
-        stage_and_swap(temp.path(), b"new", |_| Ok(())),
-        Err(UpdateError::Replace { .. })
-    ));
-    assert!(matches!(
-        swap_executable(&executable, b"new"),
-        Err(UpdateError::Replace { .. })
-    ));
+    let err = stage_and_swap(Path::new("relative-tuicr"), b"new", |_| Ok(())).unwrap_err();
+    assert!(
+        matches!(&err, UpdateError::Replace { detail, .. } if detail == "executable path is not absolute"),
+        "unexpected error for relative path: {err:?}"
+    );
+
+    let missing = temp.path().join("missing");
+    let expected_missing = std::fs::symlink_metadata(&missing).unwrap_err().to_string();
+    let err = stage_and_swap(&missing, b"new", |_| Ok(())).unwrap_err();
+    assert!(
+        matches!(&err, UpdateError::Replace { detail, .. } if detail == &expected_missing),
+        "unexpected error for missing path: {err:?}"
+    );
+
+    let err = stage_and_swap(temp.path(), b"new", |_| Ok(())).unwrap_err();
+    assert!(
+        matches!(&err, UpdateError::Replace { detail, .. } if detail == "executable path is not a regular file"),
+        "unexpected error for directory target: {err:?}"
+    );
+
+    let err = swap_executable(&executable, b"new").unwrap_err();
+    assert!(
+        matches!(&err, UpdateError::Replace { detail, .. } if detail == "refusing to replace an executable other than the running tuicr binary"),
+        "unexpected error for non-running executable: {err:?}"
+    );
     assert_eq!(std::fs::read(&executable).unwrap(), b"old");
 }
 
@@ -726,10 +737,11 @@ fn rejects_symlink_executable_targets() {
     std::fs::write(&executable, b"old").unwrap();
     std::os::unix::fs::symlink(&executable, &link).unwrap();
 
-    assert!(matches!(
-        stage_and_swap(&link, b"new", |_| Ok(())),
-        Err(UpdateError::Replace { .. })
-    ));
+    let err = stage_and_swap(&link, b"new", |_| Ok(())).unwrap_err();
+    assert!(
+        matches!(&err, UpdateError::Replace { detail, .. } if detail == "executable path is a symlink"),
+        "unexpected error for symlink target: {err:?}"
+    );
     assert_eq!(std::fs::read(&executable).unwrap(), b"old");
 }
 

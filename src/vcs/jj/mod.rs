@@ -643,7 +643,7 @@ mod tests {
     use crate::model::LineOrigin;
     use crate::vcs::RevisionDiffTarget;
     use std::fs;
-    use std::sync::Once;
+    use std::sync::OnceLock;
 
     /// Check if jj command is available
     fn jj_available() -> bool {
@@ -669,9 +669,13 @@ mod tests {
     /// contributors with `signing.behavior = "own"` configured globally
     /// from being prompted to sign throwaway commits in temp repos.
     fn disable_jj_signing_for_tests() {
-        static INIT: Once = Once::new();
-        INIT.call_once(|| {
-            let config_path = std::env::temp_dir().join("tuicr-test-jj-config.toml");
+        static CONFIG_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+        CONFIG_DIR.get_or_init(|| {
+            let dir = tempfile::Builder::new()
+                .prefix("tuicr-test-jj-config-")
+                .tempdir()
+                .expect("failed to create temp dir for jj test config");
+            let config_path = dir.path().join("jj-config.toml");
             fs::write(
                 &config_path,
                 "signing.behavior = \"drop\"\n\
@@ -679,12 +683,16 @@ mod tests {
                  user.email = \"tuicr@example.com\"\n",
             )
             .expect("failed to write throwaway jj test config");
-            // SAFETY: guarded by `Once`, so this runs exactly once, before
-            // any test spawns a `jj` child process; nothing else in this
-            // crate reads or writes `JJ_CONFIG`.
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            // SAFETY: serialized via `TEST_ENV_LOCK` and `OnceLock`, so this
+            // runs once per process without racing against other env-mutating
+            // tests; nothing else in this crate reads or writes `JJ_CONFIG`.
             unsafe {
                 std::env::set_var("JJ_CONFIG", &config_path);
             }
+            dir
         });
     }
 
@@ -1766,6 +1774,11 @@ mod tests {
         let commits = backend
             .get_recent_commits(0, 10)
             .expect("Failed to get commits");
+
+        assert!(
+            !commits.is_empty(),
+            "Expected at least one commit from setup_test_repo_with_commits"
+        );
 
         for commit in commits {
             assert!(

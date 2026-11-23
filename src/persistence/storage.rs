@@ -1512,6 +1512,16 @@ mod tests {
         fn drop(&mut self) {
             set_test_reviews_dir(None);
             let _ = fs::remove_dir_all(&self.path);
+            if let (Some(parent), Some(stem)) = (self.path.parent(), self.path.file_name()) {
+                let prefix = format!("{}.bak", stem.to_string_lossy());
+                if let Ok(entries) = fs::read_dir(parent) {
+                    for entry in entries.flatten() {
+                        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                            let _ = fs::remove_dir_all(entry.path());
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1906,6 +1916,24 @@ mod tests {
     }
 
     #[test]
+    fn should_not_remove_live_pid_reviews_dir_lock() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let lock_path = reviews_dir.join(STORAGE_LOCK_FILENAME);
+        fs::write(
+            &lock_path,
+            format!("{} {}\n", std::process::id(), Utc::now()),
+        )
+        .unwrap();
+
+        assert!(
+            !remove_stale_reviews_dir_lock(&lock_path).unwrap(),
+            "a fresh lock held by a live PID must not be treated as stale"
+        );
+        assert!(lock_path.exists());
+    }
+
+    #[test]
     fn should_keep_session_with_comments_when_deleting_if_empty() {
         let _g = with_test_reviews_dir();
         let repo = make_repo();
@@ -2136,10 +2164,20 @@ mod tests {
         );
         save_session(&session).unwrap();
 
+        let same_source = load_latest_session_for_context(
+            &repo,
+            Some("main"),
+            "abc1234",
+            SessionDiffSource::WorkingTree,
+            None,
+        )
+        .unwrap();
+        assert!(same_source.is_some());
+
         let loaded = load_latest_session_for_context(
             &repo,
             Some("main"),
-            "head",
+            "abc1234",
             SessionDiffSource::Staged,
             None,
         )
@@ -2553,11 +2591,20 @@ mod tests {
         assert!(reviews_dir.join(SESSIONS_DIRNAME).exists());
 
         let parent = reviews_dir.parent().unwrap();
-        let backup_exists = fs::read_dir(parent)
+        let stem = reviews_dir.file_name().unwrap().to_string_lossy();
+        let backup_prefix = format!("{stem}.bak");
+        let backups: Vec<_> = fs::read_dir(parent)
             .unwrap()
             .flatten()
-            .any(|e| e.file_name().to_string_lossy().contains(".bak"));
-        assert!(backup_exists, "expected a .bak backup dir under {parent:?}");
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&backup_prefix))
+            .collect();
+        assert!(
+            !backups.is_empty(),
+            "expected a {backup_prefix}* backup dir under {parent:?}"
+        );
+        for backup in backups {
+            let _ = fs::remove_dir_all(backup.path());
+        }
     }
 
     #[test]

@@ -390,6 +390,9 @@ mod tests {
 
     #[test]
     fn detects_github_repository_from_origin() {
+        let _env = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let dir = init_repo_with_origin("https://github.com/agavra/tuicr");
         assert_eq!(
             detect_forge_repository(dir.path()),
@@ -399,6 +402,9 @@ mod tests {
 
     #[test]
     fn hostname_only_parser_claims_azure_but_leaves_other_hosts_alone() {
+        let _env = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         assert_eq!(
             parse_any_remote_url_by_hostname("https://dev.azure.com/myorg/myproject/_git/myrepo"),
             Some(ForgeRepository::azure(
@@ -426,6 +432,9 @@ mod tests {
 
     #[test]
     fn detects_gerrit_repository_from_a_canonical_ssh_port_remote() {
+        let _env = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         // A neutral hostname on port 29418 is unambiguously Gerrit; without
         // this arm the GitHub catch-all would claim it as `platform/base`.
         let dir =
@@ -441,6 +450,9 @@ mod tests {
 
     #[test]
     fn leaves_github_enterprise_remotes_to_the_github_catch_all() {
+        let _env = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         // Gerrit sits ahead of GitHub in the chain, so it must not claim a
         // self-hosted host that shows none of its signals.
         let dir = init_repo_with_origin("https://code.example.com/owner/repo.git");
@@ -452,6 +464,9 @@ mod tests {
 
     #[test]
     fn local_checkout_matches_when_origin_equals_target() {
+        let _env = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let dir = init_repo_with_origin("https://github.com/agavra/tuicr");
         let target = ForgeRepository::github("github.com", "agavra", "tuicr");
         assert_eq!(
@@ -462,6 +477,9 @@ mod tests {
 
     #[test]
     fn local_checkout_rejects_mismatched_repo() {
+        let _env = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let dir = init_repo_with_origin("https://github.com/contributor/tuicr");
         let target = ForgeRepository::github("github.com", "agavra", "tuicr");
         assert_eq!(local_checkout_for_repo(dir.path(), &target), None);
@@ -476,6 +494,9 @@ mod tests {
 
     #[test]
     fn local_checkout_matches_upstream_remote_in_fork_workflow() {
+        let _env = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let dir = init_repo_with_origin("https://github.com/contributor/tuicr");
         let repo = Repository::open(dir.path()).expect("open repo");
         repo.remote("upstream", "https://github.com/agavra/tuicr")

@@ -788,7 +788,7 @@ mod tests {
             let text = dir.path().join(format!("text-{trial}.bin"));
             fs::write(&text, vec![b'a'; trial]).unwrap();
             assert!(
-                !is_probably_binary(&text) || trial == 0 && text.metadata().unwrap().len() == 0,
+                !is_probably_binary(&text),
                 "no-null content of length {trial} must be classified text (got binary)"
             );
         }
