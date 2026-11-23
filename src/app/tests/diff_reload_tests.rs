@@ -1058,9 +1058,15 @@ fn should_request_a_redraw_when_an_external_writer_deletes_a_comment() {
     let mut external =
         crate::persistence::storage::load_session(&path).expect("persisted session should load");
     external.review_comments.clear();
-    // Bump the mtime past the watcher's last observation.
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    crate::persistence::storage::save_session(&external).expect("external session should save");
+    let external_path =
+        crate::persistence::storage::save_session(&external).expect("external session should save");
+    // Bump the mtime deterministically past the watcher's last observation.
+    std::fs::File::options()
+        .write(true)
+        .open(&external_path)
+        .expect("open saved session")
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
+        .expect("bump mtime");
 
     app.review_watch_interval = Some(std::time::Duration::from_millis(1));
     app.next_review_watch_at = std::time::Instant::now() - std::time::Duration::from_millis(1);
@@ -1112,8 +1118,14 @@ fn should_redraw_and_drop_the_annotation_when_one_of_two_line_comments_is_delete
         .get_mut(&10)
         .expect("line 10")
         .remove(0);
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    crate::persistence::storage::save_session(&external).expect("external session should save");
+    let external_path =
+        crate::persistence::storage::save_session(&external).expect("external session should save");
+    std::fs::File::options()
+        .write(true)
+        .open(&external_path)
+        .expect("open saved session")
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
+        .expect("bump mtime");
 
     app.review_watch_interval = Some(std::time::Duration::from_millis(1));
     app.next_review_watch_at = std::time::Instant::now() - std::time::Duration::from_millis(1);

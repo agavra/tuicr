@@ -322,10 +322,21 @@ mod tests {
 
     #[test]
     fn should_give_up_on_huge_lines() {
-        let old = "a ".repeat(1000);
-        let new = "b ".repeat(1000);
+        // Differ only at the very first and last tokens so common prefix/suffix
+        // trimming removes nothing, while the changed-byte ratio stays tiny
+        // (< 1%, well below MAX_CHANGED_RATIO) — isolating the MAX_LCS_CELLS bailout.
+        let small_mid = "same ".repeat(200);
+        let small_old = format!("alpha {small_mid}omega");
+        let small_new = format!("beta {small_mid}gamma");
+        assert!(
+            changed_ranges(&small_old, &small_new).is_some(),
+            "below MAX_LCS_CELLS with low changed ratio should produce a word diff"
+        );
 
-        assert_eq!(changed_ranges(&old, &new), None);
+        let huge_mid = "same ".repeat(260);
+        let huge_old = format!("alpha {huge_mid}omega");
+        let huge_new = format!("beta {huge_mid}gamma");
+        assert_eq!(changed_ranges(&huge_old, &huge_new), None);
     }
 
     #[test]

@@ -11,6 +11,24 @@ use crate::model::comment::{Comment, CommentLifecycleState, CommentType, LineCon
 use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::vcs::traits::{VcsChangeStatus, VcsType};
 
+struct TestReviewsDir {
+    _dir: tempfile::TempDir,
+}
+
+impl TestReviewsDir {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().expect("failed to create test reviews dir");
+        crate::persistence::storage::set_test_reviews_dir(Some(dir.path().to_path_buf()));
+        Self { _dir: dir }
+    }
+}
+
+impl Drop for TestReviewsDir {
+    fn drop(&mut self) {
+        crate::persistence::storage::set_test_reviews_dir(None);
+    }
+}
+
 struct DummyVcs {
     info: VcsInfo,
 }
@@ -1329,6 +1347,7 @@ fn deliver_submit_result(app: &mut App, in_flight: SubmitInFlightState, review_i
 
 #[test]
 fn should_persist_late_submit_receipt_to_its_own_session_when_another_pr_is_open() {
+    let _reviews = TestReviewsDir::new();
     // given PR 125 @ OLD_HEAD has a saved local draft, a submit in flight for
     // it, and a different head of the PR (standing in for another PR) on screen
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
@@ -2085,7 +2104,11 @@ fn should_lock_body_comments_when_only_the_body_posted() {
     let (review_id, moved_id) = (review.id.clone(), moved.id.clone());
     app.session.review_comments.push(review);
     app.session.review_comments.push(moved);
-    let mut in_flight = make_in_flight(SubmitEvent::Comment, &["c1"], "abcdef0123", 1);
+    let inline = line_comment(LineSide::New, Some(11), None);
+    let inline_id = inline.id.clone();
+    add_line_comment(&mut app, "src/lib.rs", 11, inline);
+    let mut in_flight =
+        make_in_flight(SubmitEvent::Comment, &[inline_id.as_str()], "abcdef0123", 1);
     in_flight.review_comment_ids = vec![review_id];
     in_flight.summary_comment_ids = vec![moved_id];
     // when the body landed but no inline comment did
@@ -2097,8 +2120,12 @@ fn should_lock_body_comments_when_only_the_body_posted() {
             comment_ids: Vec::new(),
         },
     );
-    // then both body-borne comments are locked
+    // then both body-borne comments are locked and the unposted inline comment stays editable
     assert!(app.session.review_comments.iter().all(|c| c.is_locked()));
+    assert!(
+        !app.session.files[&PathBuf::from("src/lib.rs")].line_comments[&11][0].is_locked(),
+        "unposted inline comment must stay unlocked"
+    );
 }
 
 #[test]
@@ -2141,6 +2168,7 @@ fn should_leave_everything_editable_when_nothing_posted_before_the_failure() {
 
 #[test]
 fn should_persist_late_partial_receipts_to_their_own_session_when_another_pr_is_open() {
+    let _reviews = TestReviewsDir::new();
     // given PR 125 @ OLD_HEAD saved with two drafts, and another head on screen
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
     let posted = line_comment(LineSide::New, Some(11), None);
