@@ -2,6 +2,80 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.30.0] - 2026-11-23
+
+### Bug Fixes
+
+- **editor:** Ignore shift-tab before forwarding to edtui (#853)
+- **gitlab:** Map a glab ssh_host remote back to its configured host (#866)
+- **diff:** Keep a revision range's base on reload (#889)
+- **tree:** Keep a PR review at the top when hiding reviewed files (#944)
+- **hg:** Resolve revision ranges oldest-first, and quote the user's revset in errors (#942)
+- **ui:** Let pull request titles use the full terminal width (#943)
+- **terminal:** Send each --stdout frame to /dev/tty in one write (#949)
+- **comment:** Make Ctrl-W delete the previous word in vim insert mode (#951)
+- **sessions:** Let the Sessions tab delete the review this tuicr has open (#865) (#948)
+- **git:** Align review hunks with code blocks (#950)
+- **forge:** Verify Gerrit and Azure DevOps TLS against the OS trust store (#947)
+- **commits:** Honour show_commits = false for every multi-commit review (#968)
+- **cli:** Name every supported forge in help text (#969)
+- **commits:** Return focus to the diff on Esc in the commit selector (#967)
+- **update:** Match the Homebrew formula and refuse pacman/Home Manager installs (#966)
+- **forge:** Avoid lazy promisor fetches when probing local objects (#963)
+- **sbs:** Keep visual selection on its anchored side (#984)
+- **app:** Target selector Esc, :set generated cursor clamp, worktree cache, and filter navigation (#989)
+- **ui,config,persistence:** Grapheme-safe word diff, blank clipboard_command, and teardown fixes (#990)
+- **vcs,process:** Symlink guards, hg merge-parent ranges, sparse untracked files, and subprocess stdin (#991)
+- **forge,docs:** Azure commit order/pagination, SSH-over-443 host normalization, and stale docs (#992)
+
+### Documentation
+
+- Fix stale and wrong docs found in an audit against source (#964)
+- **readme:** Rewrite the README for first-time visitors (#965)
+- **agents:** Ask for a red e2e run before the change (#970)
+- **agents:** Compress AGENTS.md, move subsystem notes to docs/INTERNALS.md (#971)
+- **readme:** Broaden the tagline beyond AI-generated diffs (#973)
+
+### Features
+
+- **export:** Add :file to write the review to a file (#890)
+- **pr:** Configurable GitHub search for the review-requested PR list (#854)
+- **cli:** Review the current branch's PR when tuicr pr has no target (#928)
+- **config:** Add include_untracked option for local diffs (#946)
+- **init:** Add an opt-in minimal UI mode for diff-focused reviews (#787)
+- **clipboard:** Add clipboard_command to copy through your own command (#895)
+- **ui:** Show the selected comment's position in the navigator title (#955)
+- **forge:** Add comment_type_format for the submitted type prefix (#945)
+- **gerrit:** Delete your own draft comments with dd (#957)
+- **nav:** Add hunk_jump_align for hunk and file jumps (#956)
+- **export:** Add opt-in code context under line comments (#873)
+- **generated:** Collapse generated files by default (#874)
+- **selector:** Always show staged and unstaged rows for git repos (#872)
+- **ui:** Emphasize the changed words of modified lines (#860)
+
+### Performance
+
+- **vcs:** Detect ordinary Git repositories without launching git (#987)
+
+### Testing
+
+- **git:** Pass include_untracked in the hunk-alignment test helper (#961)
+- **e2e:** Stop listing scenarios in COVERAGE.md (#960)
+- **e2e:** Make the harness fail instead of passing vacuously (#972)
+- **e2e:** Make forge scenarios and fakes assert what they claim (#974)
+- **e2e:** Make PR scenarios assert what they claim (#975)
+- **e2e:** Make local scenarios assert what they claim (#976)
+- **e2e:** Make cli and export scenarios assert what they claim (#977)
+- **e2e:** Make comments, diff and review scenarios assert what they claim (#978)
+- **e2e:** Make tree, input, ui, help, theme and syntax scenarios assert what they claim (#979)
+- **e2e:** Read the whole CONNECT head in the smoke scenario's proxy (#980)
+- **e2e:** Start far fewer processes per run (#981)
+- **vcs,forge,core:** Tighten vacuous assertions, env isolation, and concurrency checks (#994)
+- **app,ui:** Fix vacuous assertions, fake test harnesses, and flaky waits (#993)
+
+### Ci
+
+- **e2e:** Cache jj on Linux and skip fat LTO for the e2e build (#988)
 ## [0.29.0] - 2026-11-14
 
 ### Bug Fixes
