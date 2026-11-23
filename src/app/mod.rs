@@ -1615,6 +1615,9 @@ pub struct App {
     pub range_diff_files: Option<Vec<DiffFile>>,
     /// Saved inline selection range when entering full commit select mode via :commits
     pub saved_inline_selection: Option<(usize, usize)>,
+    /// True when the full-screen target selector was opened from an active review
+    /// (`:commits`, `:prs`, `:sessions`), so `Esc` can return to it.
+    pub(crate) selector_opened_from_review: bool,
     /// Path filter for scoping diff to a specific file or directory
     pub path_filter: Option<String>,
     /// Resolved `[export]` settings shaping the generated review markdown.

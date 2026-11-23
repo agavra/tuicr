@@ -1515,7 +1515,7 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
             if app.cancel_pr_open() {
                 return;
             }
-            if app.commit_selection_range.is_none() {
+            if !app.selector_opened_from_review && app.commit_selection_range.is_none() {
                 return;
             }
             if let Err(e) = app.exit_commit_select_mode() {
@@ -2013,7 +2013,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::HalfPageUp => app.page_up(app.diff_state.viewport_height / 2),
         Action::PageDown => app.page_down(app.diff_state.viewport_height),
         Action::PageUp => app.page_up(app.diff_state.viewport_height),
-        Action::GoToTop => app.jump_to_file(0),
+        Action::GoToTop => app.jump_to_top(),
         Action::GoToBottom => app.jump_to_bottom(),
         Action::NextFile => app.next_file(),
         Action::PrevFile => app.prev_file(),

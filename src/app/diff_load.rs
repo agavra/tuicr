@@ -701,12 +701,38 @@ impl App {
     /// as it was, and the next non-empty reload reconciles as usual.
     pub fn show_emptied_review(&mut self) {
         self.diff_files.clear();
-        self.diff_state = DiffState::default();
+        self.reset_diff_state();
         self.file_list_state = FileListState::default();
         self.clear_expanded_gaps();
         self.rebuild_annotations();
         if let Some(message) = self.empty_review_placeholder() {
             self.set_message(message);
+        }
+    }
+
+    /// Reloads the review after an external `$EDITOR` finishes.
+    pub fn reload_after_editor(&mut self, label: &str) {
+        if self.diff_source.includes_worktree_changes() {
+            match self.reload_diff_files() {
+                Ok((count, invalidated)) => {
+                    let invalidated_suffix = if invalidated > 0 {
+                        format!(", {invalidated} changed since last review")
+                    } else {
+                        String::new()
+                    };
+                    self.set_message(format!(
+                        "Opened {label} and reloaded {count} files{invalidated_suffix}"
+                    ));
+                }
+                Err(TuicrError::NoChanges) if self.reload_can_empty() => {
+                    self.show_emptied_review();
+                }
+                Err(err) => {
+                    self.set_error(format!("Reload after editor failed: {err}"));
+                }
+            }
+        } else {
+            self.set_message(format!("Opened {label}"));
         }
     }
 

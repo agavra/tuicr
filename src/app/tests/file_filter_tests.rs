@@ -835,3 +835,67 @@ fn should_not_count_reviewed_session_files_outside_the_diff() {
     assert_eq!(app.reviewed_count(), 1);
     assert_eq!(app.file_count(), 1);
 }
+
+#[test]
+fn go_to_top_skips_filtered_out_first_file() {
+    let mut app = app_with(&["README.md", "src/lib.rs", "src/main.rs"]);
+    app.focused_panel = FocusedPanel::Diff;
+    let first_src = index_of(&app, "src/lib.rs");
+    let second_src = index_of(&app, "src/main.rs");
+    assert_ne!(first_src, 0, "README.md should sort before src/");
+
+    apply(&mut app, FileTreePrompt::Include, "^src/");
+    app.jump_to_file(second_src);
+
+    crate::handler::handle_normal_action(&mut app, Action::GoToTop);
+
+    assert_eq!(app.diff_state.current_file_idx, first_src);
+}
+
+#[test]
+fn next_file_from_overview_skips_filtered_out_first_file() {
+    let mut app = app_with(&["README.md", "src/lib.rs"]);
+    // Add a review comment so the overview occupies rows above the first file.
+    app.session.review_comments.push(crate::model::Comment::new(
+        "overall".into(),
+        crate::model::CommentType::None,
+        None,
+    ));
+    let first_src = index_of(&app, "src/lib.rs");
+    assert_ne!(first_src, 0);
+
+    apply(&mut app, FileTreePrompt::Include, "^src/");
+    app.diff_state.cursor_line = 0;
+    assert!(app.diff_state.cursor_line < app.review_comments_render_height());
+
+    app.next_file();
+
+    assert_eq!(app.diff_state.current_file_idx, first_src);
+}
+
+#[test]
+fn single_file_boundary_walk_skips_filtered_out_files() {
+    let mut app = app_with(&["a.rs", "hidden.txt", "z.rs"]);
+    app.is_single_file_view = true;
+    app.supports_keyboard_enhancement = true;
+    let a = index_of(&app, "a.rs");
+    let z = index_of(&app, "z.rs");
+    assert_eq!(z, a + 2, "hidden.txt should sit between a.rs and z.rs");
+
+    apply(&mut app, FileTreePrompt::Exclude, "hidden");
+    app.jump_to_file(a);
+
+    // Double-press j at EOF of a.rs must jump over hidden.txt to z.rs.
+    app.diff_state.cursor_line = app.max_cursor_line();
+    app.cursor_down(1);
+    app.down_released_since_arm = true;
+    app.cursor_down(1);
+    assert_eq!(app.diff_state.current_file_idx, z);
+
+    // Double-press k at BOF of z.rs must jump back over hidden.txt to a.rs.
+    app.diff_state.cursor_line = app.calculate_file_scroll_offset(z);
+    app.cursor_up(1);
+    app.up_released_since_arm = true;
+    app.cursor_up(1);
+    assert_eq!(app.diff_state.current_file_idx, a);
+}

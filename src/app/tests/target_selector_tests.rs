@@ -4971,3 +4971,46 @@ fn pr_scope_label_names_the_review_scope_search_when_pr_search_applies() {
         "requested"
     );
 }
+
+#[test]
+fn esc_exits_target_selector_opened_from_active_review() {
+    // given — an active review in Normal mode
+    let mut app = build_app();
+    app.input_mode = InputMode::Normal;
+    app.enter_target_selector(TargetTab::Sessions).unwrap();
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+    assert_eq!(app.commit_selection_range, None);
+
+    // when — pressing Esc in the target selector
+    crate::handler::handle_commit_select_action(&mut app, crate::input::Action::ExitMode);
+
+    // then — returns to the active review
+    assert_eq!(app.input_mode, InputMode::Normal);
+}
+
+#[test]
+fn esc_stays_in_startup_target_selector_without_selection() {
+    // given — startup selector (not opened from an active review)
+    let mut app = build_app();
+    app.input_mode = InputMode::CommitSelect;
+    app.commit_selection_range = None;
+
+    // when — pressing Esc
+    crate::handler::handle_commit_select_action(&mut app, crate::input::Action::ExitMode);
+
+    // then — stays in selector instead of showing an empty diff
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+}
+
+#[test]
+fn poll_pr_draft_delete_clears_receiver_on_disconnect() {
+    let mut app = build_app();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_draft_delete_rx = Some(rx);
+    drop(tx);
+
+    app.poll_pr_draft_delete_events();
+
+    assert!(app.pr_draft_delete_rx.is_none());
+    assert!(!app.has_pending_pr_work());
+}

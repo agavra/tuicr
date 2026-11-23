@@ -18,8 +18,9 @@ impl App {
         self.primed_walk_prev = false;
         if self.is_single_file_view && self.supports_keyboard_enhancement && target > max_line {
             if self.primed_walk_next && self.down_released_since_arm {
-                let next_idx = self.diff_state.current_file_idx + 1;
-                if next_idx < self.diff_files.len() {
+                let next_idx = ((self.diff_state.current_file_idx + 1)..self.diff_files.len())
+                    .find(|&idx| self.file_idx_passes_filter(idx));
+                if let Some(next_idx) = next_idx {
                     let overflow = target - max_line;
                     self.primed_walk_next = false;
                     self.down_released_since_arm = false;
@@ -63,12 +64,14 @@ impl App {
         self.primed_walk_next = false;
         if self.is_single_file_view && self.supports_keyboard_enhancement {
             let file_top = self.calculate_file_scroll_offset(self.diff_state.current_file_idx);
+            let prev_idx = (0..self.diff_state.current_file_idx)
+                .rev()
+                .find(|&idx| self.file_idx_passes_filter(idx));
             if self.diff_state.cursor_line < file_top + lines
-                && self.diff_state.current_file_idx > 0
+                && let Some(prev_idx) = prev_idx
             {
                 if self.primed_walk_prev && self.up_released_since_arm {
                     let underflow = (file_top + lines) - self.diff_state.cursor_line;
-                    let prev_idx = self.diff_state.current_file_idx - 1;
                     self.primed_walk_prev = false;
                     self.up_released_since_arm = false;
                     self.jump_to_file(prev_idx);
@@ -936,10 +939,23 @@ impl App {
         self.update_current_file_from_cursor();
     }
 
+    fn first_visible_file_idx(&self) -> Option<usize> {
+        (0..self.diff_files.len()).find(|&idx| self.file_idx_passes_filter(idx))
+    }
+
+    pub fn jump_to_top(&mut self) {
+        if let Some(first_idx) = self.first_visible_file_idx() {
+            self.jump_to_file(first_idx);
+        } else {
+            self.diff_state.cursor_line = 0;
+            self.diff_state.scroll_offset = 0;
+        }
+    }
+
     pub fn next_file(&mut self) {
         if self.diff_state.cursor_line < self.review_comments_render_height() {
-            if !self.diff_files.is_empty() {
-                self.jump_to_file(0);
+            if let Some(first_idx) = self.first_visible_file_idx() {
+                self.jump_to_file(first_idx);
                 self.align_after_file_jump();
             }
             return;

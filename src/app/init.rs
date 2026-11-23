@@ -650,6 +650,7 @@ impl App {
             commit_diff_cache: HashMap::new(),
             range_diff_files: None,
             saved_inline_selection: None,
+            selector_opened_from_review: false,
             path_filter: path_filter.map(|s| s.to_string()),
             export: ExportConfig::default(),
             collapse_generated: true,

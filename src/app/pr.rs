@@ -1571,14 +1571,18 @@ impl App {
         let Some(rx) = self.pr_draft_delete_rx.as_ref() else {
             return;
         };
-        let Ok(PrDraftDeleteEvent::Done {
+        let PrDraftDeleteEvent::Done {
             repository,
             pr_number,
             head_sha,
             result,
-        }) = rx.try_recv()
-        else {
-            return;
+        } = match rx.try_recv() {
+            Ok(event) => event,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pr_draft_delete_rx = None;
+                return;
+            }
         };
         self.pr_draft_delete_rx = None;
         let still_open = matches!(
