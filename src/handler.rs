@@ -1632,14 +1632,8 @@ pub fn handle_commit_selector_action(app: &mut App, action: Action) {
 /// Handle actions in VisualSelect mode
 pub fn handle_visual_action(app: &mut App, action: Action) {
     match action {
-        Action::CursorDown(n) => {
-            app.cursor_down(n);
-            app.extend_visual_to_cursor();
-        }
-        Action::CursorUp(n) => {
-            app.cursor_up(n);
-            app.extend_visual_to_cursor();
-        }
+        Action::CursorDown(n) => app.visual_cursor_down(n),
+        Action::CursorUp(n) => app.visual_cursor_up(n),
         Action::AddRangeComment | Action::AddRangeSuggestion => {
             if action == Action::AddRangeSuggestion {
                 app.enter_suggestion_from_visual();
