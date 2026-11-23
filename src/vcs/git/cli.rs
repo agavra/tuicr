@@ -12,9 +12,9 @@ use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSid
 use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser;
 use crate::vcs::git::raw::{
-    NO_USER_DIFF_CONFIG, pair_metadata_with_patch, parse_raw_metadata_from_patch_output,
-    parse_raw_patch_output, patch_text_from_raw_patch_output, split_patch_blocks,
-    unmerged_file_patch,
+    FileMetadata, NO_USER_DIFF_CONFIG, pair_metadata_with_patch,
+    parse_raw_metadata_from_patch_output, parse_raw_patch_output, patch_text_from_raw_patch_output,
+    path_buf_from_bytes, split_patch_blocks, unmerged_file_patch,
 };
 use crate::vcs::whitespace::{WhitespaceComparison, materialize_diff};
 use crate::vcs::{
@@ -586,7 +586,7 @@ fn split_nul_paths(bytes: &[u8]) -> Vec<PathBuf> {
     bytes
         .split(|b| *b == 0)
         .filter(|chunk| !chunk.is_empty())
-        .map(|chunk| PathBuf::from(String::from_utf8_lossy(chunk).into_owned()))
+        .map(path_buf_from_bytes)
         .collect()
 }
 
@@ -772,17 +772,48 @@ fn parse_whitespace_filtered_patches(
         }
 
         let output = run_git_diff_bytes(workdir, args, &paths)?;
+        let sub_records: Vec<FileMetadata> = parse_raw_metadata_from_patch_output(&output)?
+            .into_iter()
+            .filter(|record| record.has_patch)
+            .map(|record| record.metadata)
+            .collect();
         let blocks = split_patch_blocks(patch_text_from_raw_patch_output(&output)?);
-        match blocks.as_slice() {
-            [] => {}
-            [block] => patches.extend(pair_metadata_with_patch(vec![file], block)?),
-            _ => {
-                return Err(TuicrError::VcsCommand(format!(
-                    "structured diff path query emitted {} patch blocks for one file",
-                    blocks.len()
-                )));
-            }
+
+        if blocks.is_empty() {
+            continue;
         }
+        if sub_records.len() == blocks.len() {
+            if let Some((_, block)) = sub_records
+                .iter()
+                .zip(blocks.iter())
+                .find(|(sub_record, _)| *sub_record == &file)
+            {
+                patches.extend(pair_metadata_with_patch(vec![file], block)?);
+            }
+            continue;
+        }
+        if let [block] = blocks.as_slice() {
+            // Two paths were queried for a rename/copy and one of the two
+            // records was suppressed as whitespace-only. Query `old_path`
+            // alone to determine whether this single block belongs to it or
+            // to `file`.
+            if paths.len() == 2
+                && let Some(old_path) = file.old_path.as_deref()
+            {
+                let old_output = run_git_diff_bytes(workdir, args, &[old_path])?;
+                let old_blocks = split_patch_blocks(patch_text_from_raw_patch_output(&old_output)?);
+                if old_blocks.is_empty() {
+                    patches.extend(pair_metadata_with_patch(vec![file], block)?);
+                }
+                continue;
+            }
+            patches.extend(pair_metadata_with_patch(vec![file], block)?);
+            continue;
+        }
+        return Err(TuicrError::VcsCommand(format!(
+            "structured diff path query emitted {} patch blocks for one file",
+            blocks.len()
+        )));
     }
 
     Ok(patches)
@@ -806,10 +837,19 @@ fn append_untracked_cli_diffs(
     Ok(files.len().saturating_sub(previous_len))
 }
 
+fn is_git_config_true(workdir: &Path, key: &str) -> bool {
+    run_git_command(workdir, &["config", "--bool", "--get", key])
+        .is_ok_and(|value| git_bool_config_enabled(&value))
+}
+
 fn sparse_checkout_untracked_pathspecs(workdir: &Path) -> Result<Vec<String>> {
     // Simple cone sparse patterns can narrow `git ls-files --others` to the
     // checked-out cones. Complex patterns fall back to Git's full scan so we do
     // not accidentally hide valid untracked files.
+    if !is_git_config_true(workdir, "core.sparseCheckout") {
+        return Ok(Vec::new());
+    }
+
     let output = Command::new("git")
         .current_dir(workdir)
         .args(["sparse-checkout", "list"])
@@ -820,7 +860,20 @@ fn sparse_checkout_untracked_pathspecs(workdir: &Path) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
 
+    let cone_mode = is_git_config_true(workdir, "core.sparseCheckoutCone");
     let mut pathspecs = Vec::new();
+    let mut push_unique = |spec: String| {
+        if !pathspecs.contains(&spec) {
+            pathspecs.push(spec);
+        }
+    };
+
+    if cone_mode {
+        // In cone mode, direct children of the repository root are always part
+        // of the cone even though `git sparse-checkout list` omits the root.
+        push_unique(":(glob)*".to_string());
+    }
+
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let pattern = line.trim();
         if pattern.is_empty() {
@@ -833,7 +886,19 @@ fn sparse_checkout_untracked_pathspecs(workdir: &Path) -> Result<Vec<String>> {
 
         let pathspec = pattern.trim_start_matches('/').trim_end_matches('/');
         if !pathspec.is_empty() {
-            pathspecs.push(pathspec.to_string());
+            if cone_mode {
+                // Cone mode also includes direct children of every ancestor
+                // directory leading to a nested cone (e.g. `a/*` for `a/b`).
+                let mut ancestor = Path::new(pathspec);
+                while let Some(parent) = ancestor.parent() {
+                    if parent.as_os_str().is_empty() {
+                        break;
+                    }
+                    push_unique(format!(":(glob){}/*", parent.to_string_lossy()));
+                    ancestor = parent;
+                }
+            }
+            push_unique(pathspec.to_string());
         }
     }
 
@@ -946,7 +1011,7 @@ fn normalize_git_cli_paths(files: &mut [DiffFile]) {
     }
 }
 
-fn for_each_untracked_path<F>(workdir: &Path, pathspecs: &[String], mut visit: F) -> Result<()>
+fn for_each_untracked_path<F>(workdir: &Path, pathspecs: &[String], visit: F) -> Result<()>
 where
     F: FnMut(PathBuf) -> Result<()>,
 {
@@ -964,15 +1029,34 @@ where
         .spawn()
         .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
 
-    let mut stdout = child
+    let stdout = child
         .stdout
         .take()
         .ok_or_else(|| TuicrError::VcsCommand("git ls-files stdout unavailable".into()))?;
+    for_each_nul_path(stdout, visit)?;
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| TuicrError::VcsCommand(format!("git ls-files failed: {e}")))?;
+    if !output.status.success() {
+        return Err(TuicrError::VcsCommand(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn for_each_nul_path<R, F>(mut reader: R, mut visit: F) -> Result<()>
+where
+    R: Read,
+    F: FnMut(PathBuf) -> Result<()>,
+{
     let mut buffer = [0; 8192];
     let mut path = Vec::new();
 
     loop {
-        let read = stdout.read(&mut buffer)?;
+        let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
         }
@@ -980,7 +1064,7 @@ where
         for &byte in &buffer[..read] {
             if byte == 0 {
                 if !path.is_empty() {
-                    visit(PathBuf::from(String::from_utf8_lossy(&path).into_owned()))?;
+                    visit(path_buf_from_bytes(&path))?;
                     path.clear();
                 }
             } else {
@@ -990,16 +1074,7 @@ where
     }
 
     if !path.is_empty() {
-        visit(PathBuf::from(String::from_utf8_lossy(&path).into_owned()))?;
-    }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| TuicrError::VcsCommand(format!("git ls-files failed: {e}")))?;
-    if !output.status.success() {
-        return Err(TuicrError::VcsCommand(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
+        visit(path_buf_from_bytes(&path))?;
     }
 
     Ok(())
@@ -2286,5 +2361,190 @@ mod tests {
             .find(|f| f.new_path.as_deref() == Some(Path::new("conflict.txt")))
             .unwrap();
         assert_eq!(conflict.status, FileStatus::Modified);
+    }
+
+    #[test]
+    fn cone_sparse_checkout_includes_root_and_ancestor_untracked_files() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workdir = temp_dir.path();
+        git(workdir, &["init"]);
+        git(workdir, &["config", "user.email", "test@example.com"]);
+        git(workdir, &["config", "user.name", "Test"]);
+        write_file(
+            workdir,
+            "root_tracked.txt",
+            "root
+",
+        );
+        write_file(
+            workdir,
+            "a/b/in_cone.txt",
+            "in cone
+",
+        );
+        write_file(
+            workdir,
+            "a/other/out.txt",
+            "out
+",
+        );
+        write_file(
+            workdir,
+            "outside/out.txt",
+            "out
+",
+        );
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "initial"]);
+
+        git(workdir, &["sparse-checkout", "set", "a/b"]);
+
+        write_file(
+            workdir,
+            "root_untracked.txt",
+            "new at root
+",
+        );
+        write_file(
+            workdir,
+            "a/ancestor_untracked.txt",
+            "new in ancestor
+",
+        );
+        write_file(
+            workdir,
+            "a/b/cone_untracked.txt",
+            "new in cone
+",
+        );
+        write_file(
+            workdir,
+            "a/other/out_untracked.txt",
+            "outside sibling
+",
+        );
+        write_file(
+            workdir,
+            "outside/out_untracked.txt",
+            "outside root
+",
+        );
+
+        let backend =
+            GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal, true).unwrap();
+
+        let paths = backend.list_changed_paths(ChangeKind::Unstaged).unwrap();
+        assert!(
+            paths.contains(&PathBuf::from("root_untracked.txt")),
+            "root untracked file missing from cone-mode changed paths: {paths:?}"
+        );
+        assert!(
+            paths.contains(&PathBuf::from("a/ancestor_untracked.txt")),
+            "ancestor-dir untracked file missing from cone-mode changed paths: {paths:?}"
+        );
+        assert!(paths.contains(&PathBuf::from("a/b/cone_untracked.txt")));
+        assert!(!paths.contains(&PathBuf::from("a/other/out_untracked.txt")));
+        assert!(!paths.contains(&PathBuf::from("outside/out_untracked.txt")));
+
+        let diff_files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .unwrap();
+        let diff_paths: Vec<&Path> = diff_files
+            .iter()
+            .filter_map(|f| f.new_path.as_deref())
+            .collect();
+        assert!(diff_paths.contains(&Path::new("root_untracked.txt")));
+        assert!(diff_paths.contains(&Path::new("a/ancestor_untracked.txt")));
+        assert!(diff_paths.contains(&Path::new("a/b/cone_untracked.txt")));
+        assert!(!diff_paths.contains(&Path::new("outside/out_untracked.txt")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn split_nul_paths_preserves_non_utf8_bytes_on_unix() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let paths = split_nul_paths(b"ok.txt\0bad-\xff-name.txt\0");
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], PathBuf::from("ok.txt"));
+        assert_eq!(
+            paths[1],
+            PathBuf::from(OsStr::from_bytes(b"bad-\xff-name.txt"))
+        );
+
+        let mut streamed = Vec::new();
+        for_each_nul_path(&b"ok.txt\0bad-\xff-name.txt"[..], |p| {
+            streamed.push(p);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(streamed, paths);
+    }
+
+    #[test]
+    fn whitespace_filtered_patches_handle_copied_source_also_modified() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workdir = temp_dir.path();
+        git(workdir, &["init"]);
+        git(workdir, &["config", "user.email", "test@example.com"]);
+        git(workdir, &["config", "user.name", "Test"]);
+        let base_lines = (1..=20)
+            .map(|i| format!("line {i} shared content\n"))
+            .collect::<String>();
+        write_file(workdir, "src.txt", &base_lines);
+        write_file(workdir, "ws_only.txt", "hello world\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "initial"]);
+
+        // Copy src.txt -> dst.txt with a small real edit, also edit src.txt,
+        // and make a whitespace-only change to ws_only.txt to trigger fallback.
+        write_file(workdir, "dst.txt", &format!("{base_lines}added in copy\n"));
+        write_file(
+            workdir,
+            "src.txt",
+            &format!("{base_lines}added in source\n"),
+        );
+        write_file(workdir, "ws_only.txt", "hello    world\n");
+        git(workdir, &["add", "."]);
+
+        let args: Vec<String> = [
+            "diff",
+            "--cached",
+            "--raw",
+            "-z",
+            "--patch",
+            "-C",
+            "--ignore-all-space",
+        ]
+        .map(String::from)
+        .into();
+        let out = Command::new("git")
+            .current_dir(workdir)
+            .args(&args)
+            .output()
+            .unwrap()
+            .stdout;
+
+        let files = parse_whitespace_filtered_patches(workdir, &args, &out)
+            .expect("whitespace-filtered fallback should handle copied+modified source");
+        assert!(
+            files
+                .iter()
+                .any(|f| f.new_path.as_deref() == Some(Path::new("src.txt"))),
+            "src.txt should be present"
+        );
+        let copy = files
+            .iter()
+            .find(|f| f.new_path.as_deref() == Some(Path::new("dst.txt")))
+            .expect("dst.txt copy should be present");
+        assert_eq!(copy.status, FileStatus::Copied);
+        assert_eq!(copy.old_path.as_deref(), Some(Path::new("src.txt")));
+        assert!(
+            !files
+                .iter()
+                .any(|f| f.new_path.as_deref() == Some(Path::new("ws_only.txt"))),
+            "whitespace-only file should be filtered out"
+        );
     }
 }
