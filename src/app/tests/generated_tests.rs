@@ -720,3 +720,35 @@ fn clear_drops_space_overrides() {
     assert!(app.collapse_override.is_empty());
     assert!(collapsed(&app, "api.pb.go"));
 }
+
+#[test]
+fn set_collapse_generated_clamps_cursor_and_scroll_offset() {
+    let dir = repo();
+    let mut app = app_in(&dir, &["api.pb.go", "src/main.rs"]);
+    app.diff_state.viewport_height = 20;
+    app.set_collapse_generated(false);
+    // Move cursor and scroll to the end of the expanded diff.
+    let expanded_max = app.max_cursor_line();
+    app.diff_state.cursor_line = expanded_max;
+    app.diff_state.scroll_offset = expanded_max;
+
+    app.set_collapse_generated(true);
+
+    let collapsed_max = app.max_cursor_line();
+    assert!(
+        collapsed_max < expanded_max,
+        "collapsing should shrink annotations"
+    );
+    assert!(
+        app.diff_state.cursor_line <= collapsed_max,
+        "cursor_line {} should be clamped to {}",
+        app.diff_state.cursor_line,
+        collapsed_max
+    );
+    assert!(
+        app.diff_state.scroll_offset <= app.diff_state.cursor_line,
+        "scroll_offset {} should not strand viewport past cursor {}",
+        app.diff_state.scroll_offset,
+        app.diff_state.cursor_line
+    );
+}

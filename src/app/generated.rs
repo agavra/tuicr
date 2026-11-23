@@ -137,6 +137,14 @@ impl App {
         self.detect_generated_files();
         self.rebuild_annotations();
 
+        self.diff_state.cursor_line = self.diff_state.cursor_line.min(self.max_cursor_line());
+        let max_scroll = self
+            .total_lines()
+            .saturating_sub(self.diff_state.effective_visible_lines());
+        self.diff_state.scroll_offset = self.diff_state.scroll_offset.min(max_scroll);
+        self.ensure_cursor_visible();
+        self.update_current_file_from_cursor();
+
         let count = self.generated_file_count();
         if !collapse {
             self.set_message("Showing generated files");
