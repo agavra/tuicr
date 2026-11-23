@@ -14,10 +14,8 @@
 //! any host-qualified `host/owner/repo#N` (as GitHub).
 
 use crate::error::{Result, TuicrError};
-use crate::forge::gitlab::glab::{
-    gitlab_repository_from_path, parse_pull_request_target_gitlab, parse_scp_like_remote,
-    strip_port, strip_scheme, trim_url_suffix,
-};
+use crate::forge::gitlab::glab::{gitlab_repository_from_path, parse_pull_request_target_gitlab};
+use crate::forge::remote_url::{parse_scp_like_remote, strip_port, strip_scheme, trim_url_suffix};
 use crate::forge::traits::{ForgeRepository, PullRequestTarget};
 
 /// Env var naming the Heptapod host, on the same model as `GERRIT_URL`.

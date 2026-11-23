@@ -81,9 +81,23 @@ impl App {
     /// Still re-derives everything: `App::build` builds annotations before the
     /// config is applied, so a bare field assignment would leave the diff
     /// renderer and the cursor reading rows the filter has since dropped.
+    ///
+    /// A cursor still on the overview (PR description, review comments) stays
+    /// put: those rows are never filtered, and jumping to the first file here
+    /// would measure its offset before the first frame knows the real width.
     pub fn init_show_reviewed(&mut self, show: bool) {
         self.file_filter.show_reviewed = show;
-        self.apply_file_filter_change();
+        if self.diff_state.cursor_line >= self.review_comments_render_height() {
+            self.apply_file_filter_change();
+            return;
+        }
+        self.rebuild_annotations();
+        if let Some(&first) = self.filtered_file_indices().first() {
+            self.diff_state.current_file_idx = first;
+            if let Some(tree_idx) = self.file_idx_to_tree_idx(first) {
+                self.file_list_state.select(tree_idx);
+            }
+        }
     }
 
     pub fn set_show_reviewed(&mut self, show: bool) {
@@ -110,7 +124,7 @@ impl App {
         } else {
             self.set_message(format!(
                 "Hiding {hidden} reviewed \u{00b7} {} of {total} shown",
-                total - hidden
+                total.saturating_sub(hidden)
             ));
         }
     }

@@ -206,6 +206,97 @@ fn commit_data_index_mirrors_and_round_trips_when_ascending() {
     }
 }
 
+fn inline_selector_app(order: CommitOrder) -> App {
+    let mut app = build_app(
+        (0..12)
+            .map(|i| normal_commit(&format!("c{i:06}")))
+            .collect(),
+    );
+    app.review_commits = app.commit_list.clone();
+    app.diff_source =
+        DiffSource::CommitRange(app.review_commits.iter().map(|c| c.id.clone()).collect());
+    app.input_mode = InputMode::Normal;
+    app.commit_order = order;
+    app.show_commit_selector = true;
+    app.commit_selection_range = Some((0, 11));
+    app
+}
+
+fn draw_inline_selector(app: &mut App, height: u16) -> ratatui::buffer::Buffer {
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut terminal = Terminal::new(TestBackend::new(120, height)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::render(frame, app))
+        .expect("draw review");
+    terminal.backend().buffer().clone()
+}
+
+fn assert_inline_cursor_visible(app: &App, buffer: &ratatui::buffer::Buffer) {
+    let inner = app.commit_list_inner_area.expect("inline selector visible");
+    let cursor_id = &app.review_commits[app.commit_list_cursor].short_id;
+    let visible = (inner.y..inner.bottom()).any(|y| {
+        let row: String = (inner.x..inner.right())
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        row.contains('▸') && row.contains(cursor_id)
+    });
+    assert!(
+        visible,
+        "cursor {cursor_id} is missing from the rendered selector (offset={}, height={})",
+        app.commit_list_scroll_offset, inner.height,
+    );
+}
+
+#[test]
+fn inline_selector_keeps_cycled_commits_visible_in_both_orders() {
+    for order in [CommitOrder::Descending, CommitOrder::Ascending] {
+        for next in [true, false] {
+            let mut app = inline_selector_app(order);
+            // Start at the opposite end so both directions cross a viewport edge.
+            app.commit_list_cursor = if next { 0 } else { 11 };
+            app.commit_selection_range = Some((app.commit_list_cursor, app.commit_list_cursor));
+            draw_inline_selector(&mut app, 24);
+            for _ in 0..14 {
+                if next {
+                    app.cycle_commit_next();
+                } else {
+                    app.cycle_commit_prev();
+                }
+                let buffer = draw_inline_selector(&mut app, 24);
+                assert_inline_cursor_visible(&app, &buffer);
+            }
+        }
+    }
+}
+
+#[test]
+fn inline_selector_reveals_commit_cycled_while_hidden() {
+    for order in [CommitOrder::Descending, CommitOrder::Ascending] {
+        let mut app = inline_selector_app(order);
+        draw_inline_selector(&mut app, 24);
+        app.toggle_commit_selector();
+        app.cycle_commit_next();
+        draw_inline_selector(&mut app, 24);
+        assert!(app.commit_list_inner_area.is_none());
+        app.toggle_commit_selector();
+        let buffer = draw_inline_selector(&mut app, 24);
+        assert_inline_cursor_visible(&app, &buffer);
+    }
+}
+
+#[test]
+fn inline_selector_keeps_cursor_visible_after_resize() {
+    for order in [CommitOrder::Descending, CommitOrder::Ascending] {
+        let mut app = inline_selector_app(order);
+        app.commit_list_cursor = 5;
+        draw_inline_selector(&mut app, 24);
+        let previous_height = app.commit_list_viewport_height;
+        let buffer = draw_inline_selector(&mut app, 7);
+        assert!(app.commit_list_viewport_height < previous_height);
+        assert_inline_cursor_visible(&app, &buffer);
+    }
+}
+
 #[test]
 fn toggle_commit_selector_flips_visibility_and_drops_focus() {
     let mut app = build_app(vec![normal_commit("a"), normal_commit("b")]);
@@ -461,6 +552,135 @@ fn should_comment_on_a_commit_only_file_after_narrowing_the_commit_pane() {
         Some(1),
         "the comment must be stored against the file"
     );
+}
+
+#[test]
+fn minimal_ui_starts_on_the_first_file_and_keeps_comment_rows() {
+    use crate::model::comment::{Comment, CommentType, LineSide};
+
+    let path = PathBuf::from("src/lib.rs");
+    let mut app = build_app(vec![]);
+    app.diff_files = vec![commit_only_file(&path, vec![one_line_hunk()])];
+    App::register_diff_files(&mut app.session, &app.diff_files, false);
+    app.session.review_comments.push(Comment::new(
+        "review note stays".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
+    app.session
+        .files
+        .get_mut(&path)
+        .expect("file is registered")
+        .line_comments
+        .entry(1)
+        .or_default()
+        .push(Comment::new(
+            "line note stays".to_string(),
+            CommentType::from_id("note"),
+            Some(LineSide::New),
+        ));
+    app.rebuild_annotations();
+
+    // The default landing is the review-comments overview, above the file.
+    assert!(app.is_cursor_in_overview());
+    assert!(app.show_review_comments_header());
+
+    app.minimal_ui = true;
+    app.diff_state.viewport_width = 80;
+    app.sort_files_by_directory(true);
+    app.rebuild_annotations();
+    assert!(!app.pending_minimal_ui_start);
+
+    assert!(!app.is_cursor_in_overview());
+    assert_eq!(app.current_file_path(), Some(&path));
+    assert_eq!(
+        app.diff_state.cursor_line,
+        app.review_comments_render_height()
+    );
+    assert!(matches!(
+        app.line_annotations.get(app.diff_state.cursor_line),
+        Some(AnnotatedLine::FileHeader { file_idx: 0 })
+    ));
+    assert!(
+        app.line_annotations
+            .iter()
+            .any(|line| matches!(line, AnnotatedLine::ReviewComment { .. }))
+    );
+    assert!(
+        app.line_annotations
+            .iter()
+            .any(|line| matches!(line, AnnotatedLine::LineComment { .. }))
+    );
+    assert!(app.show_review_comments_header());
+
+    let before = app.diff_state.cursor_line;
+    app.next_hunk();
+    assert!(app.diff_state.cursor_line > before);
+    assert!(matches!(
+        app.line_annotations[app.diff_state.cursor_line],
+        AnnotatedLine::HunkHeader { .. }
+    ));
+
+    app.queue_editor_for_focused_item();
+    let message = app
+        .message
+        .as_ref()
+        .map(|message| message.content.as_str())
+        .unwrap_or("");
+    assert!(
+        message.contains("src/lib.rs"),
+        "editor handoff should resolve the open file, got {message:?}"
+    );
+}
+
+#[test]
+fn minimal_ui_status_bar_stays_for_operating_state() {
+    let mut app = build_app(vec![]);
+    assert!(app.shows_status_bar());
+
+    app.input_mode = InputMode::Normal;
+    app.minimal_ui = true;
+    assert!(!app.shows_status_bar());
+
+    for mode in [
+        InputMode::Command,
+        InputMode::Search,
+        InputMode::Comment,
+        InputMode::Confirm,
+        InputMode::Help,
+    ] {
+        app.input_mode = mode;
+        assert!(app.shows_status_bar(), "{mode:?}");
+    }
+
+    app.input_mode = InputMode::Normal;
+    app.set_error("reload failed");
+    assert!(app.shows_status_bar());
+    app.message = None;
+    app.dirty = true;
+    assert!(app.shows_status_bar());
+    app.dirty = false;
+    app.forge_review_threads_loading = true;
+    assert!(app.shows_status_bar());
+    app.forge_review_threads_loading = false;
+    app.pr_reload_state = Some(PrReloadRequest {
+        repository: crate::forge::traits::ForgeRepository::github("github.com", "a", "b"),
+        pr_number: 1,
+        head_sha: "abc".to_string(),
+        started_at: std::time::Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    });
+    assert!(app.shows_status_bar());
+    app.pr_reload_state = None;
+    app.pending_count = Some(4);
+    assert!(app.shows_status_bar());
+    app.pending_count = None;
+    app.begin_file_tree_prompt(FileTreePrompt::Include);
+    assert!(app.shows_status_bar());
+
+    app.file_filter.draft = None;
+    assert!(!app.shows_status_bar());
 }
 
 #[test]
@@ -764,4 +984,246 @@ fn mouse_wheel_moves_commit_picker_cursor_by_configured_lines() {
     assert_eq!(app.commit_list_cursor, 4);
     wheel(&mut app, crossterm::event::MouseEventKind::ScrollUp);
     assert_eq!(app.commit_list_cursor, 3);
+}
+
+#[test]
+fn enter_in_inline_selector_selects_only_cursor_commit() {
+    use crate::handler::handle_commit_selector_action;
+    use crate::input::Action;
+
+    for (range, cursor) in [((0, 11), 4), ((2, 6), 4), ((2, 6), 9), ((4, 4), 4)] {
+        let mut app = inline_selector_app(CommitOrder::Descending);
+        app.focused_panel = FocusedPanel::CommitSelector;
+        app.commit_selection_range = Some(range);
+        app.commit_list_cursor = cursor;
+
+        handle_commit_selector_action(&mut app, Action::SelectFile);
+
+        assert_eq!(app.commit_selection_range, Some((cursor, cursor)));
+        assert_eq!(app.commit_list_cursor, cursor);
+    }
+}
+
+#[test]
+fn enter_in_inline_selector_selects_cursor_commit_when_none_selected() {
+    use crate::handler::handle_commit_selector_action;
+    use crate::input::Action;
+
+    let mut app = inline_selector_app(CommitOrder::Descending);
+    app.commit_selection_range = None;
+    app.commit_list_cursor = 3;
+
+    handle_commit_selector_action(&mut app, Action::SelectFile);
+
+    assert_eq!(app.commit_selection_range, Some((3, 3)));
+}
+
+#[test]
+fn space_in_inline_selector_still_toggles_commit_selection() {
+    use crate::handler::handle_commit_selector_action;
+    use crate::input::Action;
+
+    let mut app = inline_selector_app(CommitOrder::Descending);
+    app.commit_selection_range = Some((2, 6));
+    app.commit_list_cursor = 6;
+
+    handle_commit_selector_action(&mut app, Action::ToggleExpand);
+
+    assert_eq!(app.commit_selection_range, Some((2, 5)));
+}
+
+/// A commit subset hashes differently from the cumulative diff. Narrowing the
+/// commit pane must not read that as the file changing and drop its mark.
+#[test]
+fn should_keep_a_file_reviewed_mark_when_narrowing_to_a_commit_with_a_different_hash() {
+    let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
+    app.review_commits = app.commit_list.clone();
+    let path = PathBuf::from("src/shared.rs");
+    app.session.add_file(path.clone(), FileStatus::Modified, 7);
+    app.session.get_file_mut(&path).unwrap().reviewed = true;
+    let mut subset = commit_only_file(&path, Vec::new());
+    subset.content_hash = 99;
+    app.commit_diff_cache.insert((0, 0), vec![subset]);
+
+    app.commit_selection_range = Some((0, 0));
+    app.reload_inline_selection()
+        .expect("reload should succeed");
+
+    let review = app.session.files.get(&path).unwrap();
+    assert!(review.reviewed, "narrowing must keep the reviewed mark");
+    assert_eq!(review.content_hash, Some(7));
+}
+
+/// Widening back to the cached cumulative PR diff must not prune hunk marks
+/// that only exist in a single commit's diff.
+#[test]
+fn should_keep_commit_only_hunk_marks_when_widening_to_the_cached_pr_diff() {
+    let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
+    let path = PathBuf::from("src/shared.rs");
+    let mut commit_file = commit_only_file(&path, vec![one_line_hunk()]);
+    commit_file.content_hash = 99;
+    let key = commit_file.hunk_review_keys().remove(0);
+    app.session.add_file(path.clone(), FileStatus::Modified, 7);
+    app.session
+        .get_file_mut(&path)
+        .unwrap()
+        .reviewed_hunks
+        .insert(key.clone());
+    app.range_diff_files = Some(vec![commit_only_file(&path, Vec::new())]);
+
+    app.apply_cached_full_pr_diff();
+
+    assert!(
+        app.session.files[&path].reviewed_hunks.contains(&key),
+        "widening must keep hunk marks from individual commits"
+    );
+}
+
+/// `r` pressed while narrowed to one commit marks the file in the cumulative
+/// review. Widening back must keep that mark: the subset hash must not
+/// overwrite the cumulative `content_hash` (which would invalidate it).
+#[test]
+fn should_keep_a_mark_made_while_narrowed_after_widening_back() {
+    let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
+    app.review_commits = app.commit_list.clone();
+    app.diff_source = DiffSource::CommitRange(vec!["c1".into(), "c2".into()]);
+    let path = PathBuf::from("src/shared.rs");
+    let full = commit_only_file(&path, vec![one_line_hunk()]);
+    app.session.add_diff_file(&full);
+    app.range_diff_files = Some(vec![full]);
+    let mut subset = commit_only_file(&path, vec![one_line_hunk()]);
+    subset.content_hash = 99;
+    app.commit_diff_cache.insert((0, 0), vec![subset]);
+    app.commit_selection_range = Some((0, 0));
+    app.reload_inline_selection().unwrap();
+
+    app.toggle_reviewed_for_file_idx(loaded_file_idx(&app, &path), true);
+    assert!(app.session.is_file_reviewed(&path));
+    app.commit_selection_range = Some((0, 1));
+    app.reload_inline_selection().unwrap();
+
+    assert!(
+        app.session.is_file_reviewed(&path),
+        "mark made while narrowed must survive widening"
+    );
+    assert_eq!(app.session.files[&path].content_hash, Some(7));
+}
+
+#[test]
+fn should_keep_wrap_preference_when_narrowing_the_commit_pane() {
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
+    app.review_commits = app.commit_list.clone();
+    app.commit_diff_cache
+        .insert((0, 0), vec![commit_only_file(&path, Vec::new())]);
+    app.diff_state.wrap_lines = true;
+
+    app.commit_selection_range = Some((0, 0));
+    app.reload_inline_selection()
+        .expect("narrowing should load");
+
+    assert!(app.diff_state.wrap_lines, "inline narrowing reset wrap");
+}
+
+fn two_commit_selector_app() -> App {
+    build_app_with_range_diff(
+        vec![normal_commit("c2"), normal_commit("c1")],
+        vec![commit_only_file(
+            &PathBuf::from("src/only_in_commit.rs"),
+            vec![one_line_hunk()],
+        )],
+    )
+}
+
+#[test]
+fn should_show_the_commit_pane_for_a_multi_commit_selection_by_default() {
+    let mut app = two_commit_selector_app();
+    app.commit_selection_range = Some((0, 1));
+
+    app.confirm_commit_selection().unwrap();
+
+    assert!(app.show_commit_selector);
+    assert!(app.has_inline_commit_selector());
+}
+
+#[test]
+fn should_keep_the_commit_pane_hidden_for_a_selector_review_when_show_commits_is_false() {
+    // given `show_commits = false`
+    let mut app = two_commit_selector_app();
+    app.apply_show_commits_config(false);
+    app.commit_selection_range = Some((0, 1));
+
+    // when a multi-commit review opens from the selector
+    app.confirm_commit_selection().unwrap();
+
+    // then the pane stays hidden while `(` / `)` can still cycle commits
+    assert!(!app.show_commit_selector);
+    assert!(!app.has_inline_commit_selector());
+    assert!(app.has_review_commits());
+    assert_ne!(app.focused_panel, FocusedPanel::CommitSelector);
+}
+
+#[test]
+fn should_let_the_user_reveal_the_commit_pane_without_changing_the_show_commits_preference() {
+    let mut app = two_commit_selector_app();
+    app.apply_show_commits_config(false);
+    app.commit_selection_range = Some((0, 1));
+    app.confirm_commit_selection().unwrap();
+
+    // when the user toggles the pane on for this review
+    app.toggle_commit_selector();
+
+    // then it shows, and the configured preference is unchanged
+    assert!(app.has_inline_commit_selector());
+    assert!(!app.show_commits_on_open);
+}
+
+#[test]
+fn should_hide_the_current_commit_pane_and_drop_its_focus_when_show_commits_is_false() {
+    let mut app = build_app(vec![normal_commit("a"), normal_commit("b")]);
+    app.show_commit_selector = true;
+    app.focused_panel = FocusedPanel::CommitSelector;
+
+    app.apply_show_commits_config(false);
+
+    assert!(!app.show_commit_selector);
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+}
+
+fn esc_key() -> crossterm::event::KeyEvent {
+    crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Esc,
+        crossterm::event::KeyModifiers::NONE,
+    )
+}
+
+/// Esc in the inline commit selector returns focus to the diff. Normal mode
+/// maps Esc to `ClearSearchHighlight` (#493), so the selector must treat that
+/// action as its exit, and it still clears a visible search highlight.
+#[test]
+fn esc_in_inline_selector_returns_focus_to_diff() {
+    let mut app = inline_selector_app(CommitOrder::Descending);
+    app.focused_panel = FocusedPanel::CommitSelector;
+    app.search_highlight_visible = true;
+
+    let action = crate::handler::map_normal_path_key(&app, esc_key());
+    crate::handler::dispatch_action(&mut app, action);
+
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+    assert_eq!(app.commit_selection_range, Some((0, 11)));
+    assert!(!app.search_highlight_visible);
+}
+
+/// Esc in the diff pane keeps clearing the search highlight and focus.
+#[test]
+fn esc_in_diff_pane_clears_search_highlight() {
+    let mut app = inline_selector_app(CommitOrder::Descending);
+    app.focused_panel = FocusedPanel::Diff;
+    app.search_highlight_visible = true;
+
+    let action = crate::handler::map_normal_path_key(&app, esc_key());
+    crate::handler::dispatch_action(&mut app, action);
+
+    assert!(!app.search_highlight_visible);
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
 }

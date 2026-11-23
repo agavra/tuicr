@@ -23,6 +23,7 @@ impl Drop for TestReviewsDir {
 
 fn file_options(path: &str) -> AppStartupOptions<'_> {
     AppStartupOptions {
+        include_untracked: true,
         revisions: None,
         working_tree: false,
         path_filter: None,
@@ -35,6 +36,7 @@ fn file_options(path: &str) -> AppStartupOptions<'_> {
         diff_whitespace_mode: DiffWhitespaceMode::Normal,
         commit_selection: CommitSelectionStart::All,
         pr_target: None,
+        pr_current_branch: false,
         repo_url_override: None,
     }
 }

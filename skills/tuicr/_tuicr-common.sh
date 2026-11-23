@@ -34,6 +34,28 @@ tuicr_stdout_supported() {
   tuicr --help 2>&1 | grep -q -- '--stdout'
 }
 
+# Waits while "$@" — a check that succeeds while another tuicr is open —
+# keeps succeeding, so a second launch queues behind the review on screen
+# instead of exiting 0 with nothing exported, which an agent reads as an
+# approval. Gives up after TUICR_WAIT_TIMEOUT seconds (default 300) with exit
+# 75 (EX_TEMPFAIL): rerun once the other review is closed. Callers must define
+# log_info, log_warn and log_error before invoking this.
+tuicr_wait_for_running() {
+  local timeout="${TUICR_WAIT_TIMEOUT:-300}"
+  local waited=0
+  "$@" || return 0
+  log_warn "tuicr is already running in another pane; waiting up to ${timeout}s for it to close"
+  while "$@"; do
+    if (( waited >= timeout )); then
+      log_error "tuicr is still running after ${timeout}s; rerun once that review is closed"
+      exit 75
+    fi
+    sleep 1
+    waited=$(( waited + 1 ))
+  done
+  log_info "The other tuicr closed; launching this review"
+}
+
 # Prints the review exported via --stdout, or points the caller at the
 # clipboard when --stdout capture wasn't used. Cleans up output_file either
 # way. Callers must define log_info before invoking this.

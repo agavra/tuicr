@@ -6,6 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_tuicr-common.sh"
 # Configuration - override via environment variables
 TUICR_PANE_DIRECTION="${TUICR_PANE_DIRECTION:-right}"  # left, right, up or down
 REX_BIN="${REX_BIN:-rex}"
+JQ_BIN="${JQ_BIN:-jq}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -38,6 +39,7 @@ Arguments:
 Environment variables:
   TUICR_PANE_DIRECTION  Split direction: left, right, up or down (default: right)
   REX_BIN               Path to the rex executable (default: rex)
+  JQ_BIN                Path to the jq executable (default: jq)
 
 Examples:
   $(basename "$0")                       # Review changes in current directory
@@ -47,20 +49,23 @@ Examples:
 EOF
 }
 
+# Only answers "are we inside a rex block?". Missing tools are reported by
+# check_commands, so they never surface as "not running inside rex".
 check_rex() {
+  [[ -n "${REX_SESSION:-}" && -n "${REX_BLOCK:-}" ]]
+}
+
+check_commands() {
+  if ! command -v tuicr &> /dev/null; then
+    log_error "tuicr not found. Install it first."
+    return 1
+  fi
   if ! command -v "$REX_BIN" &> /dev/null; then
     log_error "rex command not found on PATH"
     return 1
   fi
-  if [[ -z "${REX_SESSION:-}" || -z "${REX_BLOCK:-}" ]]; then
-    return 1
-  fi
-  return 0
-}
-
-check_tuicr() {
-  if ! command -v tuicr &> /dev/null; then
-    log_error "tuicr not found. Install it first."
+  if ! command -v "$JQ_BIN" &> /dev/null; then
+    log_error "jq not found on PATH; the rex wrapper needs it to read rex's JSON output"
     return 1
   fi
   return 0
@@ -101,10 +106,11 @@ launch_tuicr_block() {
 
   # Splitting the caller's own block (-b) keeps the review next to the agent
   # even when another block has focus. rex runs the command directly, with no
-  # shell to quote for, and closes the block when tuicr exits. It prints the
-  # new block ref and returns at once.
-  local block_ref
-  block_ref=$("$REX_BIN" split \
+  # shell to quote for, and closes the block when tuicr exits. It returns at
+  # once; --json because rex's plain output is not a stable format.
+  local split_json
+  split_json=$("$REX_BIN" split \
+    --json \
     -s "$REX_SESSION" \
     -b "$REX_BLOCK" \
     -c "$target_dir" \
@@ -112,8 +118,16 @@ launch_tuicr_block() {
     --label tuicr \
     -- tuicr "${tuicr_args[@]+"${tuicr_args[@]}"}")
 
-  if [[ ! "$block_ref" =~ ^block: ]]; then
-    log_error "Could not read the new block ref from rex: $block_ref"
+  # Take the one block ref in the response that is not the caller's own,
+  # rather than depending on the name of the field that carries it.
+  local block_ref
+  block_ref=$("$JQ_BIN" -r --arg caller "$REX_BLOCK" \
+    '[.. | strings | select(startswith("block:") and . != $caller)] | unique
+     | if length == 1 then .[0] else empty end' \
+    <<< "$split_json" 2>/dev/null || true)
+
+  if [[ -z "$block_ref" ]]; then
+    log_error "Could not read the new block ref from rex: $split_json"
     return 1
   fi
 
@@ -134,8 +148,8 @@ main() {
     exit 0
   fi
 
-  # Check for tuicr
-  if ! check_tuicr; then
+  # Check for tuicr, rex and jq
+  if ! check_commands; then
     exit 1
   fi
 

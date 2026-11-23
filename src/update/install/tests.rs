@@ -11,7 +11,10 @@ use zip::write::SimpleFileOptions;
 
 use super::archive::extract_binary;
 use super::executable_swap::{stage_and_swap, swap_executable};
-use super::installation::{detect_install_method, manager_command};
+use super::installation::{
+    HOMEBREW_TAP_UNKNOWN, detect_external_manager, detect_install_method,
+    homebrew_formula_from_receipt, manager_command, state_home,
+};
 use super::source::{package_repository_url, release_asset_name, release_asset_url};
 use super::*;
 
@@ -20,6 +23,7 @@ struct MockRuntime {
     responses: HashMap<String, Vec<u8>>,
     commands: RefCell<Vec<(InstallMethod, String, Vec<String>)>>,
     replacement: RefCell<Option<(PathBuf, Vec<u8>)>>,
+    warnings: RefCell<Vec<String>>,
     command_error: Option<String>,
     replacement_error: Option<String>,
 }
@@ -59,6 +63,10 @@ impl UpdateRuntime for MockRuntime {
                 detail: detail.clone(),
             })
         })
+    }
+
+    fn warn(&self, message: &str) {
+        self.warnings.borrow_mut().push(message.to_string());
     }
 }
 
@@ -225,7 +233,7 @@ fn delegates_all_managed_install_methods_to_their_manager() {
             "/opt/homebrew/Cellar/tuicr/1.0.0/bin/tuicr",
             InstallMethod::Homebrew,
             "brew",
-            vec!["upgrade", "agavra/tap/tuicr"],
+            vec!["upgrade", "tuicr"],
         ),
         (
             "/home/alice/.cargo/bin/tuicr",
@@ -262,7 +270,14 @@ fn delegates_all_managed_install_methods_to_their_manager() {
             )]
         );
     }
-    assert!(manager_command(InstallMethod::Direct).is_none());
+    for method in [
+        InstallMethod::Direct,
+        InstallMethod::Pacman,
+        InstallMethod::HomeManager,
+        InstallMethod::DeclarativeNix,
+    ] {
+        assert!(manager_command(method, Path::new("/usr/bin/tuicr")).is_none());
+    }
 }
 
 #[test]
@@ -742,6 +757,9 @@ fn formats_methods_outcomes_commands_and_errors_for_users() {
         (InstallMethod::Cargo, "Cargo"),
         (InstallMethod::Mise, "Mise"),
         (InstallMethod::Nix, "Nix"),
+        (InstallMethod::Pacman, "pacman"),
+        (InstallMethod::HomeManager, "Home Manager"),
+        (InstallMethod::DeclarativeNix, "a declarative Nix profile"),
         (InstallMethod::Direct, "direct binary"),
     ] {
         assert_eq!(method.to_string(), name);
@@ -792,4 +810,326 @@ fn system_runtime_reports_success_failure_and_missing_manager_commands() {
         ),
         Err(UpdateError::Manager { .. })
     ));
+}
+
+#[cfg(unix)]
+#[test]
+fn detects_cargo_install_behind_a_symlinked_cargo_home() {
+    let temp = TempDir::new().unwrap();
+    let real = temp.path().join("real-cargo");
+    let link = temp.path().join("dot-cargo");
+    std::fs::create_dir_all(real.join("bin")).unwrap();
+    std::fs::write(real.join("bin/tuicr"), b"binary").unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let executable = canonical_executable(&link.join("bin/tuicr")).unwrap();
+    let root = canonical_cargo_root(None, Some(&link));
+
+    assert_eq!(
+        detect_install_method(&executable, None, root.as_deref()),
+        InstallMethod::Cargo
+    );
+    let root = canonical_cargo_root(Some(temp.path()), None);
+    assert_eq!(
+        root,
+        Some(temp.path().join(".cargo")),
+        "missing root falls back to raw path"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn update_context_resolves_cargo_for_symlinked_cargo_home_and_implicit_home() {
+    let temp = TempDir::new().unwrap();
+    let real = temp.path().join("real");
+    let link = temp.path().join("link");
+    std::fs::create_dir_all(real.join(".cargo/bin")).unwrap();
+    std::fs::write(real.join(".cargo/bin/tuicr"), b"binary").unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let exe = real.join(".cargo/bin/tuicr");
+
+    // Explicit CARGO_HOME behind a symlink.
+    let explicit = UpdateContext::resolve(&exe, None, Some(&link.join(".cargo"))).unwrap();
+    assert_eq!(explicit.method, InstallMethod::Cargo);
+    // Implicit ~/.cargo with a symlinked HOME.
+    let implicit = UpdateContext::resolve(&exe, Some(&link), None).unwrap();
+    assert_eq!(implicit.method, InstallMethod::Cargo);
+}
+
+#[cfg(windows)]
+#[test]
+fn canonical_executable_and_cargo_root_agree_on_windows_verbatim_paths() {
+    let temp = TempDir::new().unwrap();
+    let bin = temp.path().join(".cargo").join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let exe = bin.join("tuicr.exe");
+    std::fs::write(&exe, b"binary").unwrap();
+
+    let canonical = canonical_executable(&exe).unwrap();
+    assert!(canonical.to_string_lossy().starts_with(r"\\?\"));
+    let context = UpdateContext::resolve(&exe, Some(temp.path()), None).unwrap();
+    assert_eq!(context.method, InstallMethod::Cargo);
+    assert_eq!(context.executable, canonical);
+}
+
+fn write_file(path: &Path, contents: &[u8]) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, contents).unwrap();
+}
+
+#[test]
+fn homebrew_upgrades_the_formula_named_by_the_install_receipt() {
+    let cases = [
+        (
+            Some(r#"{"source":{"tap":"agavra/tap"}}"#),
+            "agavra/tap/tuicr",
+            false,
+        ),
+        (
+            Some(r#"{"source":{"tap":"homebrew/core"}}"#),
+            "tuicr",
+            false,
+        ),
+        (Some(r#"{"source":{}}"#), "tuicr", true),
+        (None, "tuicr", true),
+    ];
+    for (receipt, formula, warns) in cases {
+        let temp = TempDir::new().unwrap();
+        let keg = temp.path().join("Cellar/tuicr/1.0.0");
+        let executable = keg.join("bin/tuicr");
+        write_file(&executable, b"binary");
+        if let Some(receipt) = receipt {
+            write_file(&keg.join("INSTALL_RECEIPT.json"), receipt.as_bytes());
+        }
+
+        let runtime = MockRuntime::default();
+        assert_eq!(
+            update_with_runtime(&runtime, context(executable)).unwrap(),
+            UpdateOutcome::ManagerCompleted(InstallMethod::Homebrew)
+        );
+        assert_eq!(
+            runtime.warnings.into_inner(),
+            if warns {
+                vec![HOMEBREW_TAP_UNKNOWN.to_string()]
+            } else {
+                Vec::new()
+            },
+            "{receipt:?}"
+        );
+        assert_eq!(
+            runtime.commands.into_inner()[0].2,
+            ["upgrade", formula],
+            "{receipt:?}"
+        );
+    }
+    assert!(!HOMEBREW_TAP_UNKNOWN.contains('\n'));
+}
+
+#[cfg(unix)]
+#[test]
+fn homebrew_warns_but_still_upgrades_when_the_receipt_is_unreadable() {
+    let temp = TempDir::new().unwrap();
+    let keg = temp.path().join("Cellar/tuicr/1.0.0");
+    let executable = keg.join("bin/tuicr");
+    write_file(&executable, b"binary");
+    // A directory where the receipt should be: present, but not readable as a file.
+    std::fs::create_dir(keg.join("INSTALL_RECEIPT.json")).unwrap();
+
+    let runtime = MockRuntime::default();
+    assert_eq!(
+        update_with_runtime(&runtime, context(executable)).unwrap(),
+        UpdateOutcome::ManagerCompleted(InstallMethod::Homebrew)
+    );
+    assert_eq!(runtime.warnings.into_inner(), [HOMEBREW_TAP_UNKNOWN]);
+    assert_eq!(runtime.commands.into_inner()[0].2, ["upgrade", "tuicr"]);
+}
+
+#[test]
+fn homebrew_receipt_without_a_valid_tap_is_undetermined() {
+    for receipt in [
+        &b"not json"[..],
+        br#"{"source":{"tap":42}}"#,
+        br#"{"source":{"tap":"no-slash"}}"#,
+        br#"{"source":{"tap":"a/b/c"}}"#,
+        br#"{"source":{"tap":"evil/tap --force"}}"#,
+    ] {
+        assert_eq!(homebrew_formula_from_receipt(Some(receipt)), None);
+    }
+    assert_eq!(homebrew_formula_from_receipt(None), None);
+    assert_eq!(
+        homebrew_formula_from_receipt(Some(br#"{"source":{"tap":"Homebrew/Core"}}"#)).as_deref(),
+        Some("tuicr")
+    );
+    assert_eq!(
+        homebrew_formula_from_receipt(Some(br#"{"source":{"tap":"Agavra/Tap"}}"#)).as_deref(),
+        Some("agavra/tap/tuicr")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn detects_pacman_owned_executables_from_the_local_database() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    let executable = root.join("usr/bin/tuicr");
+    write_file(&executable, b"binary");
+    write_file(
+        &root.join("var/lib/pacman/local/glibc-2.41-1/files"),
+        b"%FILES%\nusr/\nusr/lib/libc.so.6\n",
+    );
+    assert_eq!(
+        detect_external_manager(&executable, None, None, root),
+        None,
+        "an unowned /usr/bin binary stays a direct install"
+    );
+
+    write_file(
+        &root.join("var/lib/pacman/local/tuicr-1.0.0-1/files"),
+        b"%FILES%\nusr/\nusr/bin/\nusr/bin/tuicr\n",
+    );
+    assert_eq!(
+        detect_external_manager(&executable, None, None, root),
+        Some(InstallMethod::Pacman)
+    );
+
+    let local = root.join("usr/local/bin/tuicr");
+    write_file(&local, b"binary");
+    write_file(
+        &root.join("var/lib/pacman/local/odd-1-1/files"),
+        b"%FILES%\nusr/local/bin/tuicr\n",
+    );
+    assert_eq!(detect_external_manager(&local, None, None, root), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn detects_declarative_nix_profiles_but_not_plain_nix_profiles() {
+    let temp = TempDir::new().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let home = root.join("home/alice");
+    let state = home.join(".local/state");
+    let executable = root.join("nix/store/hash-tuicr-1.0.0/bin/tuicr");
+    write_file(&executable, b"binary");
+    let link = |path: PathBuf| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&executable, &path).unwrap();
+    };
+
+    link(home.join(".nix-profile/bin/tuicr"));
+    assert_eq!(
+        detect_external_manager(&executable, Some(&state), Some("alice"), &root),
+        None,
+        "a `nix profile install` stays with Nix"
+    );
+
+    // `users.users.alice.packages` (or Home Manager's useUserPackages): the
+    // per-user profile does not say which, so it is not labelled Home Manager.
+    link(root.join("etc/profiles/per-user/alice/bin/tuicr"));
+    assert_eq!(
+        detect_external_manager(&executable, Some(&state), Some("bob"), &root),
+        None,
+        "another user's per-user profile does not count"
+    );
+    assert_eq!(
+        detect_external_manager(&executable, Some(&state), Some("alice"), &root),
+        Some(InstallMethod::DeclarativeNix)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn detects_nixos_and_nix_darwin_system_packages() {
+    let temp = TempDir::new().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let executable = root.join("nix/store/hash-tuicr-1.0.0/bin/tuicr");
+    write_file(&executable, b"binary");
+    assert_eq!(
+        detect_external_manager(&executable, None, None, &root),
+        None
+    );
+
+    let link = root.join("run/current-system/sw/bin/tuicr");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&executable, &link).unwrap();
+    assert_eq!(
+        detect_external_manager(&executable, None, None, &root),
+        Some(InstallMethod::DeclarativeNix)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn detects_home_manager_generations_under_the_xdg_state_home() {
+    let temp = TempDir::new().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let executable = root.join("nix/store/hash-tuicr-1.0.0/bin/tuicr");
+    write_file(&executable, b"binary");
+    let custom_state = root.join("xdg/state");
+    let generation = custom_state.join("nix/profiles/home-manager/home-path/bin/tuicr");
+    std::fs::create_dir_all(generation.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&executable, &generation).unwrap();
+
+    let home = root.join("home/alice");
+    let default_state = state_home(None, Some(&home)).unwrap();
+    assert_eq!(
+        detect_external_manager(&executable, Some(&default_state), None, &root),
+        None,
+        "the generation is not under ~/.local/state"
+    );
+    let xdg_state = state_home(Some(custom_state.as_os_str()), Some(&home)).unwrap();
+    assert_eq!(
+        detect_external_manager(&executable, Some(&xdg_state), None, &root),
+        Some(InstallMethod::HomeManager)
+    );
+}
+
+#[test]
+fn state_home_honours_an_absolute_xdg_state_home() {
+    let home = Path::new("/home/alice");
+    assert_eq!(
+        state_home(None, Some(home)),
+        Some(PathBuf::from("/home/alice/.local/state"))
+    );
+    let xdg = std::env::temp_dir().join("xdg-state");
+    assert_eq!(
+        state_home(Some(xdg.as_os_str()), Some(home)),
+        Some(xdg.clone())
+    );
+    assert_eq!(state_home(Some(xdg.as_os_str()), None), Some(xdg));
+    assert_eq!(
+        state_home(Some("relative/state".as_ref()), Some(home)),
+        Some(PathBuf::from("/home/alice/.local/state")),
+        "the XDG spec says to ignore relative paths"
+    );
+    assert_eq!(state_home(None, None), None);
+}
+
+#[test]
+fn refuses_pacman_and_declarative_nix_installs_without_touching_them() {
+    for (method, hint) in [
+        (InstallMethod::Pacman, "pacman -Syu"),
+        (InstallMethod::HomeManager, "home-manager switch"),
+        (InstallMethod::DeclarativeNix, "home-manager switch"),
+        (InstallMethod::DeclarativeNix, "nixos-rebuild switch"),
+        (InstallMethod::DeclarativeNix, "darwin-rebuild switch"),
+    ] {
+        let mut ctx = context("/usr/bin/tuicr");
+        ctx.method = method;
+        let runtime = direct_runtime("1.1.0", "linux", "x86_64", tar_gz("tuicr", b"new"), true);
+        let error = update_with_runtime(&runtime, ctx).unwrap_err();
+        assert!(
+            matches!(error, UpdateError::ExternallyManaged { method: actual, .. } if actual == method)
+        );
+        assert!(error.to_string().contains(hint), "{error}");
+        assert!(runtime.commands.into_inner().is_empty());
+        assert!(runtime.replacement.into_inner().is_none());
+
+        let mut ctx = context("/usr/bin/tuicr");
+        ctx.method = method;
+        let target = semver::Version::parse("0.9.0").unwrap();
+        assert!(matches!(
+            update_version_with_runtime(&MockRuntime::default(), ctx, &target),
+            Err(UpdateError::ExternallyManaged { .. })
+        ));
+    }
 }

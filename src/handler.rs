@@ -5,11 +5,18 @@ use crate::app::{
     self, App, CommandCompletionState, ExpandDirection, FileTreeItem, FileTreePrompt, FocusedPanel,
     GapCursorHit, InputMode, TargetTab, VisualSelection,
 };
+use crate::error::TuicrError;
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
-use crate::input::{Action, map_global_key};
+use crate::input::{
+    Action, map_file_picker_filter_mode, map_file_tree_mode_with_q_quits,
+    map_file_tree_prompt_mode, map_global_key, map_key_to_action_with_q_quits,
+    map_target_filter_mode, map_theme_picker_filter_mode,
+};
 use crate::model::{ClearScope, LineSide};
-use crate::output::{copy_text_to_clipboard, export_to_clipboard, generate_export_content};
+use crate::output::{
+    copy_text_to_clipboard_with, export_to_clipboard_with, export_to_file, generate_export_content,
+};
 use crate::text_edit::{
     delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
 };
@@ -67,6 +74,18 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(
         &["reviewed", "set reviewed!"],
         CommandKind::ToggleShowReviewed,
+    ),
+    CommandSpec::new(&["set minimal"], CommandKind::SetMinimalUi(true)),
+    CommandSpec::new(&["set nominimal"], CommandKind::SetMinimalUi(false)),
+    CommandSpec::new(&["set minimal!"], CommandKind::ToggleMinimalUi),
+    CommandSpec::new(&["set generated"], CommandKind::SetGeneratedCollapsed(true)),
+    CommandSpec::new(
+        &["set nogenerated"],
+        CommandKind::SetGeneratedCollapsed(false),
+    ),
+    CommandSpec::new(
+        &["generated", "set generated!"],
+        CommandKind::ToggleGenerated,
     ),
     CommandSpec::new(&["diff"], CommandKind::Diff),
     CommandSpec::new(&["focus", "f"], CommandKind::Focus),
@@ -153,6 +172,10 @@ enum CommandKind {
     ToggleCommits,
     SetShowReviewed(bool),
     ToggleShowReviewed,
+    SetMinimalUi(bool),
+    ToggleMinimalUi,
+    SetGeneratedCollapsed(bool),
+    ToggleGenerated,
     Diff,
     Focus,
     Stage,
@@ -188,6 +211,45 @@ pub fn handle_global_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
+/// Map a key press to an `Action` for the current mode. An open text prompt
+/// (PR filter, file-tree prompt, theme/file picker filter) owns the keys first,
+/// whatever panel has focus; the file tree has its own map otherwise.
+pub fn map_normal_path_key(app: &App, key: KeyEvent) -> Action {
+    if app.input_mode == InputMode::CommitSelect && app.pr_filter_editing() {
+        map_target_filter_mode(key)
+    } else if app.input_mode == InputMode::Normal && app.file_tree_prompt_editing() {
+        map_file_tree_prompt_mode(key)
+    } else if app.input_mode == InputMode::ThemePicker && app.theme_picker_filtering() {
+        map_theme_picker_filter_mode(key)
+    } else if app.input_mode == InputMode::FilePicker && app.file_picker_filtering() {
+        map_file_picker_filter_mode(key)
+    } else if app.input_mode == InputMode::Normal && app.focused_panel == FocusedPanel::FileList {
+        map_file_tree_mode_with_q_quits(key, app.leader_key, app.q_quits)
+    } else {
+        map_key_to_action_with_q_quits(key, app.input_mode, app.leader_key, app.q_quits)
+    }
+}
+
+/// Route an action to the handler for the current input mode.
+pub fn dispatch_action(app: &mut App, action: Action) {
+    match app.input_mode {
+        InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
+        InputMode::Summary => handle_summary_action(app, action),
+        InputMode::Command => handle_command_action(app, action),
+        InputMode::Search => handle_search_action(app, action),
+        InputMode::Comment => handle_comment_action(app, action),
+        InputMode::Confirm => handle_confirm_action(app, action),
+        InputMode::CommitSelect => handle_commit_select_action(app, action),
+        InputMode::VisualSelect => handle_visual_action(app, action),
+        InputMode::SubmitResolver => handle_submit_resolver_action(app, action),
+        InputMode::SubmitConfirm => handle_submit_confirm_action(app, action),
+        InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
+        InputMode::ThemePicker => handle_theme_picker_action(app, action),
+        InputMode::FilePicker => handle_file_picker_action(app, action),
+        InputMode::Normal => handle_normal_action(app, action),
+    }
+}
+
 pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
     let pos = Position::new(event.column, event.row);
     match event.kind {
@@ -206,6 +268,9 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                 InputMode::Summary => handle_summary_action(app, action),
                 InputMode::ThemePicker => {
                     app.move_theme_picker_selection(if scroll_up { -1 } else { 1 });
+                }
+                InputMode::FilePicker => {
+                    app.move_file_picker_selection(if scroll_up { -1 } else { 1 });
                 }
                 InputMode::CommitSelect | InputMode::Normal if over_commit_list => {
                     wheel_commit_list(app, scroll_up);
@@ -272,6 +337,11 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
         MouseEventKind::Drag(MouseButton::Left)
             if matches!(app.input_mode, InputMode::Normal | InputMode::VisualSelect) =>
         {
+            // An open file-tree prompt owns input; a drag must not start a
+            // visual selection (it would strand the draft in VisualSelect).
+            if app.file_tree_prompt_editing() {
+                return;
+            }
             let Some(sel) = app.visual_selection else {
                 return;
             };
@@ -384,7 +454,7 @@ fn handle_left_click(app: &mut App, pos: Position) {
     {
         app.focused_panel = FocusedPanel::CommitSelector;
         app.commit_list_cursor = idx;
-        handle_commit_selector_action(app, Action::SelectFile);
+        handle_commit_selector_action(app, Action::ToggleExpand);
         return;
     }
 
@@ -404,9 +474,12 @@ fn handle_copy_pr_url(app: &mut App) {
     };
     let url = pr.url.clone();
 
-    match copy_text_to_clipboard(&url) {
-        Ok(true) => app.set_message("PR URL copied to clipboard (via terminal)"),
-        Ok(false) => app.set_message("PR URL copied to clipboard"),
+    match copy_text_to_clipboard_with(
+        &url,
+        app.clipboard_override.as_deref(),
+        app.clipboard_command.as_deref(),
+    ) {
+        Ok(copy) => app.set_copy_status(&copy, copy.message("PR URL")),
         Err(e) => app.set_warning(format!("Failed to copy PR URL: {e}")),
     }
 }
@@ -423,6 +496,7 @@ fn handle_export(app: &mut App) {
             &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
+            &app.export_diff(),
         ) {
             Ok(content) => {
                 app.pending_stdout_output = Some(content);
@@ -431,17 +505,58 @@ fn handle_export(app: &mut App) {
             Err(e) => app.set_warning(format!("{e}")),
         }
     } else {
-        match export_to_clipboard(
+        match export_to_clipboard_with(
             &app.session,
             &app.diff_source,
             &app.comment_types,
             &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
+            &app.export_diff(),
+            app.clipboard_override.as_deref(),
+            app.clipboard_command.as_deref(),
         ) {
-            Ok(msg) => app.set_message(msg),
+            Ok(copy) => app.set_copy_status(&copy, copy.message("Review")),
             Err(e) => app.set_warning(format!("{e}")),
         }
+    }
+}
+
+/// The path given to `:file <path>`, or `Some("")` for a bare `:file`.
+fn file_command_path(cmd: &str) -> Option<&str> {
+    let rest = cmd.strip_prefix("file")?;
+    (rest.is_empty() || rest.starts_with(' ')).then(|| rest.trim())
+}
+
+/// `:file <path>`: write the review to a file. A leading `~/` means home.
+fn handle_export_to_file(app: &mut App, path: &str) {
+    if path.is_empty() {
+        app.set_warning("Usage: :file <path>");
+        return;
+    }
+    let path = match path.strip_prefix("~/") {
+        Some(rest) => directories::BaseDirs::new()
+            .map(|dirs| dirs.home_dir().join(rest))
+            .unwrap_or_else(|| path.into()),
+        None => path.into(),
+    };
+    let slug = app.session_slug();
+    match export_to_file(
+        &app.session,
+        &app.diff_source,
+        &app.comment_types,
+        &app.export,
+        &app.forge_review_threads,
+        slug.as_deref(),
+        &path,
+        &app.export_diff(),
+    ) {
+        Ok(msg) => app.set_message(msg),
+        Err(TuicrError::Io(e)) => {
+            app.set_warning(format!("Could not write {}: {e}", path.display()))
+        }
+        Err(TuicrError::NoComments) => app.set_warning("No comments to write"),
+        Err(e) => app.set_warning(format!("{e}")),
     }
 }
 
@@ -461,9 +576,12 @@ fn handle_copy_comment_at_cursor(app: &mut App) {
         }
         return;
     };
-    match copy_text_to_clipboard(&content) {
-        Ok(true) => app.set_message("Comment copied to clipboard (via terminal)"),
-        Ok(false) => app.set_message("Comment copied to clipboard"),
+    match copy_text_to_clipboard_with(
+        &content,
+        app.clipboard_override.as_deref(),
+        app.clipboard_command.as_deref(),
+    ) {
+        Ok(copy) => app.set_copy_status(&copy, copy.message("Comment")),
         Err(e) => app.set_warning(format!("{e}")),
     }
 }
@@ -474,6 +592,16 @@ fn handle_copy_comment_at_cursor(app: &mut App) {
 pub fn handle_export_and_quit(app: &mut App) {
     handle_export(app);
     app.should_quit = true;
+}
+
+/// ZZ: save the session, then export and quit. A failed save reports the error
+/// and stays open, like `:wq`.
+pub fn handle_write_and_quit(app: &mut App) {
+    match app.save_current_session_merging_external() {
+        Ok(_) if app.session.has_comments() => handle_export_and_quit(app),
+        Ok(_) => app.should_quit = true,
+        Err(e) => app.set_error(format!("Save failed: {e}")),
+    }
 }
 
 fn comment_line_start(buffer: &str, cursor: usize) -> usize {
@@ -670,6 +798,9 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 dispatch_command(app, spec.kind)
             } else if let Some((lineno, side)) = parse_lineno_command(&cmd) {
                 app.go_to_source_line(lineno, side);
+                CommandAfterDispatch::ExitCommandMode
+            } else if let Some(path) = file_command_path(&cmd) {
+                handle_export_to_file(app, path);
                 CommandAfterDispatch::ExitCommandMode
             } else if let Some(name) = cmd.strip_prefix("theme ") {
                 let name = name.trim();
@@ -984,6 +1115,22 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.toggle_show_reviewed();
             CommandAfterDispatch::ExitCommandMode
         }
+        CommandKind::SetMinimalUi(enabled) => {
+            app.set_minimal_ui(enabled);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleMinimalUi => {
+            app.toggle_minimal_ui();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetGeneratedCollapsed(collapse) => {
+            app.set_collapse_generated(collapse);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleGenerated => {
+            app.toggle_collapse_generated();
+            CommandAfterDispatch::ExitCommandMode
+        }
         CommandKind::Diff => {
             app.toggle_diff_view_mode();
             CommandAfterDispatch::ExitCommandMode
@@ -1265,11 +1412,17 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
 pub fn handle_confirm_action(app: &mut App, action: Action) {
     // Only the quit prompts end the session. A Sessions-tab delete answers
     // in place and returns to the selector.
-    let quits = app.pending_confirm != Some(app::ConfirmAction::DeleteSession);
+    let quits = !matches!(
+        app.pending_confirm,
+        Some(app::ConfirmAction::DeleteSession | app::ConfirmAction::DeleteRemoteDraft)
+    );
     match action {
         Action::ConfirmYes => {
             if let Some(app::ConfirmAction::DeleteSession) = app.pending_confirm {
                 app.sessions_tab_delete_selected();
+            }
+            if let Some(app::ConfirmAction::DeleteRemoteDraft) = app.pending_confirm {
+                app.spawn_remote_draft_delete();
             }
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
                 let slug = app.session_slug();
@@ -1281,20 +1434,25 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
+                        &app.export_diff(),
                     ) {
                         Ok(content) => app.pending_stdout_output = Some(content),
                         Err(e) => app.set_warning(format!("{e}")),
                     }
                 } else {
-                    match export_to_clipboard(
+                    match export_to_clipboard_with(
                         &app.session,
                         &app.diff_source,
                         &app.comment_types,
                         &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
+                        &app.export_diff(),
+                        app.clipboard_override.as_deref(),
+                        app.clipboard_command.as_deref(),
                     ) {
-                        Ok(msg) => app.set_message(msg),
+                        // tuicr quits next, so the status bar would never show it.
+                        Ok(copy) => app.pending_exit_warning = copy.fallback_warning,
                         Err(e) => app.set_warning(format!("{e}")),
                     }
                 }
@@ -1465,9 +1623,14 @@ pub fn handle_commit_selector_action(app: &mut App, action: Action) {
                 app.commit_select_up();
             }
         }
-        // Toggle + auto-advance so repeated presses sweep a contiguous run.
+        // Space toggles + auto-advances so repeated presses sweep a contiguous
+        // run; Enter selects only the cursor commit, unselecting the others.
         Action::ToggleExpand | Action::ToggleCommitSelect | Action::SelectFile => {
-            app.toggle_commit_selection_and_advance();
+            if action == Action::SelectFile {
+                app.select_only_cursor_commit();
+            } else {
+                app.toggle_commit_selection_and_advance();
+            }
             // PR mode reloads via the forge `compare` API on a background
             // thread (persisting the new range so it survives a restart);
             // local reviews reload from the VCS.
@@ -1475,7 +1638,10 @@ pub fn handle_commit_selector_action(app: &mut App, action: Action) {
                 app.set_error(format!("Failed to load diff: {e}"));
             }
         }
-        Action::ExitMode => {
+        // Normal mode maps Esc to `ClearSearchHighlight`; in this pane it
+        // also returns focus to the diff.
+        Action::ClearSearchHighlight => {
+            app.clear_search_highlight();
             app.focused_panel = FocusedPanel::Diff;
         }
         _ => handle_shared_normal_action(app, action),
@@ -1485,21 +1651,13 @@ pub fn handle_commit_selector_action(app: &mut App, action: Action) {
 /// Handle actions in VisualSelect mode
 pub fn handle_visual_action(app: &mut App, action: Action) {
     match action {
-        Action::CursorDown(n) => {
-            app.cursor_down(n);
-            app.extend_visual_to_cursor();
-        }
-        Action::CursorUp(n) => {
-            app.cursor_up(n);
-            app.extend_visual_to_cursor();
-        }
+        Action::CursorDown(n) => app.visual_cursor_down(n),
+        Action::CursorUp(n) => app.visual_cursor_up(n),
         Action::AddRangeComment | Action::AddRangeSuggestion => {
-            if app.visual_selection_line_range().is_some() {
-                if action == Action::AddRangeSuggestion {
-                    app.enter_suggestion_from_visual();
-                } else {
-                    app.enter_comment_from_visual();
-                }
+            if action == Action::AddRangeSuggestion {
+                app.enter_suggestion_from_visual();
+            } else if app.visual_selection_line_range().is_some() {
+                app.enter_comment_from_visual();
             } else {
                 app.set_warning("Invalid selection - move cursor to a diff line");
                 app.exit_visual_mode();
@@ -1507,8 +1665,9 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
         }
         Action::ExportToClipboard => {
             match app.copy_visual_selection() {
-                Ok(0) => app.set_message("Nothing to copy"),
-                Ok(n) => app.set_message(format!("Copied {n} chars")),
+                Ok((0, _)) => app.set_message("Nothing to copy"),
+                Ok((_, Some(warning))) => app.set_warning(warning),
+                Ok((n, None)) => app.set_message(format!("Copied {n} chars")),
                 Err(e) => app.set_warning(format!("{e}")),
             }
             app.exit_visual_mode();
@@ -1525,6 +1684,43 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
         _ => {}
     }
     clear_visual_if_cursor_offscreen(app);
+}
+
+/// Route an action in `InputMode::Normal`. An open file-tree prompt owns
+/// input regardless of which panel has focus (a mouse click can move focus
+/// off the tree while the prompt is still open); otherwise focus decides.
+pub fn handle_normal_action(app: &mut App, action: Action) {
+    if app.file_tree_prompt_editing() {
+        return handle_file_list_action(app, action);
+    }
+    match app.focused_panel {
+        FocusedPanel::FileList => handle_file_list_action(app, action),
+        FocusedPanel::Comments => handle_comment_navigator_action(app, action),
+        FocusedPanel::Diff => handle_diff_action(app, action),
+        FocusedPanel::CommitSelector => handle_commit_selector_action(app, action),
+    }
+}
+
+/// Route a bracketed-paste payload to whichever input is accepting text.
+/// Everything else ignores it, so pasted text never drives normal-mode keys.
+pub fn handle_paste(app: &mut App, text: String) {
+    let action = Action::Paste(text);
+    match app.input_mode {
+        InputMode::Comment => handle_comment_action(app, action),
+        InputMode::Command => handle_command_action(app, action),
+        InputMode::Search => handle_search_action(app, action),
+        InputMode::CommitSelect if app.pr_filter_editing() => {
+            handle_commit_select_action(app, action)
+        }
+        InputMode::Normal if app.file_tree_prompt_editing() => handle_file_list_action(app, action),
+        InputMode::ThemePicker if app.theme_picker_filtering() => {
+            handle_theme_picker_action(app, action)
+        }
+        InputMode::FilePicker if app.file_picker_filtering() => {
+            handle_file_picker_action(app, action)
+        }
+        _ => {}
+    }
 }
 
 /// Handle actions when file list panel is focused
@@ -1593,6 +1789,36 @@ fn handle_file_tree_prompt_action(app: &mut App, action: Action) {
     }
 }
 
+/// Handle actions in `InputMode::FilePicker`, with the same draft gate as
+/// `handle_theme_picker_action`.
+pub fn handle_file_picker_action(app: &mut App, action: Action) {
+    if app.file_picker_filtering() {
+        match action {
+            Action::InsertChar(c) => app.file_picker_filter_insert_char(c),
+            Action::Paste(text) => text
+                .chars()
+                .filter(|c| !matches!(c, '\n' | '\r'))
+                .for_each(|c| app.file_picker_filter_insert_char(c)),
+            Action::DeleteChar => app.file_picker_filter_delete_char(),
+            Action::ClearLine => app.file_picker_filter_clear_line(),
+            Action::CursorDown(n) => app.move_file_picker_selection(n as isize),
+            Action::CursorUp(n) => app.move_file_picker_selection(-(n as isize)),
+            Action::SubmitInput => app.submit_file_picker_filter(),
+            Action::ExitMode => app.cancel_file_picker_filter(),
+            _ => {}
+        }
+        return;
+    }
+    match action {
+        Action::CursorDown(n) => app.move_file_picker_selection(n as isize),
+        Action::CursorUp(n) => app.move_file_picker_selection(-(n as isize)),
+        Action::FilePickerFilter => app.begin_file_picker_filter(),
+        Action::SubmitInput => app.confirm_file_picker(),
+        Action::ExitMode => app.cancel_file_picker(),
+        _ => {}
+    }
+}
+
 /// Handle actions in `InputMode::ThemePicker`. Mirrors
 /// `handle_file_list_action`'s prompt-editing gate: while the `/` filter
 /// draft is open, input goes to `handle_theme_picker_filter_action` instead
@@ -1618,6 +1844,10 @@ pub fn handle_theme_picker_action(app: &mut App, action: Action) {
 fn handle_theme_picker_filter_action(app: &mut App, action: Action) {
     match action {
         Action::InsertChar(c) => app.theme_picker_filter_insert_char(c),
+        Action::Paste(text) => text
+            .chars()
+            .filter(|c| !matches!(c, '\n' | '\r'))
+            .for_each(|c| app.theme_picker_filter_insert_char(c)),
         Action::DeleteChar => app.theme_picker_filter_delete_char(),
         Action::ClearLine => app.theme_picker_filter_clear_line(),
         Action::SubmitInput => app.commit_theme_picker_filter(),
@@ -1706,6 +1936,16 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
                         app.collapse_gap(gap_id);
                     }
                 }
+            }
+        }
+        // Space already means "expand what's under the cursor" in the file
+        // list and the commit selector; in the diff panel it was unbound, so
+        // it takes on the same meaning here: toggle whether the current
+        // file's diff body is shown, regardless of why it defaulted to
+        // collapsed or expanded.
+        Action::ToggleExpand => {
+            if !app.toggle_file_collapse() {
+                handle_shared_normal_action(app, action);
             }
         }
         Action::SelectFileFull => {
@@ -1942,6 +2182,34 @@ mod command_tests {
             command_spec_for("set relativenumber!").map(|spec| spec.kind),
             Some(CommandKind::ToggleRelativeLineNumbers)
         );
+    }
+
+    #[test]
+    fn parses_minimal_ui_commands() {
+        assert_eq!(
+            command_spec_for("set minimal").map(|spec| spec.kind),
+            Some(CommandKind::SetMinimalUi(true))
+        );
+        assert_eq!(
+            command_spec_for("set nominimal").map(|spec| spec.kind),
+            Some(CommandKind::SetMinimalUi(false))
+        );
+        assert_eq!(
+            command_spec_for("set minimal!").map(|spec| spec.kind),
+            Some(CommandKind::ToggleMinimalUi)
+        );
+    }
+
+    #[test]
+    fn parses_file_command_paths() {
+        assert_eq!(
+            super::file_command_path("file review.md"),
+            Some("review.md")
+        );
+        assert_eq!(super::file_command_path("file   a b.md "), Some("a b.md"));
+        assert_eq!(super::file_command_path("file"), Some(""));
+        assert_eq!(super::file_command_path("files"), None);
+        assert_eq!(super::file_command_path("focus"), None);
     }
 
     #[test]

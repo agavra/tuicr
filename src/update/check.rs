@@ -3,6 +3,7 @@ use std::time::Duration;
 use ureq::Agent;
 
 const CRATES_IO_API_BASE: &str = "https://crates.io/api/v1/crates";
+pub(super) const USER_AGENT: &str = concat!("tuicr/", env!("CARGO_PKG_VERSION"));
 const CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone)]
@@ -21,10 +22,7 @@ pub enum UpdateCheckResult {
 }
 
 pub fn check_for_updates() -> UpdateCheckResult {
-    let config = Agent::config_builder()
-        .timeout_global(Some(CHECK_TIMEOUT))
-        .build();
-    let agent: Agent = config.into();
+    let agent: Agent = check_config().into();
     let crates_io_url = crates_io_url();
     let response = match agent.get(&crates_io_url).call() {
         Ok(response) => response,
@@ -38,6 +36,13 @@ pub fn check_for_updates() -> UpdateCheckResult {
     };
 
     classify_versions(env!("CARGO_PKG_VERSION"), latest_version(&body))
+}
+
+fn check_config() -> ureq::config::Config {
+    Agent::config_builder()
+        .timeout_global(Some(CHECK_TIMEOUT))
+        .user_agent(USER_AGENT)
+        .build()
 }
 
 fn crates_io_url() -> String {
@@ -80,6 +85,18 @@ pub(super) fn is_newer_version(current: &str, latest: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_agent_names_tuicr_and_its_version() {
+        let ureq::config::AutoHeaderValue::Provided(agent) = check_config().user_agent().clone()
+        else {
+            panic!("User-Agent must be explicitly set");
+        };
+        assert_eq!(
+            agent.as_str(),
+            format!("tuicr/{}", env!("CARGO_PKG_VERSION"))
+        );
+    }
 
     #[test]
     fn classifies_available_current_and_ahead_versions() {

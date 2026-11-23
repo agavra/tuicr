@@ -2,66 +2,44 @@ use ratatui::{buffer::CellWidth, style::Style, text::Span};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub(super) fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        let truncate_at = max_len.saturating_sub(3);
-        let end = s
-            .char_indices()
-            .map(|(i, _)| i)
-            .take_while(|&i| i <= truncate_at)
-            .last()
-            .unwrap_or(0);
-        format!("{}...", &s[..end])
+/// Longest prefix of `s` whose display width is at most `budget`, cut on
+/// grapheme boundaries. Per-char widths would count a VS16 emoji as one cell
+/// although terminals draw two.
+pub(super) fn prefix_within_width(s: &str, budget: usize) -> &str {
+    let mut used = 0;
+    let mut end = 0;
+    for g in s.graphemes(true) {
+        let w = g.width();
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        end += g.len();
     }
+    &s[..end]
 }
 
-/// Truncate or pad a string to a specific width
+pub(super) fn truncate_str(s: &str, max_width: usize) -> String {
+    if s.width() <= max_width {
+        return s.to_string();
+    }
+    let kept = prefix_within_width(s, max_width.saturating_sub(3));
+    format!("{kept}...")
+}
+
+/// Truncate or pad a string to exactly `width` display cells, so wide glyphs
+/// (CJK, emoji) do not push the next column out of line. Columns too narrow
+/// for `...` keep only what fits.
 pub(super) fn truncate_or_pad(s: &str, width: usize) -> String {
-    let char_count = s.chars().count();
-    if char_count > width {
-        s.chars().take(width.saturating_sub(3)).collect::<String>() + "..."
-    } else {
-        format!("{s:width$}")
+    let s_width = s.width();
+    if s_width <= width {
+        return format!("{s}{}", " ".repeat(width - s_width));
     }
-}
-
-pub(super) fn truncate_or_pad_pairs_by_chars(
-    pairs: &[(Style, String)],
-    width: usize,
-    base_style: Style,
-) -> Vec<Span<'static>> {
-    let total_chars: usize = pairs.iter().map(|(_, text)| text.chars().count()).sum();
-    let mut result = Vec::new();
-    if total_chars > width {
-        let mut remaining = width.saturating_sub(3);
-        for (style, text) in pairs {
-            if remaining == 0 {
-                break;
-            }
-            let count = text.chars().count();
-            if count <= remaining {
-                result.push(Span::styled(text.clone(), *style));
-                remaining -= count;
-            } else {
-                result.push(Span::styled(
-                    text.chars().take(remaining).collect::<String>(),
-                    *style,
-                ));
-                remaining = 0;
-            }
-        }
-        result.push(Span::styled("...".to_string(), base_style));
-    } else {
-        for (style, text) in pairs {
-            result.push(Span::styled(text.clone(), *style));
-        }
-        if total_chars < width {
-            result.push(Span::styled(" ".repeat(width - total_chars), base_style));
-        }
-    }
-    result
+    let ellipsis = if width < 3 { "" } else { "..." };
+    let kept = prefix_within_width(s, width - ellipsis.len());
+    // A wide glyph that did not fit leaves the cell short; pad it back.
+    let pad = width.saturating_sub(kept.width() + ellipsis.len());
+    format!("{kept}{ellipsis}{}", " ".repeat(pad))
 }
 
 /// Truncate or pad highlighted spans to a specific display width
@@ -79,6 +57,7 @@ pub(super) fn truncate_or_pad_spans(
         // Need to truncate
         let mut result = Vec::new();
         let mut remaining = width.saturating_sub(3); // Reserve space for "..."
+        let mut kept = 0;
 
         for (style, text) in spans {
             if remaining == 0 {
@@ -89,6 +68,7 @@ pub(super) fn truncate_or_pad_spans(
             if text_width <= remaining {
                 result.push(Span::styled(text.clone(), *style));
                 remaining -= text_width;
+                kept += text_width;
             } else {
                 // Truncate this span character by character to fit remaining width
                 let mut truncated = String::new();
@@ -104,12 +84,16 @@ pub(super) fn truncate_or_pad_spans(
                 if !truncated.is_empty() {
                     result.push(Span::styled(truncated, *style));
                 }
+                kept += current_width;
                 remaining = 0;
             }
         }
 
         // Add ellipsis
-        result.push(Span::styled("...".to_string(), base_style));
+        // A wide glyph that did not fit leaves the cell short; keep the row
+        // exactly `width` wide so a column divider after it does not shift.
+        let ellipsis = format!("...{}", " ".repeat(width.saturating_sub(kept + 3)));
+        result.push(Span::styled(ellipsis, base_style));
         result
     } else if total_width < width {
         // Need to pad
@@ -489,6 +473,17 @@ pub(super) fn wrap_spans_hanging<'a>(
 }
 
 pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'a>>> {
+    wrap_spans_lead(spans, 0, width)
+}
+
+/// Like `wrap_spans`, but the first `lead` graphemes (a gutter that flow-wrapping
+/// keeps on the first row) do not count as content: a word that fits a fresh row but
+/// not beside the gutter is broken across rows instead of leaving a gutter-only row.
+pub(super) fn wrap_spans_lead<'a>(
+    spans: &[Span<'a>],
+    lead: usize,
+    width: usize,
+) -> Vec<Vec<Span<'a>>> {
     if width == 0 {
         return vec![spans.to_vec()];
     }
@@ -514,6 +509,7 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
         current_w: &mut usize,
         rows: &mut Vec<Vec<Item<'s>>>,
         width: usize,
+        lead: usize,
     ) {
         if unit.is_empty() {
             return;
@@ -524,7 +520,13 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
             *unit_w = 0;
             return;
         }
-        if *unit_w <= width {
+        // A row holding only whitespace would be pushed out as a blank row: fill it by
+        // breaking the unit across rows instead, as an over-long word is.
+        let current_is_blank = current
+            .iter()
+            .skip(if rows.is_empty() { lead } else { 0 })
+            .all(|it| it.grapheme == " " || it.grapheme == "\t");
+        if *unit_w <= width && !current_is_blank {
             rows.push(std::mem::take(current));
             *current_w = *unit_w;
             current.append(unit);
@@ -586,6 +588,7 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
                     &mut current_w,
                     &mut rows,
                     width,
+                    lead,
                 );
                 let mut ws = vec![item];
                 let mut ws_w = w;
@@ -596,6 +599,7 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
                     &mut current_w,
                     &mut rows,
                     width,
+                    lead,
                 );
             } else {
                 word.push(item);
@@ -610,6 +614,7 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
         &mut current_w,
         &mut rows,
         width,
+        lead,
     );
     if !current.is_empty() || rows.is_empty() {
         rows.push(current);
@@ -672,6 +677,17 @@ mod tests {
     }
 
     #[test]
+    fn should_truncate_vs16_clusters_by_display_width() {
+        // given - 20 clusters of two cells each
+        let s = "\u{26a0}\u{fe0f}".repeat(20);
+        // when
+        let out = truncate_str(&s, 10);
+        // then
+        assert!(out.width() <= 10, "{out:?}");
+        assert!(out.ends_with("..."));
+    }
+
+    #[test]
     fn should_truncate_without_panicking_on_multibyte_chars() {
         // given - the exact string from the bug report
         let s = "Resolve \"SD : Envoi en validation manuelle après 3 rejet de la fiche employé\"";
@@ -679,7 +695,7 @@ mod tests {
         let result = truncate_str(s, 47);
         // then - should not panic and should end with "..."
         assert!(result.ends_with("..."));
-        assert!(result.len() <= 47);
+        assert!(unicode_width::UnicodeWidthStr::width(result.as_str()) <= 47);
     }
 
     #[test]
@@ -691,6 +707,71 @@ mod tests {
         // then
         assert!(result.ends_with("..."));
         assert!(result.is_char_boundary(result.len()));
+    }
+
+    #[test]
+    fn should_truncate_or_pad_wide_chars_to_exact_display_width() {
+        // given - titles of two-cell CJK glyphs, one short and one too long
+        let short = "界".repeat(3);
+        let long = "界".repeat(10);
+        // when
+        let padded = truncate_or_pad(&short, 10);
+        let truncated = truncate_or_pad(&long, 10);
+        // then - both take exactly ten cells, the long one with an ellipsis
+        assert_eq!(padded, format!("{short}    "));
+        assert_eq!(truncated, "界界界... ");
+        assert_eq!(truncated.width(), 10);
+    }
+
+    #[test]
+    fn should_not_overrun_columns_too_narrow_for_an_ellipsis() {
+        // given - budgets of zero to two cells
+        // when / then - each result is exactly the budget, with no "..."
+        assert_eq!(truncate_or_pad("abc", 0), "");
+        assert_eq!(truncate_or_pad("abc", 2), "ab");
+        assert_eq!(truncate_or_pad("界界", 1), " ");
+    }
+
+    fn row_texts(rows: &[Vec<Span<'_>>]) -> Vec<String> {
+        rows.iter()
+            .map(|row| row.iter().map(|span| span.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn should_not_leave_a_blank_row_when_a_word_does_not_fit_after_the_indent() {
+        // given an indented line whose first word fits a fresh row but not what is left
+        let spans = [Span::raw("    abcde")];
+        // when
+        let rows = row_texts(&wrap_spans(&spans, 8));
+        // then the word fills the indent row instead of leaving it blank
+        assert_eq!(rows, vec!["    abcd", "e"]);
+    }
+
+    #[test]
+    fn should_not_emit_a_whitespace_only_row_between_words() {
+        // given a space that lands alone on a row before a word that does not fit beside it
+        let spans = [Span::raw("aaa bbb")];
+        // when
+        let rows = row_texts(&wrap_spans(&spans, 3));
+        // then no row is whitespace-only
+        assert!(rows.iter().all(|row| !row.trim().is_empty()), "{rows:?}");
+        assert_eq!(rows.concat(), "aaa bbb");
+    }
+
+    #[test]
+    fn should_not_leave_a_gutter_only_row_when_the_word_does_not_fit_beside_it() {
+        // given a gutter kept on the first row and a word that fits a fresh row only
+        let spans = [Span::raw("  12 "), Span::raw("abcdefgh")];
+        // when the gutter is declared as lead
+        let rows = row_texts(&wrap_spans_lead(&spans, 5, 10));
+        // then the word fills the rest of the first row
+        assert_eq!(rows, vec!["  12 abcde", "fgh"]);
+        // and without it the first row would hold the gutter alone
+        assert_eq!(
+            row_texts(&wrap_spans(&spans, 10)),
+            vec!["  12 ", "abcdefgh"]
+        );
     }
 
     #[test]

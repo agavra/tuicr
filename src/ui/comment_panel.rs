@@ -1,17 +1,19 @@
+use crate::ui::app_layout::centered_rect;
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::forge::traits::ForgeKind;
 use crate::model::LineRange;
 use crate::theme::Theme;
 use crate::ui::styles;
+use crate::vcs::{TAB_WIDTH, tabify};
 
 /// Content prefix used on every comment-body line. 4 pad chars + `│` + 2 spaces.
 /// The 4-char left pad lets the bar painter draw `│` up through diff lines
@@ -19,11 +21,28 @@ use crate::ui::styles;
 const BORDER_PREFIX: &str = "    │  ";
 const BORDER_PREFIX_WIDTH: usize = 7;
 
+fn grapheme_width(g: &str) -> usize {
+    if g == "\t" {
+        TAB_WIDTH
+    } else {
+        // Measure the whole cluster: per-char widths would count a VS16 emoji
+        // or ZWJ sequence as narrower than the terminal draws it.
+        UnicodeWidthStr::width(g)
+    }
+}
+
+fn text_width(text: &str) -> usize {
+    // Measure the runs between tabs as strings: summing per-char widths would
+    // miscount sequences such as presentation selectors.
+    text.split('\t').map(UnicodeWidthStr::width).sum::<usize>()
+        + text.matches('\t').count() * TAB_WIDTH
+}
+
 /// Split `text` into segments whose display width each fits within `content_area`.
 /// Returns a single-element vec when the text already fits. The returned slices
 /// borrow from `text`, so the caller must keep `text` alive while iterating.
 pub(crate) fn wrap_segments(text: &str, content_area: usize) -> Vec<&str> {
-    if content_area == 0 || text.width() <= content_area {
+    if content_area == 0 || text_width(text) <= content_area {
         return vec![text];
     }
     let mut segments = Vec::new();
@@ -31,23 +50,36 @@ pub(crate) fn wrap_segments(text: &str, content_area: usize) -> Vec<&str> {
     while !remaining.is_empty() {
         let mut take_bytes = 0usize;
         let mut taken_width = 0usize;
-        for c in remaining.chars() {
-            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
-            if taken_width + cw > content_area {
+        for g in remaining.graphemes(true) {
+            let gw = grapheme_width(g);
+            if taken_width + gw > content_area {
                 break;
             }
-            taken_width += cw;
-            take_bytes += c.len_utf8();
+            taken_width += gw;
+            take_bytes += g.len();
         }
-        // Single character wider than content_area — emit it anyway so we don't loop forever
+        // Single grapheme wider than content_area — emit it anyway so we don't loop forever
         if take_bytes == 0 {
-            take_bytes = remaining.chars().next().map_or(0, |c| c.len_utf8());
+            take_bytes = remaining.graphemes(true).next().map_or(0, str::len);
         }
         let (seg, rest) = remaining.split_at(take_bytes);
         segments.push(seg);
         remaining = rest;
     }
     segments
+}
+
+/// Rows a comment box with this body occupies (top border + wrapped body +
+/// bottom border) at `viewport_width`. Shared by local and PR issue comments
+/// so the annotation counters match `format_comment_lines`.
+pub(crate) fn comment_box_rows(body: &str, viewport_width: usize) -> usize {
+    // indicator(1) + border_prefix(7) + safety_margin(2) = 10
+    let content_area = viewport_width.saturating_sub(10);
+    let visual_lines: usize = body
+        .split('\n')
+        .map(|line| wrap_segments(line, content_area).len())
+        .sum();
+    2 + visual_lines
 }
 
 fn comment_content_width(width: usize) -> usize {
@@ -89,7 +121,7 @@ pub(crate) fn move_comment_cursor(
     };
     let row = &rows[target];
     let column =
-        *preferred_column.get_or_insert_with(|| buffer[rows[current].start..cursor].width());
+        *preferred_column.get_or_insert_with(|| text_width(&buffer[rows[current].start..cursor]));
     let text = &buffer[row.clone()];
     // At a soft-wrap boundary, the cursor belongs to the following row.
     // A cursor can sit after a row's text only at a newline or the buffer's end.
@@ -102,7 +134,7 @@ pub(crate) fn move_comment_cursor(
         .char_indices()
         .map(|(byte, _)| byte)
         .chain(end_stop)
-        .rfind(|&byte| text[..byte].width() <= column)
+        .rfind(|&byte| text_width(&text[..byte]) <= column)
         .unwrap_or(0);
     row.start + byte
 }
@@ -121,7 +153,7 @@ fn highlighted_window_spans(
         return Vec::new();
     }
     let Some(runs) = runs else {
-        return vec![Span::raw(line_text[start..end].to_string())];
+        return vec![Span::raw(tabify(&line_text[start..end]))];
     };
     let mut out = Vec::new();
     let mut run_start = 0usize;
@@ -131,7 +163,7 @@ fn highlighted_window_spans(
         let hi = end.min(run_end);
         if lo < hi {
             out.push(Span::styled(
-                text[lo - run_start..hi - run_start].to_string(),
+                tabify(&text[lo - run_start..hi - run_start]),
                 *style,
             ));
         }
@@ -293,7 +325,7 @@ pub fn format_comment_input_lines(
 
                     // Track cursor position for IME
                     cursor_line_offset = 1 + total_visual_lines;
-                    cursor_column = BORDER_PREFIX_WIDTH as u16 + before.width() as u16;
+                    cursor_column = BORDER_PREFIX_WIDTH as u16 + text_width(before) as u16;
 
                     // before-cursor text, highlighted
                     line_spans.extend(highlighted_window_spans(
@@ -306,7 +338,8 @@ pub fn format_comment_input_lines(
                     // No trailing cell at end-of-segment — the terminal cursor
                     // (set_cursor_position) handles that position.
                     if let Some(cursor_char) = after.chars().next() {
-                        line_spans.push(Span::styled(cursor_char.to_string(), cursor_style));
+                        line_spans
+                            .push(Span::styled(tabify(&cursor_char.to_string()), cursor_style));
                         line_spans.extend(highlighted_window_spans(
                             line_runs,
                             text,
@@ -385,9 +418,8 @@ pub fn format_remote_thread_lines(
     // Remote review threads always anchor on a specific line/range, so the
     // top corner is a tee — the bar painter draws the rest going up.
     let mut result = Vec::new();
-    let mut iter = thread.comments.iter().peekable();
     let mut is_first = true;
-    while let Some(comment) = iter.next() {
+    for comment in &thread.comments {
         let author = comment.author.as_deref().unwrap_or("unknown");
         if is_first {
             let mut badge_text = format!("[{} @{author}", forge_badge_label(forge_kind));
@@ -418,12 +450,11 @@ pub fn format_remote_thread_lines(
         for line in comment.body.split('\n') {
             result.push(Line::from(vec![
                 Span::styled("    │  ".to_string(), border_style),
-                Span::styled(line.to_string(), body_style),
+                Span::styled(tabify(line), body_style),
             ]));
         }
 
         is_first = false;
-        let _ = iter.peek();
     }
 
     result.push(Line::from(vec![Span::styled(
@@ -473,7 +504,7 @@ pub fn format_remote_review_summary_lines(
     for line in summary.body.split('\n') {
         result.push(Line::from(vec![
             Span::styled("    │  ".to_string(), border_style),
-            Span::styled(line.to_string(), body_style),
+            Span::styled(tabify(line), body_style),
         ]));
     }
 
@@ -635,14 +666,6 @@ pub fn render_confirm_dialog(frame: &mut Frame, app: &App, message: &str) {
     frame.render_widget(paragraph, inner);
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
-    let [area] = vertical.areas(area);
-    let [area] = horizontal.areas(area);
-    area
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -789,6 +812,36 @@ mod tests {
     }
 
     #[test]
+    fn should_wrap_vs16_emoji_by_display_width() {
+        // given - each warning sign + VS16 is drawn two cells wide
+        let text = "\u{26a0}\u{fe0f}".repeat(8);
+
+        // when
+        let segments = wrap_segments(&text, 10);
+
+        // then - every segment fits and no emoji is split
+        assert!(
+            segments
+                .iter()
+                .all(|seg| UnicodeWidthStr::width(*seg) <= 10)
+        );
+        assert_eq!(segments.concat(), text);
+        assert_eq!(segments.len(), 2);
+    }
+
+    #[test]
+    fn should_keep_zwj_cluster_whole_when_wider_than_the_content_area() {
+        // given - a family-style cluster is two cells; the area is one
+        let text = "\u{1f469}\u{200d}\u{1f4bb}a";
+
+        // when
+        let segments = wrap_segments(text, 1);
+
+        // then - the oversized cluster is emitted as one segment
+        assert_eq!(segments, vec!["\u{1f469}\u{200d}\u{1f4bb}", "a"]);
+    }
+
+    #[test]
     fn wrap_segments_handles_exact_width_boundary() {
         // given - text exactly fills content_area
         let text = "12345";
@@ -800,7 +853,74 @@ mod tests {
         assert_eq!(segments, vec!["12345"]);
     }
 
+    #[test]
+    fn should_count_tabs_as_tab_width_when_wrapping() {
+        // given
+        let text = "\tab";
+
+        // when
+        let segments = wrap_segments(text, 5);
+
+        // then
+        assert_eq!(segments, vec!["\ta", "b"]);
+    }
+
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
     // -- format_comment_input_lines tests --
+
+    #[test]
+    fn should_render_tabs_in_comment_input() {
+        // given
+        let theme = test_theme();
+        let buffer = "```suggestion\n\tfoo()\n```";
+        let cursor_pos = buffer.find("foo").unwrap();
+
+        // when
+        let (lines, cursor_info) = format_comment_input_lines(
+            &theme,
+            CommentTypePresentation {
+                label: "NOTE".to_string(),
+                color: Color::Blue,
+            },
+            buffer,
+            cursor_pos,
+            None,
+            false,
+            80,
+            None,
+            true,
+        );
+
+        // then
+        assert_eq!(line_text(&lines[2]), "    │      foo()");
+        assert_eq!(cursor_info.line_offset, 2);
+        assert_eq!(cursor_info.column, 7 + 4);
+    }
+
+    #[test]
+    fn should_render_tabs_in_saved_comment() {
+        // given
+        let theme = test_theme();
+
+        // when
+        let lines = format_comment_lines(
+            &theme,
+            CommentTypePresentation {
+                label: "NOTE".to_string(),
+                color: Color::Blue,
+            },
+            "```suggestion\n\tfoo()\n```",
+            None,
+            80,
+            None,
+        );
+
+        // then
+        assert_eq!(line_text(&lines[2]), "    │      foo()");
+    }
 
     #[test]
     fn should_return_cursor_at_start_for_empty_buffer() {

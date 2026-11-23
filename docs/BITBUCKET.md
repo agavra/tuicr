@@ -63,23 +63,32 @@ shape is ambiguous across forges and resolves to GitHub, so spell out the host
 when you need to name a Bitbucket repository explicitly.
 
 tuicr detects the forge from the repository's remotes. A remote routes to
-Bitbucket when its host is `bitbucket.org` (or `altssh.bitbucket.org`, the
-SSH-over-443 endpoint). Bitbucket is checked before GitLab and GitHub, because
+Bitbucket when its host is `bitbucket.org`, `ssh.bitbucket.org` (SSH), or
+`altssh.bitbucket.org` (SSH over port 443). Bitbucket is checked before GitLab
+and GitHub, because
 the GitHub parser accepts any host and would otherwise claim your Bitbucket
 remotes.
 
 ## Submit a review
 
-`:submit` opens a picker. On Bitbucket it offers two events:
+`:submit` opens a picker. On Bitbucket it offers four events:
 
 | Event | Result |
 |-------|--------|
 | Comment | Posts your inline and review-level comments without changing approval state. |
 | Approve | Posts your comments, then approves the pull request. |
+| Request changes | Posts your comments, then marks the pull request as changes requested. |
+| Draft | Posts your comments as pending. Only you see them until you publish them from Bitbucket. |
 
-Comments are posted before the approval, so if the approval is rejected — you
-may not be a reviewer on the pull request — your feedback is already saved and
-tuicr says so rather than reporting a clean failure.
+Comments are posted before the approval or change request, so if that second
+step is rejected — you may not be a reviewer on the pull request — your
+feedback is already saved and tuicr says so rather than reporting a clean
+failure.
+
+A draft leaves Bitbucket's own pending-comment banner on the pull request;
+publish from there. Until you do, tuicr shows those comments marked `draft`
+(and `(draft)` in exports), and a pending review-level comment shows as a
+pending review summary.
 
 Inline comments land on their lines as Bitbucket inline pull request comments.
 Multi-line selections are preserved: Bitbucket's `inline` anchor supports
@@ -91,18 +100,6 @@ request show up in tuicr's review-summary area, and existing inline comments
 show up as threads on their lines. Approvals appear through the pull request's
 participants rather than as comments.
 
-### Not yet supported
-
-`:submit request-changes` and `:submit draft` return an unsupported-operation
-error rather than silently downgrading to a plain comment:
-
-- **Request changes** — Bitbucket Cloud has a request-changes endpoint, but
-  tuicr does not drive it yet. Post comments with `:submit`, then request
-  changes in Bitbucket.
-- **Draft (pending) reviews** — Bitbucket has pending comments, but `bkt` does
-  not expose a way to publish them as a batch. Use `:submit` to publish
-  directly.
-
 ## Data Center
 
 Only Bitbucket Cloud is supported. `bkt` itself handles both, but the two
@@ -111,11 +108,14 @@ workspaces, `/rest/api/1.0` instead of `/2.0`, requires comment version numbers
 on edits, and expresses "request changes" as a `NEEDS_WORK` participant status.
 
 Rather than half-work against a Data Center host, tuicr does not claim those
-remotes at all — `parse_bitbucket_remote_url` accepts `bitbucket.org` only. A
-`bitbucket.example.com` remote therefore falls through to the other forge
-parsers, and the pull request tab reports no supported remote.
+remotes as Bitbucket — `parse_bitbucket_remote_url` accepts `bitbucket.org`
+only. A `bitbucket.example.com` remote therefore falls through to the other
+forge parsers and ends up treated as a GitHub repository (GitHub's parser
+accepts any host), so the pull request tab opens and its `gh` calls fail.
 
 ## Limitations and troubleshooting
+
+- Collections (commits, comments, diffstat) are read up to 100 pages; beyond that the PR fails to open with an explicit error rather than showing a partial list.
 
 **Reviewer names, not usernames.** Bitbucket Cloud returns an empty `username`
 for every account, so tuicr displays `display_name` (for example, "Example User")

@@ -28,7 +28,10 @@ diff_view = "side-by-side"
 ignore_whitespace = "auto" # or true / false; omitted defaults to false
 commit_order = "descending"
 initial_commit_selection = "all"
+include_untracked = true
 show_file_list = true
+minimal_ui = false
+file_list_position = "left"
 compact_folders = false
 show_pr_checks = false
 show_pr_comments = true
@@ -44,11 +47,13 @@ q_quits = false
 comment_tab_width = 4
 wrap = false
 wrap_style = "flow"
+export_legend = true # superseded by [export].legend
 relative_line_numbers = false
 cursor_line = true
 search_highlight = true
 transparent_background = true
 scroll_offset = 5
+hunk_jump_align = "visible"
 no_update_check = false
 review_watch_interval_ms = 1000
 single_file_view = false
@@ -56,6 +61,14 @@ username = "user"
 diff_watch_interval_ms = 0
 
 backend = "libgit2"
+
+# Clipboard mechanism override. Omit for automatic per-environment detection
+# (the default). When set, it is an ordered list tried in turn.
+# clipboard = ["arboard", "osc52"]
+
+# Command that receives copied text on stdin, tried first. It gets 5 seconds;
+# on failure tuicr warns and falls back to the normal order.
+# clipboard_command = "tmux load-buffer -"
 
 comment_types = [
   { id = "note", label = "question", definition = "ask for clarification", color = "yellow" },
@@ -71,6 +84,8 @@ custom = true                 # ignore whitespace in *.custom files
 
 [forge]
 comment_type_prefix = true
+comment_type_format = "[{LABEL}] "
+pr_search = "review-requested:@me draft:false"
 
 [export]
 intro = "I reviewed your code and have the following comments. Please address them."
@@ -80,6 +95,11 @@ comments_header = "## Local tuicr Comments"
 remote_comments_header = "## Existing GitHub Comments"
 legend = true
 session_header = true
+code_context = false
+
+[generated]
+collapse = true
+count = true
 ```
 
 ## Options
@@ -95,12 +115,15 @@ session_header = true
 | `initial_commit_selection` | `all`        | Which commits are selected when a multi-commit review first opens: `all`, or `oldest` to start on just the oldest commit and walk forward with `(` / `)`.  |
 | `ignore_whitespace`        | `false`      | Whitespace comparison for local Git, jj, and hg diffs: `false` compares normally, `true` ignores all whitespace, and `"auto"` chooses by file extension. PR diffs are unchanged. See [Whitespace comparison](#whitespace-comparison). |
 | `ignore_whitespace_overrides` | (none)    | Table of extension-to-boolean overrides, used only with `ignore_whitespace = "auto"`. `true` ignores whitespace; `false` compares normally. |
+| `include_untracked`        | `true`       | Include untracked files in local Git working-tree and unstaged reviews, including `-r ... -w` and selector status checks. Set `false` to skip the untracked-file scan; tracked and staged changes remain visible. |
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
+| `minimal_ui`               | `false`      | Diff-focused presentation: hides the brand header, the diff panel frame, and the status footer's contents while idle (the row stays reserved for commands and messages), and opens on the first file instead of the overview. Toggle with `:set minimal!`. |
+| `file_list_position`       | `left`       | `left` or `right`: which side of the diff the file list and comment navigator sit on. `<leader>h` / `<leader>l` move focus toward the pane on that side. |
 | `compact_folders` | `false` | Join single-child directory chains into one file-tree row. Restart tuicr after changing this setting. |
 | `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |
 | `show_pr_comments`         | `true`       | Whether PR conversation comments are fetched and shown. Set to `false` to skip PR comments.                                                         |
 | `pr_comments_visibility`   | `unresolved` | Default visibility for PR review comment threads: `unresolved` (default), `all` (resolved/outdated threads shown muted), or `hide`. Seeds each review that starts at the default; `:comments` still switches mid-session and a restored session keeps its saved visibility. |
-| `show_commits`             | `true`       | Whether the inline commit selector pane is visible on startup for multi-commit reviews. Toggle with `<leader>s` or `:set commits!`.                        |
+| `show_commits`             | `true`       | Whether the inline commit selector pane is shown when a multi-commit review opens, including reviews opened later from the selector or a PR. Toggle it for the current review with `<leader>s` or `:set commits!`. |
 | `show_reviewed`            | `true`       | Whether files already marked reviewed appear in the file tree and the diff. Set `false` to start a session showing only what is left. Toggle with `:set reviewed!`. |
 | `mouse`                    | `true`       | Wheel scrolling, clicks, and drag-to-select.                                                                                                               |
 | `mouse_scroll_lines`       | `3`          | Lines scrolled per mouse wheel tick in the diff, file list, comment list, help, and summary views; the commit list moves its cursor this many rows. Must be between 1 and 100; other values are ignored with a startup warning. |
@@ -116,14 +139,25 @@ session_header = true
 | `search_highlight`         | `true`       | Highlight `/` search matches in the diff view. Clear at runtime with `Esc`; `n` / `N` re-enable.                                                           |
 | `transparent_background`   | `true`       | Let the terminal background show through panels. `false` paints the theme's `panel_bg`.                                                                    |
 | `scroll_offset`            | `0`          | Minimum lines visible above and below the cursor when scrolling (like Vim's `scrolloff`).                                                                  |
+| `hunk_jump_align`          | `visible`    | Where `]`/`[` hunk jumps and `}`/`{` file jumps leave their target: `visible` scrolls hunk jumps only as far as needed and keeps a file jump's new file header at the top, `top` puts the target at the top and `center` centers it. `top` and `center` leave `scroll_offset` lines above the target when the diff has them. |
 | `no_update_check`          | `false`      | Skip startup update check when `true`.                                                                                                                     |
 | `review_watch_interval_ms` | `1000`       | Poll interval for persisted review-session changes. Set to `0` to disable automatic local-session reloads.                                                 |
 | `single_file_view`         | `false`      | Start in single-file view for supported review targets. Pristine `--all-files` mode always starts in single-file view.                                     |
 | `username`                 | `"user"`     | Display name stamped on local comments and used as the viewer identity for local comment coloring.                                                         |
 | `diff_watch_interval_ms`   | `0`          | Poll interval for re-reading the local diff so uncommitted changes show without `:e`. The same tick refreshes the commit pane, including the "Staged changes" and "Unstaged changes" rows. A commit-range review, from `-r` or picked in the commit selector, keeps its range in the pane. With `-w` it refreshes only those two rows. Without it the pane never gains them. `0` (default) disables it. Ignored for PR and `--all-files` reviews. |
 | `backend`                  | `libgit2`    | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`.                                                                                |
+| `clipboard`                | (none)       | Ordered list of clipboard mechanisms for `:clip` / visual yank, e.g. `["arboard", "osc52"]`. Values: `arboard`, `pbcopy`, `subprocess` (xclip/wl-copy), `osc52`. Omit the key for automatic per-environment detection. |
+| `clipboard_command`        | (none)       | Shell command that receives copied text on stdin, e.g. `"tmux load-buffer -"`. Tried before any other method. It must read all of the text and exit 0 within 5 seconds; a slower command is killed. If it fails or times out, tuicr copies with the normal order and warns, naming the failure and the method that copied instead: on the status bar, or on stderr after exit for the `:wq` copy. |
 | `comment_types`            | (none)       | Comment categories. Untyped by default. See [Comment types](#comment-types).                                                                               |
+| `generated`                | (table)      | Collapse and progress settings for files `.gitattributes` marks `linguist-generated` or `gitlab-generated`. Collapsed by default. See [Generated files](#generated-files). |
 | `export_legend`            | `true`       | Include the `Comment types:` legend in the exported review. Superseded by `legend` under [Export](#export).                                                |
+
+## Git diff generation
+
+The default `libgit2` backend uses patience diff and the indent heuristic to
+keep changes aligned with code blocks. Set `backend = "cli"` to use Git's diff
+output and its configured diff algorithm. These choices affect local Git
+reviews; pull-request diffs come from the forge.
 
 ## Whitespace comparison
 
@@ -145,7 +179,7 @@ settings affect only local VCS diffs; pull-request diffs are unchanged.
 
 Bundled themes:
 
-`dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-light`, `github-dark`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`, `everforest-dark`, `everforest-light`, `gruvbox-dark`, `gruvbox-light`, `nord-dark`, `nord-light`, `nord-dark-high-contrast`, `nord-light-high-contrast`, `solarized-light`, `solarized-dark`, `tokyo-night-storm`, `tokyo-night-day`.
+`dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-light`, `github-dark`, `github-dark-colorblind`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`, `everforest-dark`, `everforest-light`, `gruvbox-dark`, `gruvbox-light`, `nord-dark`, `nord-light`, `nord-dark-high-contrast`, `nord-light-high-contrast`, `solarized-light`, `solarized-dark`, `tokyo-night-storm`, `tokyo-night-day`.
 
 Local themes:
 
@@ -237,6 +271,17 @@ Invalid `--theme` values cause an immediate non-zero exit. The same is true when
 local theme file exists but is invalid. Invalid config-selected local themes emit startup warnings
 and fall back through normal precedence.
 
+## Syntaxes
+
+Diffs are highlighted with the grammars bundled from [bat](https://github.com/sharkdp/bat). For a
+language they lack, drop its Sublime Text grammar (`*.sublime-syntax`) into the sibling
+`syntaxes/` directory (`~/.config/tuicr/syntaxes/` on Linux / macOS, `%APPDATA%\tuicr\syntaxes\`
+on Windows). It applies to the file extensions the grammar's `file_extensions` lists.
+
+Grammars that `extends:` another (a Sublime Text 4 feature) are not supported. A file that fails to
+parse is skipped with a startup warning, as is one with an empty context list in a `push`/`set` list
+(`push: [[]]`) or a non-string `escape`, which crash the grammar loader. Loading any grammar here adds about 200ms to startup.
+
 ## Comment types
 
 Comment categories control:
@@ -291,8 +336,8 @@ comment_types = [
 
 ## Forge
 
-Settings under the `[forge]` section control how tuicr submits reviews to GitHub, GitLab, Gitea,
-Bitbucket, Azure DevOps, and Gerrit.
+Settings under the `[forge]` section control how tuicr submits reviews to GitHub, GitLab,
+Heptapod, Gitea, Bitbucket, Azure DevOps, and Gerrit.
 
 ```toml
 [forge]
@@ -302,6 +347,8 @@ comment_type_prefix = false
 | Key                   | Default | Description                                                                                                                                                                 |
 | --------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `comment_type_prefix` | `true`  | Prepend `[TYPE] ` to comment bodies on submit (e.g. `[ISSUE] Magic number should be a constant`). The tag uses the type's `label`, uppercased — the same text the TUI badge and export show. Set to `false` to send the raw comment body without a classification tag. |
+| `comment_type_format` | `"[{LABEL}] "` | Template for that prefix. `{label}` is the type's `label` as written in `comment_types` (or its `id`), `{LABEL}` the same uppercased. Must contain one of them, otherwise it is ignored with a startup warning. Only affects submitted comments; the TUI badge and the clipboard export keep the `[TYPE]` form. |
+| `pr_search`           | unset   | GitHub search for the Pull Requests review scope (`r`). Same syntax as `gh pr list --search` (for example `review-requested:@me draft:false status:success`). Applied only on GitHub; other forges ignore it. Unset keeps `review-requested:@me`. When set, the scope shows as `search` in the PR tab. |
 
 When enabled (the default), submitted comments look like:
 
@@ -319,9 +366,27 @@ Magic number should be a named constant
 This module could use a doc comment
 ```
 
+For [Conventional Comments](https://conventionalcomments.org/), use lowercase labels and a
+`label:` format. Decorations go in the label itself:
+
+```toml
+comment_types = [
+  { id = "suggestion" },
+  { id = "nitpick", label = "nitpick (non-blocking)" },
+]
+
+[forge]
+comment_type_format = "**{label}:** "
+```
+
+```
+**suggestion:** Consider adding unit tests
+**nitpick (non-blocking):** File-level: Prefer `snake_case` here
+```
+
 This applies to inline line comments, file-level comments, and review-level comments pushed via
-`:submit`. The prefix works the same way on GitLab, Gitea, Bitbucket, Azure DevOps, and Gerrit
-submissions.
+`:submit`. The prefix works the same way on GitLab, Heptapod, Gitea, Bitbucket, Azure DevOps, and
+Gerrit submissions.
 
 ## Export
 
@@ -345,6 +410,7 @@ comments_header = "## Comments"
 | `remote_comments_header` | `## Existing GitHub Comments`                                                | Heading above unresolved forge threads. Appears only in pull request mode. Set to `""` to omit it.                                          |
 | `legend`                 | `true`                                                                       | Emit the `Comment types:` legend. Takes precedence over the top-level `export_legend` key when set.                                         |
 | `session_header`         | `true`                                                                       | Emit the `## Session: <slug>` header naming the session. Set to `false` for agents that treat it as noise.                                  |
+| `code_context`           | `false`                                                                      | Put the commented lines, plus up to two diff lines either side, in a `diff` code block under each line and range comment. See [Code context](#code-context). |
 
 The example above produces an export that opens directly on the comment list:
 
@@ -354,9 +420,75 @@ The example above produces an export that opens directly on the comment list:
 1. **[ISSUE]** `src/auth.rs:42` - Magic number should be a named constant
 ```
 
+### Code context
+
+With `code_context = true`, each line and range comment carries the code it is about, so an agent need not open the file to see it:
+
+````markdown
+1. **[ISSUE]** `src/lib.rs:13` - Name this
+   ```diff
+   @@ -12,3 +12,4 @@
+   -    let y = 2;
+   +    let y = 3;
+   +    let z = 4;
+        x + y + z
+    }
+   ```
+````
+
+The lines come from the diff already loaded, so context stops at the edge of the hunk rather than reaching into unchanged code. The two lines of context are diff rows, whether added, removed or unchanged, so they can cover fewer than two lines of the new file. The `@@` header gives the first line number on each side.
+
+File-level and review-level comments stay as they are. A line or range comment also gets no block when:
+
+- its lines are not in the hunks, including lines you revealed by expanding a gap;
+- the diff shown now is not the one it was written against. A comment made on one commit gets code only while exactly that commit is selected, and a comment made on the full diff gets code only while no commit subset is selected.
+
 ### Relationship to `export_legend`
 
 The top-level `export_legend` key predates this section and still works. When both are set, `legend` wins. When `[export]` omits `legend`, `export_legend` stays in force, so adding an `[export]` block to trim the intro will not switch the legend back on.
+
+## Generated files
+
+Files marked as code-generated in `.gitattributes` start collapsed to their header row, so a review of hand-written code is not buried under regenerated protobufs or API clients. Press `Space` in the diff to expand one.
+
+A file counts as generated when `.gitattributes` sets either `linguist-generated` (GitHub's Linguist) or `gitlab-generated`. Both documented spellings work:
+
+```gitattributes
+*.pb.go linguist-generated=true
+schema.generated.ts gitlab-generated
+vendor/** linguist-generated=true
+```
+
+Resolution is delegated to git itself, so nested `.gitattributes` files, `.git/info/attributes`, `core.attributesFile`, and `[attr]` macros all behave the way `git check-attr` does. An explicit opt-out — `-linguist-generated`, `linguist-generated=false`, `-gitlab-generated`, or `gitlab-generated=false` — wins over an opt-in on either attribute, so a directory-wide rule can be excepted per file.
+
+To show generated files expanded, or to leave them out of review progress:
+
+```toml
+[generated]
+collapse = false
+count = false
+```
+
+| Key        | Default | Description                                                                                                                       |
+| ---------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `collapse` | `true`  | Hide the diff body of generated files, leaving the header row. `Space` expands one file; `:set generated!` toggles all of them.     |
+| `count`    | `true`  | Count generated files toward the `Files · reviewed/total` progress indicator. |
+
+Whenever generated files are detected (`collapse = true` or `count = false`), the file list title reports `N generated`, headers carry a `[generated]` label, and generated filenames are dimmed in the tree. A collapsed file's header also shows how many comments and visible remote threads its hidden body holds, for example `· 2 comments`.
+
+`count` is deliberately independent of `collapse`: expanding a generated file to look at it should not add it to the denominator, or review progress would drop as a side effect of looking. You can also exclude generated files from progress without collapsing them.
+
+Runtime commands:
+
+| Command             | Effect                                            |
+| ------------------- | ------------------------------------------------- |
+| `:set generated`    | Collapse generated files.                         |
+| `:set nogenerated`  | Show generated files.                             |
+| `:set generated!`, `:generated` | Toggle.                               |
+
+`.gitattributes` is read from the local worktree, so this needs a git repository: mercurial and non-colocated jujutsu repos report nothing as generated (colocated jujutsu repos work), and in pull request mode the attributes come from your local checkout rather than the pull request's head; with no matching local checkout nothing is collapsed. Detection also quietly finds nothing when libgit2 cannot open the repository, for example one using the reftable ref format or the `relativeworktrees` extension. Attributes are re-read on reload (`:e`), so editing `.gitattributes` mid-session takes effect without a restart.
+
+To hide files from a review entirely rather than collapse them, use `.tuicrignore` below.
 
 ## .tuicrignore
 
@@ -385,3 +517,19 @@ join more directories. Opening or closing a joined row affects the whole chain;
 expand-all, collapse-all, and full-path search continue to work. Long labels use
 the existing horizontal scrolling. The default is `false`; there is no runtime
 toggle.
+
+## Home Manager
+
+With Home Manager, enable tuicr with `programs.tuicr.enable = true;` and put the
+same settings in `programs.tuicr.settings`:
+
+```nix
+programs.tuicr = {
+  enable = true;
+  settings = {
+    theme = "catppuccin-mocha";
+    diff_view = "side-by-side";
+    mouse = true;
+  };
+};
+```

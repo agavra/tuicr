@@ -3,7 +3,6 @@
 //! This module is intentionally transport-focused for the first integration
 //! slice. UI and review submission code should depend on the trait shape here
 //! instead of shelling out to forge-specific tools directly.
-#![allow(dead_code)]
 
 pub mod azure;
 pub mod bitbucket;
@@ -18,6 +17,7 @@ pub mod local_git;
 pub mod local_hg;
 pub mod pr_open;
 pub mod remote_comments;
+pub mod remote_url;
 pub mod selector;
 pub mod submit;
 pub mod traits;
@@ -47,6 +47,42 @@ use crate::vcs::VcsBackend;
 /// always run to completion; callers decide which error wins, which keeps
 /// error reporting as deterministic as the sequential code it replaces. A
 /// panic in `second` is re-raised on the calling thread once `first` returns.
+/// A repository-relative path as the forge spells it: `/`-separated. Only
+/// Windows paths carry `\\` as a separator; on Unix it is a legal filename byte
+/// and must reach the forge untouched.
+pub(crate) fn forge_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.into_owned()
+    }
+}
+
+/// Percent-encode a path, keeping `/` intact so a repository-relative path
+/// stays a path.
+pub(crate) fn percent_encode_path(value: &str) -> String {
+    value
+        .split('/')
+        .map(percent_encode_component)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Percent-encode everything but RFC 3986 unreserved bytes (`/` and `%` too).
+pub(crate) fn percent_encode_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
 pub(crate) fn join<A, B, RA, RB>(first: A, second: B) -> (RA, RB)
 where
     A: FnOnce() -> RA,
@@ -69,21 +105,19 @@ where
 /// Forge PR diffs are three-dot, so this — not the base branch tip a forge
 /// reports — is the revision the patch's old side lives at. Returns `None`
 /// when either object is missing or git fails, so callers can fall back to
-/// the forge (or leave `base_sha` unrefined). See the `base_sha` gotcha in AGENTS.md.
+/// the forge (or leave `base_sha` unrefined). See gotcha F6 in docs/FORGES.md.
 pub(crate) fn local_merge_base(repo_root: &Path, base_sha: &str, head_sha: &str) -> Option<String> {
     use std::ffi::OsStr;
 
     for sha in [base_sha, head_sha] {
-        crate::process::run_command_output(
-            "git",
-            Some(repo_root),
+        local_git::run_git_probe(
+            repo_root,
             ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
         )
         .ok()?;
     }
-    let output = crate::process::run_command_output(
-        "git",
-        Some(repo_root),
+    let output = local_git::run_git_probe(
+        repo_root,
         ["merge-base", base_sha, head_sha]
             .iter()
             .map(|s| OsStr::new(*s)),
@@ -91,6 +125,37 @@ pub(crate) fn local_merge_base(repo_root: &Path, base_sha: &str, head_sha: &str)
     .ok()?;
     let sha = output.trim();
     (!sha.is_empty()).then(|| sha.to_string())
+}
+
+/// Return `Some(diff)` for `git diff <start>..<end>` when both SHAs exist in
+/// the checkout at `repo_root`; `None` lets callers fall back to the forge.
+pub(crate) fn local_range_diff(
+    repo_root: &Path,
+    start_sha: &str,
+    end_sha: &str,
+) -> Option<Vec<crate::model::FilePatch>> {
+    use std::ffi::OsStr;
+
+    for sha in [start_sha, end_sha] {
+        local_git::run_git_probe(
+            repo_root,
+            ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
+        )
+        .ok()?;
+    }
+    let range = format!("{start_sha}..{end_sha}");
+    crate::vcs::git::raw::run_git_diff(repo_root, &[range.as_str()]).ok()
+}
+
+/// TLS settings for agents that talk to forge hosts directly over HTTPS.
+///
+/// Self-hosted Gerrit and Azure DevOps Server instances are often signed by a
+/// corporate CA installed in the OS trust store but absent from the bundled
+/// Mozilla roots, so verify against the platform's trust store instead.
+pub(crate) fn platform_tls_config() -> ureq::tls::TlsConfig {
+    ureq::tls::TlsConfig::builder()
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build()
 }
 
 /// Try to detect a GitHub forge repository for the local checkout at `repo_root`.
@@ -121,6 +186,11 @@ pub fn detect_gitlab_repository(repo_root: &Path) -> Option<ForgeRepository> {
 /// and a forge can live behind them (Heptapod), so those are read before
 /// giving up; `default` is Mercurial's `origin` and sorts first.
 fn remote_urls(repo_root: &Path) -> Vec<String> {
+    remotes(repo_root).into_iter().map(|(_, url)| url).collect()
+}
+
+/// `repo_root`'s `(name, url)` remotes, `origin` first, each remote once.
+pub(crate) fn remotes(repo_root: &Path) -> Vec<(String, String)> {
     let Ok(repo) = Repository::discover(repo_root) else {
         // Local VCS discovery already falls back to Git for repository formats
         // libgit2 cannot open (notably reftable and SHA-256). Remote metadata
@@ -142,27 +212,30 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
                     ["remote", "get-url", "--", name],
                 )
                 .ok()
-                .map(|url| url.trim_end_matches(['\r', '\n']).to_string())
+                .map(|url| {
+                    (
+                        name.to_string(),
+                        url.trim_end_matches(['\r', '\n']).to_string(),
+                    )
+                })
             })
             .collect();
     };
-    let mut all_urls: Vec<String> = Vec::new();
-
-    if let Ok(remote) = repo.find_remote("origin")
-        && let Some(url) = remote.url()
-    {
-        all_urls.push(url.to_string());
-    }
+    let mut all: Vec<(String, String)> = Vec::new();
+    let mut push = |name: &str| {
+        if let Ok(remote) = repo.find_remote(name)
+            && let Some(url) = remote.url()
+        {
+            all.push((name.to_string(), url.to_string()));
+        }
+    };
+    push("origin");
     if let Ok(remotes) = repo.remotes() {
-        for name in remotes.iter().flatten() {
-            if let Ok(remote) = repo.find_remote(name)
-                && let Some(url) = remote.url()
-            {
-                all_urls.push(url.to_string());
-            }
+        for name in remotes.iter().flatten().filter(|name| *name != "origin") {
+            push(name);
         }
     }
-    all_urls
+    all
 }
 
 /// `repo_root`'s hg remote URLs, `default` first, then every other named
@@ -171,7 +244,7 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
 ///
 /// Mercurial records clone sources as named paths in `.hg/hgrc`; `default`
 /// is what `hg clone` writes and the closest thing to Git's `origin`.
-fn hg_remote_urls(repo_root: &Path) -> Vec<String> {
+fn hg_remote_urls(repo_root: &Path) -> Vec<(String, String)> {
     let Ok(output) = crate::process::run_command_output("hg", Some(repo_root), ["paths"]) else {
         return Vec::new();
     };
@@ -189,7 +262,7 @@ fn hg_remote_urls(repo_root: &Path) -> Vec<String> {
     entries.sort_by_key(|(name, _)| *name != "default");
     entries
         .into_iter()
-        .map(|(_, url)| url.to_string())
+        .map(|(name, url)| (name.to_string(), url.to_string()))
         .collect()
 }
 
@@ -235,7 +308,7 @@ pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
 /// For hot paths such as [`crate::slug::resolve_owner_repo`], which runs on
 /// every session save, and only where an unrecognized remote has a usable
 /// fallback. Prefer [`parse_any_remote_url`] everywhere else: it recognizes
-/// more remotes, at the cost of a `glab config get host` spawn and up to three
+/// more remotes, at the cost of `glab config get` spawns and up to three
 /// `~/.ssh/config` reads per call.
 ///
 /// GitHub is excluded on purpose. Its parser accepts any host and reads the
@@ -323,10 +396,65 @@ pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Op
         .then(|| root.to_path_buf())
 }
 
+/// Serializes tests that point `GIT_SSH_COMMAND` at a stub transport.
+#[cfg(test)]
+pub(crate) static GIT_SSH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forge::local_git::test_support::{clone_without_blobs, git, init_repo_with_commit};
     use crate::forge::traits::ForgeKind;
+
+    #[test]
+    fn local_merge_base_does_not_lazy_fetch_a_missing_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        std::fs::create_dir(&origin).unwrap();
+        let first = init_repo_with_commit(&origin, &["one"]);
+        let clone = dir.path().join("clone");
+        clone_without_blobs(&origin, &clone);
+
+        std::fs::write(origin.join("file.txt"), "three\n").unwrap();
+        git(&origin, &["commit", "-qam", "two"]);
+        let second = git(&origin, &["rev-parse", "HEAD"]).trim().to_string();
+
+        // Without GIT_NO_LAZY_FETCH=1 the probe fetches `second` from origin,
+        // then merge-base returns `first`. The probe must fail fast instead.
+        assert_eq!(local_merge_base(&clone, &first, &second), None);
+    }
+
+    #[test]
+    fn local_range_diff_needs_both_shas_in_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(dir.path().join("f.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "one"]);
+        let first = git(&["rev-parse", "HEAD"]);
+        std::fs::write(dir.path().join("f.txt"), "two\n").unwrap();
+        git(&["commit", "-qam", "two"]);
+        let second = git(&["rev-parse", "HEAD"]);
+
+        let patches = local_range_diff(dir.path(), &first, &second).expect("both shas exist");
+        assert_eq!(patches.len(), 1);
+        let missing = "0".repeat(40);
+        assert!(local_range_diff(dir.path(), &first, &missing).is_none());
+        // An empty endpoint would make `git diff` default it to HEAD and succeed.
+        assert!(local_range_diff(dir.path(), "", &second).is_none());
+        assert!(local_range_diff(dir.path(), &first, "").is_none());
+    }
 
     #[test]
     fn join_returns_both_results_in_argument_order() {
@@ -610,5 +738,39 @@ mod tests {
             local_checkout_for_repo(dir.path(), &target),
             Some(dir.path().to_path_buf())
         );
+    }
+
+    #[test]
+    fn should_percent_encode_path_keeping_separators_and_escaping_percent() {
+        assert_eq!(
+            percent_encode_path("src/a file#?%.rs"),
+            "src/a%20file%23%3F%25.rs"
+        );
+        assert_eq!(percent_encode_component("feat/x"), "feat%2Fx");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_keep_a_backslash_in_a_unix_forge_path() {
+        assert_eq!(forge_path(Path::new("a\\b/c.rs")), "a\\b/c.rs");
+    }
+
+    #[test]
+    fn should_list_origin_once_in_remotes() {
+        let dir = std::env::temp_dir().join(format!("tuicr-remotes-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", "https://github.com/a/b.git"]);
+        git(&["remote", "add", "up", "https://github.com/c/d.git"]);
+        let names: Vec<String> = remotes(&dir).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["origin", "up"]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

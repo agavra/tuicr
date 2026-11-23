@@ -173,6 +173,52 @@ fn should_start_overview_at_top_of_main_view() {
 }
 
 #[test]
+fn should_keep_overview_at_top_when_hiding_reviewed_files_at_startup() {
+    // `show_reviewed = false` used to jump past the PR description to the
+    // first file, at a row offset measured before the first frame knew the
+    // real width, so a PR review opened scrolled to the bottom.
+    for stale_width in [0, 8, 120] {
+        let mut app = build_pr_app();
+        app.diff_state.viewport_width = stale_width;
+        app.rebuild_annotations();
+
+        app.init_show_reviewed(false);
+
+        assert_eq!(app.diff_state.cursor_line, 0, "stale width {stale_width}");
+        assert_eq!(app.diff_state.scroll_offset, 0, "stale width {stale_width}");
+        assert!(crate::ui::pr_info_panel::is_cursor_in_pr_info(&app));
+    }
+}
+
+#[test]
+fn should_select_first_visible_file_when_hiding_reviewed_files_at_startup() {
+    let mut app = build_pr_app();
+    app.diff_files.push(DiffFile {
+        old_path: None,
+        new_path: Some("src/main.rs".into()),
+        status: FileStatus::Modified,
+        hunks: vec![],
+        is_binary: false,
+        is_too_large: false,
+        is_commit_message: false,
+        content_hash: 0,
+    });
+    let files = app.diff_files.clone();
+    App::register_diff_files(&mut app.session, &files, false);
+    app.session
+        .files
+        .get_mut(&PathBuf::from("src/lib.rs"))
+        .expect("registered file")
+        .reviewed = true;
+    app.rebuild_annotations();
+
+    app.init_show_reviewed(false);
+
+    assert_eq!(app.diff_state.cursor_line, 0);
+    assert_eq!(app.diff_state.current_file_idx, 1);
+}
+
+#[test]
 fn should_walk_from_overview_to_first_file_with_next_file() {
     let mut app = build_pr_app();
     app.diff_state.cursor_line = 0;
@@ -219,4 +265,242 @@ fn should_keep_pr_info_annotations_in_sync_with_rendered_lines_at_wrap_boundary(
         lines.len(),
         "PrInfoLine annotation count must equal the rendered PR-info line count"
     );
+}
+
+#[test]
+fn minimal_ui_lands_on_the_first_file_after_the_first_render_of_a_pr_with_a_description() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let mut app = build_pr_app();
+    let info = app.pr_info.as_mut().expect("pr info");
+    info.details.body = (1..=12)
+        .map(|n| format!("Paragraph {n} of the description, long enough to wrap."))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    app.rebuild_annotations();
+
+    // `tuicr pr <n>` and the PR selector both reach this before any render,
+    // with the viewport unmeasured (the selector path resets `DiffState`).
+    assert_eq!(app.diff_state.viewport_width, 0);
+    app.minimal_ui = true;
+    app.apply_minimal_ui_start();
+
+    // Positioning now would wrap the description at one column and push the
+    // cursor past the end of the document, so the landing waits.
+    assert!(app.pending_minimal_ui_start);
+    assert!(app.diff_state.cursor_line <= app.max_cursor_line());
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+    terminal
+        .draw(|frame| crate::ui::render(frame, &mut app))
+        .expect("draw frame");
+    assert!(app.diff_state.viewport_width > 0);
+    assert!(app.apply_pending_minimal_ui_start());
+    assert!(!app.pending_minimal_ui_start);
+    assert!(!app.apply_pending_minimal_ui_start());
+
+    assert!(app.diff_state.cursor_line <= app.max_cursor_line());
+    assert_eq!(
+        app.diff_state.cursor_line,
+        app.review_comments_render_height()
+    );
+    assert_eq!(app.diff_state.scroll_offset, app.diff_state.cursor_line);
+    assert!(matches!(
+        app.line_annotations.get(app.diff_state.cursor_line),
+        Some(crate::app::AnnotatedLine::FileHeader { file_idx: 0 })
+    ));
+
+    let buffer = terminal
+        .draw(|frame| crate::ui::render(frame, &mut app))
+        .expect("draw frame")
+        .buffer
+        .clone();
+    let text: String = (0..buffer.area.height)
+        .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+        .map(|(x, y)| buffer[(x, y)].symbol().to_string())
+        .collect();
+    assert!(text.contains("src/lib.rs"), "{text}");
+}
+
+fn pr_info_annotation_count(app: &App) -> usize {
+    app.line_annotations
+        .iter()
+        .filter(|line| matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. }))
+        .count()
+}
+
+#[test]
+fn should_collapse_pr_description_to_one_row_when_marked_reviewed() {
+    let mut app = build_pr_app();
+    let expanded_rows = pr_info_annotation_count(&app);
+    assert!(expanded_rows > 1);
+    let file_header_line = app.calculate_file_scroll_offset(0);
+    app.diff_state.cursor_line = 2;
+
+    app.toggle_reviewed();
+
+    assert!(app.session.pr_description_reviewed);
+    assert!(app.dirty);
+    assert_eq!(pr_info_annotation_count(&app), 1);
+    assert_eq!(app.diff_state.cursor_line, 0);
+    assert_eq!(
+        app.calculate_file_scroll_offset(0),
+        file_header_line + 1 - expanded_rows,
+        "rows below the panel shift up by the collapsed rows"
+    );
+    // The file under the panel is untouched.
+    assert!(!app.session.is_file_reviewed(&PathBuf::from("src/lib.rs")));
+
+    let mut lines = Vec::new();
+    let mut line_idx = 0usize;
+    crate::ui::pr_info_panel::append_pr_info_section(&app, &mut lines, &mut line_idx, usize::MAX);
+    assert_eq!(lines.len(), 1);
+    let text: String = lines[0]
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert!(text.contains("✓ PR #42 Add panel"), "collapsed row: {text}");
+}
+
+#[test]
+fn should_expand_reviewed_pr_description_when_toggled_again() {
+    let mut app = build_pr_app();
+    let expanded_rows = pr_info_annotation_count(&app);
+    app.diff_state.cursor_line = 0;
+
+    app.toggle_reviewed();
+    app.toggle_reviewed();
+
+    assert!(!app.session.pr_description_reviewed);
+    assert_eq!(pr_info_annotation_count(&app), expanded_rows);
+    assert_eq!(app.diff_state.cursor_line, 0);
+}
+
+#[test]
+fn should_toggle_file_not_description_when_cursor_is_on_a_file() {
+    let mut app = build_pr_app();
+    app.jump_to_file(0);
+
+    app.toggle_reviewed();
+
+    assert!(!app.session.pr_description_reviewed);
+    assert!(app.session.is_file_reviewed(&PathBuf::from("src/lib.rs")));
+}
+
+#[test]
+fn should_carry_pr_description_reviewed_to_new_head_session() {
+    let mut previous = build_pr_app().session.clone();
+    previous.pr_description_reviewed = true;
+    let next = ReviewSession::new(
+        previous.repo_path.clone(),
+        "fedcba9876543210".to_string(),
+        previous.branch_name.clone(),
+        SessionDiffSource::PullRequest,
+    );
+
+    let carried = App::reviewed_state_carried_forward(&previous, next, &[], &[]);
+
+    assert!(carried.pr_description_reviewed);
+}
+
+#[test]
+fn should_unreview_pr_description_on_clear_without_counting_it_as_a_file() {
+    let mut app = build_pr_app();
+    app.diff_state.cursor_line = 0;
+    app.toggle_reviewed();
+    assert!(app.session.pr_description_reviewed);
+
+    app.clear_comments(crate::model::ClearScope::CommentsAndReviewed);
+
+    assert!(!app.session.pr_description_reviewed);
+    assert!(
+        pr_info_annotation_count(&app) > 1,
+        "description expands again"
+    );
+    let message = app.message.as_ref().map(|m| m.content.clone());
+    assert_eq!(message.as_deref(), Some("Unreviewed the PR description"));
+}
+
+fn draw_full(app: &mut App) -> String {
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| crate::ui::app_layout::render(frame, app))
+        .expect("draw frame");
+    let buffer = terminal.backend().buffer().clone();
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn should_lay_out_pr_description_at_real_width_on_first_frame() {
+    let body = "Ship it with a reasonably long description line";
+    for (mode, stale_width) in [
+        (crate::app::DiffViewMode::Unified, 0),
+        (crate::app::DiffViewMode::Unified, 8),
+        (crate::app::DiffViewMode::SideBySide, 0),
+        (crate::app::DiffViewMode::SideBySide, 8),
+    ] {
+        let mut app = build_pr_app();
+        let mut info = sample_pr_info();
+        info.details.body = body.to_string();
+        app.pr_info = Some(info);
+        app.diff_view_mode = mode;
+        app.diff_state.wrap_lines = true;
+        // What the first frame (0) or a pre-resize frame (8) leaves behind.
+        app.diff_state.viewport_width = stale_width;
+        app.rebuild_annotations();
+
+        let screen = draw_full(&mut app);
+
+        assert!(
+            screen.contains(body),
+            "{mode:?} stale width {stale_width}: description must not be wrapped at the stale width\n{screen}"
+        );
+    }
+}
+
+#[test]
+fn should_reuse_pr_info_rows_until_width_metadata_or_theme_changes() {
+    use crate::ui::pr_info_panel::pr_info_display_lines;
+    use std::sync::Arc;
+
+    let mut app = build_pr_app();
+    app.diff_state.viewport_width = 80;
+    let first = pr_info_display_lines(&app);
+    assert!(
+        Arc::ptr_eq(&first, &pr_info_display_lines(&app)),
+        "same width and metadata reuse the built rows"
+    );
+
+    app.diff_state.viewport_width = 60;
+    let narrower = pr_info_display_lines(&app);
+    assert!(!Arc::ptr_eq(&first, &narrower), "width change rebuilds");
+
+    app.pr_info.as_mut().unwrap().details.body = "Changed body".to_string();
+    let edited = pr_info_display_lines(&app);
+    assert!(!Arc::ptr_eq(&narrower, &edited), "metadata change rebuilds");
+    assert!(edited.iter().any(|line| {
+        line.spans
+            .iter()
+            .any(|s| s.content.contains("Changed body"))
+    }));
+
+    app.set_theme(Theme::light());
+    assert!(
+        !Arc::ptr_eq(&edited, &pr_info_display_lines(&app)),
+        "theme change rebuilds"
+    );
+
+    app.session.pr_description_reviewed = true;
+    assert_eq!(pr_info_display_lines(&app).len(), 1, "reviewed collapses");
+    app.session.pr_description_reviewed = false;
+    assert!(pr_info_display_lines(&app).len() > 1, "expands again");
 }

@@ -14,20 +14,49 @@ Related references: [CONFIG.md](CONFIG.md) for the config file and themes,
 |---|---|
 | `tuicr` | Open the TUI on the review target selector |
 | `tuicr tui` | Same TUI, explicit subcommand |
-| `tuicr pr <target>` (`tuicr mr`) | Review a pull request / merge request |
-| `tuicr tui pr <target>` (`tuicr tui mr`) | Same, under the explicit TUI subcommand |
+| `tuicr pr [target]` (`tuicr mr`) | Review a pull request, merge request, or Gerrit change |
+| `tuicr tui pr [target]` (`tuicr tui mr`) | Same, under the explicit TUI subcommand |
 | `tuicr review list` | List persisted review sessions |
 | `tuicr review add` | Add a local draft comment to a session |
 | `tuicr review comments` (`tuicr review get`) | Print a session's comments |
+| `tuicr review delete` | Delete one local draft comment (`--comment-id <ID>`) |
+| `tuicr review clearc` | Clear every comment in a session, keeping review marks |
+| `tuicr review clear` | Clear every comment and review mark in a session |
 | `tuicr update [VERSION]` | Update the installed binary |
 
 `mr` is an alias of `pr`, and `get` an alias of `comments`; they behave
 identically. `<target>` accepts a bare `<number>`, `<owner/repo#N>`, or a PR
-URL.
+URL. [REVIEW_CLI.md](REVIEW_CLI.md) lists the flags of every `tuicr review`
+subcommand.
+
+Without a target, `tuicr pr` reviews the open PR for the branch checked out in
+the current directory, like `gh pr view`. It finds the PR on the same repository
+a bare number would use (`--repo-url` / `--remote` first, then the checkout's
+`origin`, or its upstream for a fork). GitHub, GitLab, Heptapod, Gitea, Bitbucket and Azure
+DevOps match the PR whose head branch is the checked-out branch, scanning at most
+1,000 open PRs. Gerrit matches the `Change-Id` trailer of the `HEAD` commit. The
+command fails, naming `tuicr pr <number>` as the way out, when no PR matches, when
+several do (the same branch name opened from different forks), on a detached
+`HEAD`, or outside a checkout.
 
 `tuicr update` takes an optional SemVer version to install a specific release,
 including an older known-good one. It only accepts a version number — there is
-no `latest` keyword; omit the argument to get the newest release.
+no `latest` keyword; omit the argument to get the newest release. Pinning a
+version works only for Cargo and direct-binary installs; for a Homebrew, Mise or
+Nix install it fails with exit code 1.
+
+It updates through the manager that owns the executable. Homebrew upgrades the
+formula named in the keg's `INSTALL_RECEIPT.json` (`tuicr` for homebrew-core,
+`<tap>/tuicr` for a tap). When the receipt is unreadable or names no tap, it
+still runs `brew upgrade tuicr` and prints a one-line stderr warning that the tap
+could not be determined. These installs are refused with exit code `1` and a
+hint naming the right command:
+
+| Install | Detected by | Update with |
+| --- | --- | --- |
+| pacman / AUR | listed in the pacman local database | `sudo pacman -Syu` (or an AUR helper) |
+| Home Manager | linked from a Home Manager generation under `$XDG_STATE_HOME` (default `~/.local/state`) or `/nix/var/nix/{profiles,gcroots}/per-user/$USER` | `home-manager switch` (or `nixos-rebuild` / `darwin-rebuild switch` for the system module) |
+| Declarative Nix profile | linked from `/etc/profiles/per-user/$USER` (`users.users.<name>.packages`, Home Manager `useUserPackages`) or `/run/current-system/sw/bin` (`environment.systemPackages`) | `home-manager switch`, `nixos-rebuild switch`, or `darwin-rebuild switch` |
 
 There is no `tuicr help` subcommand. Use `-h` / `--help`, which also works per
 command (`tuicr review add --help`).
@@ -37,7 +66,10 @@ command (`tuicr review add --help`).
 These apply to the TUI and can be given on the bare command, on `tui`, or on
 `pr` / `mr`. When the same option appears at more than one level, string values
 take the last one given and boolean flags stay on once set, so
-`tuicr --stdout tui pr 125 --theme nord-dark` is valid.
+`tuicr --stdout tui pr 125 --theme nord-dark` is valid. Conflicts between
+options (`--file` / `--all-files` against `-r`, `-w`, `-p`) are checked on the
+merged set, so they also fail when split across levels. `pr` rejects the
+local-review flags `-r`, `-w`, `-p`, `--file` and `-A`.
 
 | Flag | Short | Value | Description |
 |---|---|---|---|
@@ -86,10 +118,10 @@ succeed before a full PR URL or `owner/repo#N` target takes precedence. Omit
 
 ### Scope selection
 
-`--path`, `--working-tree`, `--file`, and `--all-files` pick what gets reviewed,
-so they cannot be combined — passing two is a usage error. `--file` also
-conflicts with `--revisions`, since annotating an arbitrary file has no commit
-range.
+`--file` and `--all-files` pick their own review scope, so each conflicts with
+`--path`, `--working-tree`, `--revisions` and the other; passing a conflicting
+pair is a usage error. `--path` combines with `--working-tree` and/or
+`--revisions`.
 
 `--path` on its own implies `--working-tree`. Pair it with `-r` to filter a
 commit range instead:
@@ -141,9 +173,14 @@ out to.
 | `GERRIT_URL` | Gerrit server root; also identifies Gerrit remotes on otherwise neutral hostnames. See [GERRIT.md](GERRIT.md) |
 | `GERRIT_USERNAME`, `GERRIT_PASSWORD` | Gerrit REST API credentials. `GERRIT_PASSWORD` must be an HTTP password, not the account password |
 | `HEPTAPOD_URL` | Heptapod server root; also identifies Heptapod remotes on otherwise neutral hostnames (commercial instances like `orus.io`). See the Heptapod section in [GITLAB.md](GITLAB.md) |
+| `GITLAB_SUBFOLDER` | Subfolder a self-hosted GitLab is installed under (`gitlab` for `https://example.com/gitlab/`). Read by `glab` and by tuicr, and overrides `glab`'s per-host `subfolder` setting. See [GITLAB.md](GITLAB.md) |
 | `TUICR_GLAB_DEBUG` | Log `glab` invocations for debugging. See [GITLAB.md](GITLAB.md) |
-| `TMUX`, `ZELLIJ`, `SSH_TTY` | Detected to choose a clipboard path — OSC 52 over SSH, `tmux load-buffer` inside tmux |
+| `TMUX`, `ZELLIJ` | Prefer local clipboard tools before the OSC 52 relay in local multiplexers |
+| `SSH_TTY`, `SSH_CONNECTION` | Prefer OSC 52 on non-macOS SSH sessions; macOS keeps `pbcopy` first |
+| `REX_SESSION` | Prefer OSC 52 clipboard writes to reach the Rex client's clipboard (non-macOS only; macOS keeps `pbcopy` first) |
+| `TERM_PROGRAM` | When set to `rex`, prefer OSC 52 clipboard writes (non-macOS only; macOS keeps `pbcopy` first) |
 | `XDG_SESSION_TYPE` | Picks `wl-copy` on Wayland or `xclip` on X11 |
+| `CARGO_HOME` | Cargo root `tuicr update` uses to tell whether the binary is a Cargo install (default `~/.cargo`) |
 
 Set `TUICR_PROFILE` to `1`, `true`, `on`, or `yes` to log to
 `tuicr-profile.<timestamp>.log` in the system temp directory. Any other
@@ -164,20 +201,28 @@ tuicr-summary: reviewed 3/3 files, 2 comments added
 `tuicr-session:` is printed once at startup, before the alternate screen is
 entered, and names the session slug. Pass it straight to
 `tuicr review comments --session <slug>` to read comments while the TUI is
-still open, or after it exits. `tuicr-summary:` is printed on exit, always —
+still open, or after it exits. A PR session on a forge's default host is
+`gh:owner/repo/pr/N`; on any other host (and always for Gerrit) the slug ends
+in `@<host>`, e.g. `gh:owner/repo/pr/N@ghe.example.com`. `tuicr-summary:` is printed on exit, always —
 including with zero comments, so a watcher can tell "reviewed everything, found
 nothing" apart from "quit without looking".
+
+`tuicr review add` also writes a `Warning: comment type '<id>' is not
+configured; known types: …` line to stderr when `--type` names an id missing
+from a configured `comment_types` list. The comment is still stored.
 
 `--stdout` prints the export markdown to stdout when the TUI exits, with the
 TUI itself rendered to `/dev/tty`. Combined with the two stderr markers, that
 keeps stdout clean for a pipe.
 
-All three `tuicr review` subcommands print pretty JSON to stdout and nothing
+Every `tuicr review` subcommand prints pretty JSON to stdout and nothing
 else. There is no `--json` flag because JSON is the only format. See
 [REVIEW_CLI.md](REVIEW_CLI.md) for the schemas.
 
-`tuicr update` prints a single line describing what it did — updated, already
-up to date, or completed through an external package manager.
+`tuicr update` itself prints a single line describing what it did — updated,
+already up to date, or completed through an external package manager. When it
+delegates to a package manager (Homebrew, Cargo, Mise, Nix), that tool's own
+output passes through before tuicr's line.
 
 ## Exit codes
 
@@ -191,3 +236,44 @@ up to date, or completed through an external package manager.
 
 tuicr ships no man page and no shell completions. `tuicr --help` and this page
 are the reference.
+
+## Updating
+
+```bash
+tuicr update          # newest release
+tuicr update 0.18.0   # a specific, e.g. known-good, release
+```
+
+`tuicr update` looks at where the running executable lives and updates it the
+same way it was installed:
+
+| Install | What `tuicr update` does |
+|---|---|
+| Install script or downloaded release binary | Replaces the binary in place with the matching GitHub release asset, after SHA-256 verification. Keeps the GNU or musl variant you run |
+| Cargo (`~/.cargo/bin`) | `cargo install tuicr --force` |
+| Mise | `mise upgrade github:agavra/tuicr --bump --yes` |
+| Homebrew (a `Cellar/tuicr` path) | `brew upgrade` of the formula named in the keg's `INSTALL_RECEIPT.json` (`tuicr` for homebrew-core, `<tap>/tuicr` for a tap) |
+| Nix profile (a `/nix/store` path) | `nix profile upgrade '.*tuicr.*'` |
+
+Exact-version installs work for Cargo and direct binaries; for Homebrew, Mise or
+Nix, use the package manager's own pinning. A `nix run` invocation is temporary
+rather than installed: rerun it to get the current flake, or use
+`nix profile install github:agavra/tuicr` for an installation `tuicr update` can
+upgrade. pacman, Home Manager and declarative Nix installs are refused with a hint
+naming the right command; see the table under [Commands](#commands).
+
+## Version control backends
+
+tuicr detects the repository type at startup, trying jj, then git, then
+Mercurial.
+
+Git uses libgit2 by default. It switches to the Git CLI backend on its own for
+SHA-256 repositories (root commits included), reftable or split-index
+repositories, and sparse checkouts (the last with a startup warning). Set
+`backend = "cli"` in the config to always use the Git CLI
+([CONFIG.md](CONFIG.md#git-diff-generation)).
+
+The default libgit2 backend detects renames at libgit2's 50% similarity
+threshold and honours Git's `diff.renames` (including `copies`) and
+`diff.renameLimit` settings. Working-tree reviews include untracked files in
+rename detection, so a move can show as `R` before it is staged.

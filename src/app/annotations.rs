@@ -14,12 +14,8 @@ impl App {
             let count = if let (DiffSource::PullRequest(pr), Some(backend)) =
                 (&self.diff_source, self.forge_backend.as_ref())
             {
-                let provider = ForgeContextProvider {
-                    forge: backend.as_ref(),
-                    repository: pr.key.repository.clone(),
-                    base_sha: pr.base_sha.clone(),
-                    head_sha: pr.key.head_sha.clone(),
-                };
+                let provider =
+                    ForgeContextProvider::for_pr(backend.as_ref(), &pr.key, pr.base_sha.clone());
                 provider
                     .file_line_count(old_path.as_ref(), new_path.as_ref(), status)
                     .ok()
@@ -41,12 +37,43 @@ impl App {
     /// Only enabled for diff sources where the worktree/index is the correct snapshot.
     pub(in crate::app) fn populate_file_line_count_cache(&mut self) {
         self.file_line_count_cache.clear();
-        if self.eof_gap_enabled() {
-            for file_idx in 0..self.diff_files.len() {
+        if !self.eof_gap_enabled() {
+            return;
+        }
+        let eligible: Vec<usize> = (0..self.diff_files.len())
+            .filter(|&file_idx| {
                 let file = &self.diff_files[file_idx];
-                if !file.hunks.is_empty() && file.status != FileStatus::Deleted {
-                    self.ensure_file_line_count_cached(file_idx);
+                // A commit message is synthetic: no revision holds a file by
+                // its name, so counting its lines would only cost the forge a
+                // request in PR mode.
+                !file.is_commit_message
+                    && !file.hunks.is_empty()
+                    && file.status != FileStatus::Deleted
+            })
+            .collect();
+        if let (DiffSource::PullRequest(pr), Some(backend)) =
+            (&self.diff_source, self.forge_backend.as_ref())
+        {
+            // One batched read: a PR can touch hundreds of files, and reading
+            // them one at a time held up the first frame.
+            let provider =
+                ForgeContextProvider::for_pr(backend.as_ref(), &pr.key, pr.base_sha.clone());
+            let files: Vec<_> = eligible
+                .iter()
+                .map(|&file_idx| {
+                    let file = &self.diff_files[file_idx];
+                    (file.old_path.as_ref(), file.new_path.as_ref(), file.status)
+                })
+                .collect();
+            let counts = provider.file_line_counts(&files);
+            for (file_idx, count) in eligible.into_iter().zip(counts) {
+                if let Some(count) = count {
+                    self.file_line_count_cache.insert(file_idx, count);
                 }
+            }
+        } else {
+            for file_idx in eligible {
+                self.ensure_file_line_count_cached(file_idx);
             }
         }
     }
@@ -60,6 +87,13 @@ impl App {
         if self.file_line_count_cache.is_empty() {
             self.populate_file_line_count_cache();
         }
+        // Which files are code-generated has to be known before the walk
+        // below decides whose body to emit. Detection is hooked here rather
+        // than at each of the fifteen `self.diff_files = ...` assignments
+        // because every one of them rebuilds annotations afterwards, and a
+        // missed call site would desynchronize the annotations from the
+        // render. Repeat calls over an unchanged file set do no work.
+        self.detect_generated_files();
 
         self.line_annotations.clear();
         self.colored_hunks.clear();
@@ -73,17 +107,10 @@ impl App {
         // current inline selection are hidden. `None` => no selector, show all.
         let commit_set = self.selected_commit_set();
 
-        if let Some(info) = &self.pr_info {
-            let pr_line_count = crate::ui::pr_info_panel::build_pr_info_lines(
-                info,
-                crate::ui::pr_info_panel::pr_info_content_width(self.diff_state.viewport_width),
-                &self.theme,
-            )
-            .len();
-            for line_idx in 0..pr_line_count {
-                self.line_annotations
-                    .push(AnnotatedLine::PrInfoLine { line_idx });
-            }
+        let pr_line_count = crate::ui::pr_info_panel::pr_info_render_height(self);
+        for line_idx in 0..pr_line_count {
+            self.line_annotations
+                .push(AnnotatedLine::PrInfoLine { line_idx });
         }
 
         // The review-comments header is omitted in single-file view and
@@ -170,10 +197,12 @@ impl App {
                     .push(AnnotatedLine::FileHeader { file_idx });
             }
 
-            // Reviewed files normally collapse to their header in continuous
-            // view. A summary jump can reveal its target file without clearing
-            // the persisted marker. Single-file view also shows reviewed file
-            // bodies, under a banner that needs a matching annotation row.
+            // Reviewed and generated files normally collapse to their header in
+            // continuous view, and `Space` can collapse or expand any file. A
+            // summary jump, `--line`, or a new comment reveals its target file
+            // without clearing the persisted marker. Single-file view also
+            // shows reviewed file bodies, under a banner that needs a matching
+            // annotation row.
             if self.should_collapse_file(file_idx) {
                 continue;
             }
@@ -197,6 +226,17 @@ impl App {
                         });
                     }
                 }
+            }
+
+            // Remote threads anchored on a line that has no row in any hunk
+            // (e.g. a Gerrit comment on an unchanged line far from a change)
+            // would otherwise never render. Show them under the file header.
+            for thread_idx in self.remote_threads_outside_hunks(file) {
+                Self::push_remote_thread_annotations(
+                    &mut self.line_annotations,
+                    thread_idx,
+                    &self.forge_review_threads[thread_idx],
+                );
             }
 
             if file.is_binary || file.hunks.is_empty() {
@@ -467,6 +507,45 @@ impl App {
         RemoteThreadIndex { by_file }
     }
 
+    /// Indices into `forge_review_threads` of the visible line-anchored threads
+    /// on `file` whose anchor has no row in any hunk under the current view
+    /// mode. Forges such as Gerrit accept comments on any line of the file, so
+    /// a thread can land on an unchanged line outside every hunk; with no row
+    /// to attach to it would never render. These threads render under the
+    /// file header instead (their box is labelled with the line), mirroring
+    /// how review-level threads render away from any diff row.
+    ///
+    /// The anchor rules must match the per-row lookups in
+    /// `build_unified_diff_annotations` / `build_side_by_side_annotations` and
+    /// both renderers, so a thread renders exactly once: both views anchor
+    /// old-side threads on every row with an old line number.
+    pub(crate) fn remote_threads_outside_hunks(&self, file: &DiffFile) -> Vec<usize> {
+        use crate::forge::remote_comments::{PrCommentsVisibility, RemoteCommentSide};
+        let visibility = self.session.remote_comments_visibility;
+        if matches!(visibility, PrCommentsVisibility::Hide) || self.forge_review_threads.is_empty()
+        {
+            return Vec::new();
+        }
+        let path = file.display_path().to_string_lossy();
+        let has_row = |line: u32, side: RemoteCommentSide| {
+            file.hunks
+                .iter()
+                .flat_map(|hunk| hunk.lines.iter())
+                .any(|diff_line| match side {
+                    RemoteCommentSide::Right => diff_line.new_lineno == Some(line),
+                    RemoteCommentSide::Left => diff_line.old_lineno == Some(line),
+                })
+        };
+        self.forge_review_threads
+            .iter()
+            .enumerate()
+            .filter(|(_, thread)| thread.path == *path)
+            .filter(|(_, thread)| visibility.render_decision(thread).is_some())
+            .filter(|(_, thread)| thread.line.is_some_and(|line| !has_row(line, thread.side)))
+            .map(|(thread_idx, _)| thread_idx)
+            .collect()
+    }
+
     /// Push one annotation for every rendered row in a remote thread, retaining
     /// the comment that owns each header, body, separator, and footer row.
     fn push_remote_thread_annotations(
@@ -599,24 +678,29 @@ impl App {
                         new_lineno: diff_line.new_lineno,
                     });
 
-                    Self::push_comments(
-                        annotations,
-                        file_idx,
-                        diff_line.new_lineno,
-                        line_comments,
-                        LineSide::New,
-                        viewport_width,
-                        commit_set,
-                    );
-                    if let Some(new_ln) = diff_line.new_lineno {
-                        Self::push_remote_threads(
+                    for (line_no, side) in [
+                        (diff_line.old_lineno, LineSide::Old),
+                        (diff_line.new_lineno, LineSide::New),
+                    ] {
+                        Self::push_comments(
                             annotations,
-                            remote_threads,
-                            remote_index,
-                            path,
-                            new_ln,
-                            LineSide::New,
+                            file_idx,
+                            line_no,
+                            line_comments,
+                            side,
+                            viewport_width,
+                            commit_set,
                         );
+                        if let Some(ln) = line_no {
+                            Self::push_remote_threads(
+                                annotations,
+                                remote_threads,
+                                remote_index,
+                                path,
+                                ln,
+                                side,
+                            );
+                        }
                     }
 
                     i += 1

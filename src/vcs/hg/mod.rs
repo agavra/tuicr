@@ -19,22 +19,17 @@ use crate::vcs::traits::{
 use crate::vcs::whitespace::{WhitespaceComparison, materialize_diff};
 use crate::vcs::{
     BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files, slice_context_lines,
+    split_commit_message,
 };
 
-/// Parse an hg description into (summary, optional body).
-fn parse_hg_description(desc: &str) -> (String, Option<String>) {
-    let mut lines = desc.lines();
-    let summary = lines.next().unwrap_or("(no message)").to_string();
-    let body_text: String = lines
-        .skip_while(|l| l.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let body = if body_text.trim().is_empty() {
-        None
-    } else {
-        Some(body_text)
-    };
-    (summary, body)
+/// Split an hg description into (summary, optional body). Only a description
+/// with no first line at all gets the placeholder.
+fn summary_and_body(desc: &str) -> (String, Option<String>) {
+    if desc.is_empty() {
+        return ("(no message)".to_string(), None);
+    }
+    let (subject, body) = split_commit_message(desc);
+    (subject.to_string(), body)
 }
 
 /// Mercurial backend implementation using hg CLI commands
@@ -50,6 +45,23 @@ impl HgBackend {
         // This handles being called from subdirectories
         let root_output = Command::new("hg")
             .args(["root"])
+            .output()
+            .map_err(|e| TuicrError::VcsCommand(format!("Failed to run hg: {}", e)))?;
+
+        if !root_output.status.success() {
+            return Err(TuicrError::NotARepository);
+        }
+
+        let root_path = PathBuf::from(String::from_utf8_lossy(&root_output.stdout).trim());
+
+        Self::from_path(root_path, whitespace_mode)
+    }
+
+    /// Discover a Mercurial repository from `path` rather than the current directory.
+    pub(crate) fn discover_from(path: &Path, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
+        let root_output = Command::new("hg")
+            .args(["root"])
+            .current_dir(path)
             .output()
             .map_err(|e| TuicrError::VcsCommand(format!("Failed to run hg: {}", e)))?;
 
@@ -115,7 +127,7 @@ impl HgBackend {
         &self,
         diff_args: &[&str],
         comparison: WhitespaceComparison,
-        highlighter: &SyntaxHighlighter,
+        _highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         let args = Self::diff_args(comparison, diff_args);
         let mut patch_args: Vec<&str> = args.iter().copied().collect();
@@ -157,7 +169,7 @@ impl HgBackend {
             patches
         };
 
-        diff_parser::parse_file_patches(patches, highlighter)
+        diff_parser::parse_file_patches(patches)
     }
 }
 
@@ -226,7 +238,7 @@ fn parse_hg_diff_metadata(output: &[u8]) -> Result<Vec<FileMetadata>> {
         .filter_map(|entry| entry.copy_source.clone())
         .collect();
 
-    entries
+    let mut metadata = entries
         .into_iter()
         .filter_map(|entry| {
             let metadata = match entry.status {
@@ -261,7 +273,21 @@ fn parse_hg_diff_metadata(output: &[u8]) -> Result<Vec<FileMetadata>> {
             };
             metadata.map(Ok)
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+
+    // `hg status` groups by status class, while `hg diff --git` orders patches
+    // by raw path bytes (destination path, or source path for deletions).
+    // Pairing is positional, so match that order; `Path::cmp` compares by
+    // component and would disagree (`a/x` < `a-b/x`).
+    metadata.sort_by(|left, right| hg_sort_key(left).cmp(&hg_sort_key(right)));
+    Ok(metadata)
+}
+
+fn hg_sort_key(file: &FileMetadata) -> Option<&[u8]> {
+    file.new_path
+        .as_deref()
+        .or(file.old_path.as_deref())
+        .map(|path| path.as_os_str().as_encoded_bytes())
 }
 
 impl VcsBackend for HgBackend {
@@ -325,13 +351,34 @@ impl VcsBackend for HgBackend {
 
     fn resolve_revision_range(&self, revisions: &str) -> Result<ResolvedRevisionRange<'static>> {
         // Use hg log to resolve the revset to commit hashes.
-        // hg log outputs newest first; we reverse so oldest is first.
-        let output = run_hg_command(
-            &self.info.root_path,
-            ["log", "-r", revisions, "--template", "{node}\\n"],
-        )?;
+        //
+        // `hg log -r <revset>` preserves the order of the revset itself, so an
+        // ascending range like `a:b` prints oldest-first while a descending one
+        // prints newest-first (and a plain `hg log` walk is newest-first too).
+        // Downstream code needs an unambiguous oldest-first list, so wrap the
+        // user's revset in `sort(..., rev)` and let Mercurial order the output
+        // by revision number instead of guessing from the revset direction.
+        let sorted_revset = format!("sort({revisions}, rev)");
+        let revset_to_nodes = |revset: &str| {
+            run_hg_command(
+                &self.info.root_path,
+                ["log", "-r", revset, "--template", "{node}\\n"],
+            )
+        };
 
-        let mut commit_ids: Vec<String> = output
+        let output = match revset_to_nodes(&sorted_revset) {
+            Ok(output) => output,
+            // hg points parse errors at the exact string it received, so re-run
+            // with the user's own revset to report against what they typed.
+            Err(wrapped_error) => match revset_to_nodes(revisions) {
+                Err(raw_error) => return Err(raw_error),
+                // the wrapped revset failed, but the raw one succeeded; the
+                // wrapper itself is the problem, so report the wrapped error.
+                Ok(_) => return Err(wrapped_error),
+            },
+        };
+
+        let commit_ids: Vec<String> = output
             .lines()
             .map(|l| l.trim())
             .filter(|l| !l.is_empty())
@@ -342,8 +389,6 @@ impl VcsBackend for HgBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        // hg log outputs newest first; reverse so oldest is first
-        commit_ids.reverse();
         Ok(ResolvedRevisionRange::from_owned_commit_ids(
             commit_ids,
             RevisionDiffTarget::CommitList,
@@ -384,7 +429,7 @@ impl VcsBackend for HgBackend {
 
             let id = parts[0].to_string();
             let short_id = parts[1].to_string();
-            let (summary, body) = parse_hg_description(parts[2]);
+            let (summary, body) = summary_and_body(parts[2]);
             let author = parts[3].to_string();
 
             // hgdate format is "unix_timestamp timezone_offset"
@@ -506,7 +551,7 @@ impl VcsBackend for HgBackend {
             }
             let id = parts[0].to_string();
             let short_id = parts[1].to_string();
-            let (summary, body) = parse_hg_description(parts[2]);
+            let (summary, body) = summary_and_body(parts[2]);
             let author = parts[3].to_string();
             let time = parts[4]
                 .split_whitespace()
@@ -744,6 +789,17 @@ mod tests {
     use crate::vcs::RevisionDiffTarget;
     use std::fs;
 
+    #[test]
+    fn should_use_the_placeholder_only_when_there_is_no_first_line() {
+        // given / when / then
+        assert_eq!(summary_and_body(""), ("(no message)".to_string(), None));
+        assert_eq!(summary_and_body("  \n"), ("  ".to_string(), None));
+        assert_eq!(
+            summary_and_body("\nBody"),
+            (String::new(), Some("Body".to_string()))
+        );
+    }
+
     /// Check if hg command is available
     fn hg_available() -> bool {
         Command::new("hg")
@@ -854,6 +910,67 @@ mod tests {
             "hello.txt"
         );
         assert_eq!(files[0].status, FileStatus::Modified);
+    }
+
+    #[test]
+    fn test_hg_metadata_is_ordered_like_hg_diff() {
+        let output = b"M z.txt\0A a.txt\0R m.txt\0M a/f.txt\0M a-b/f.txt\0";
+        let paths: Vec<_> = parse_hg_diff_metadata(output)
+            .unwrap()
+            .into_iter()
+            .map(|file| file.new_path.or(file.old_path).unwrap())
+            .collect();
+        let expected: Vec<PathBuf> = ["a-b/f.txt", "a.txt", "a/f.txt", "m.txt", "z.txt"]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(paths, expected);
+    }
+
+    #[test]
+    fn test_hg_pairs_hunks_with_their_own_file_across_status_classes() {
+        let Some(temp) = setup_test_repo() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+        let root = temp.path();
+        let hg = |args: &[&str]| {
+            Command::new("hg")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap();
+        };
+        fs::write(root.join("z.txt"), "z_old\n").unwrap();
+        fs::write(root.join("m.txt"), "m_old\n").unwrap();
+        hg(&["add", "z.txt", "m.txt"]);
+        hg(&["commit", "-m", "more files"]);
+        fs::write(root.join("z.txt"), "z_new\n").unwrap();
+        fs::write(root.join("a.txt"), "a_added\n").unwrap();
+        hg(&["add", "a.txt"]);
+        hg(&["rm", "-f", "m.txt"]);
+
+        let backend = HgBackend::from_path(root.to_path_buf(), DiffWhitespaceMode::Normal).unwrap();
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .unwrap();
+
+        let body = |name: &str| -> (FileStatus, String) {
+            let file = files
+                .iter()
+                .find(|f| f.display_path().to_str() == Some(name))
+                .unwrap();
+            let text = file
+                .hunks
+                .iter()
+                .flat_map(|h| h.lines.iter().map(|l| l.content.as_str()))
+                .collect::<Vec<_>>()
+                .join("|");
+            (file.status, text)
+        };
+        assert_eq!(body("a.txt"), (FileStatus::Added, "a_added".into()));
+        assert_eq!(body("m.txt"), (FileStatus::Deleted, "m_old".into()));
+        assert_eq!(body("z.txt"), (FileStatus::Modified, "z_old|z_new".into()));
     }
 
     #[test]
@@ -1171,6 +1288,77 @@ mod tests {
             assert!(!commit.short_id.is_empty());
             assert!(commit.short_id.len() <= commit.id.len());
         }
+    }
+
+    #[test]
+    fn test_hg_resolve_revision_range_order() {
+        let Some(temp) = setup_test_repo_with_commits() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+
+        let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create hg backend");
+
+        let commits = backend
+            .get_recent_commits(0, 5)
+            .expect("Failed to get commits");
+        assert_eq!(commits.len(), 3);
+        // commits[0] is newest ("Third"), commits[2] is oldest ("First")
+        let first = &commits[2].id;
+        let second = &commits[1].id;
+        let third = &commits[0].id;
+
+        // Whatever order the user writes the revset in, the resolved range
+        // must be oldest-first.
+        for revset in [
+            // Ascending ranges print oldest-first already...
+            format!("{first}:{third}"),
+            format!("{first}+{second}+{third}"),
+            // ...descending ranges print newest-first...
+            format!("{third}:{first}"),
+            format!("{third}+{second}+{first}"),
+        ] {
+            let range = backend
+                .resolve_revision_range(&revset)
+                .unwrap_or_else(|e| panic!("failed to resolve revset {revset}: {e:?}"));
+            assert_eq!(
+                range.commit_ids,
+                vec![first.clone(), second.clone(), third.clone()],
+                "revset {revset} resolved in the wrong order",
+            );
+        }
+
+        // A single commit resolves to itself.
+        let single = backend
+            .resolve_revision_range(second)
+            .expect("failed to resolve single revision");
+        assert_eq!(single.commit_ids, vec![second.clone()]);
+    }
+
+    #[test]
+    fn test_hg_resolve_revision_range_error_quotes_raw_revset() {
+        let Some(temp) = setup_test_repo_with_commits() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+
+        let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create hg backend");
+
+        let error = backend
+            .resolve_revision_range("foo(")
+            .expect_err("malformed revset should fail")
+            .to_string();
+
+        assert!(
+            error.contains("hg log -r foo("),
+            "error should quote the user's revset: {error}"
+        );
+        assert!(
+            !error.contains("sort("),
+            "error should not quote the wrapper: {error}"
+        );
     }
 
     #[test]

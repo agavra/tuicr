@@ -32,7 +32,9 @@ pub struct CliArgs {
     pub start_line: Option<u32>,
     /// Direct PR target from `tuicr pr <target>`.
     pub pr_target: Option<String>,
-    /// Override the GitHub repo used for PR operations.
+    /// `tuicr pr` without a target: review the PR for the current branch.
+    pub pr_current_branch: bool,
+    /// Override the forge repo used for PR operations.
     pub repo_url: Option<String>,
     /// Use a named VCS remote for PR operations.
     pub remote: Option<String>,
@@ -48,7 +50,7 @@ pub struct CliArgs {
 #[command(
     name = "tuicr",
     version,
-    about = "A code review TUI with vim keybindings. Export to GitHub or clipboard.",
+    about = "A code review TUI with vim keybindings. Submit to GitHub, GitLab, Heptapod, Gitea, Bitbucket, Azure DevOps, or Gerrit, or export to the clipboard.",
     after_help = "Press ? in the application for keybinding help.",
     disable_help_subcommand = true
 )]
@@ -132,8 +134,9 @@ struct TuiOptions {
     #[arg(long = "no-update-check", action = ArgAction::SetTrue)]
     no_update_check: bool,
 
-    /// Override the forge repo for PR operations. Accepts GitHub, GitLab, or
-    /// Azure DevOps URLs (HTTPS, SCP-style SSH, or ssh:// forms).
+    /// Override the forge repo for PR operations. Accepts GitHub, GitLab,
+    /// Heptapod, Gitea, Bitbucket, Azure DevOps, or Gerrit URLs (HTTPS,
+    /// SCP-style SSH, or ssh:// forms).
     #[arg(
         long = "repo-url",
         value_name = "URL",
@@ -155,7 +158,7 @@ struct TuiOptions {
 enum Subcmd {
     /// Open the interactive TUI.
     Tui(TuiCommand),
-    /// Review a GitHub pull request or GitLab merge request.
+    /// Review a pull request, merge request, or Gerrit change.
     #[command(visible_alias = "mr")]
     Pr(PrCommand),
     /// Inspect or update persisted review sessions.
@@ -184,15 +187,16 @@ struct TuiCommand {
 
 #[derive(Subcommand, Debug, Clone)]
 enum TuiSubcmd {
-    /// Review a GitHub pull request or GitLab merge request in the TUI.
+    /// Review a pull request, merge request, or Gerrit change in the TUI.
     #[command(visible_alias = "mr")]
     Pr(PrCommand),
 }
 
 #[derive(Args, Debug, Clone, Default)]
 struct PrCommand {
-    /// PR target: <number>, <owner/repo#N>, or a PR URL.
-    target: String,
+    /// PR target: <number>, <owner/repo#N>, or a PR URL. Defaults to the PR
+    /// for the current branch.
+    target: Option<String>,
 
     #[command(flatten)]
     options: TuiOptions,
@@ -338,8 +342,7 @@ pub enum LineSideArg {
 
 impl From<Cli> for CliArgs {
     fn from(cli: Cli) -> Self {
-        let (options, pr_target, review_command, update_version, update_command) = match cli.command
-        {
+        let (options, pr, review_command, update_version, update_command) = match cli.command {
             Some(Subcmd::Tui(command)) => match command.command {
                 Some(TuiSubcmd::Pr(pr)) => (
                     cli.tui_options.merge(command.options).merge(pr.options),
@@ -380,7 +383,8 @@ impl From<Cli> for CliArgs {
             file_path: options.file_path,
             all_files: options.all_files,
             start_line: options.start_line,
-            pr_target,
+            pr_current_branch: matches!(pr, Some(None)),
+            pr_target: pr.flatten(),
             repo_url: options.repo_url,
             remote: options.remote,
             review_command,
@@ -438,10 +442,39 @@ impl Cli {
             )),
             _ => {
                 let args: CliArgs = self.into();
-                if args.start_line.is_some() && args.pr_target.is_some() {
+                let pr_mode = args.pr_target.is_some() || args.pr_current_branch;
+                if args.start_line.is_some() && pr_mode {
                     return Err(clap::Error::raw(
                         clap::error::ErrorKind::ArgumentConflict,
                         "--line cannot be used with `tuicr pr`\n",
+                    ));
+                }
+                if pr_mode {
+                    for (flag, given) in [
+                        ("--revisions", args.revisions.is_some()),
+                        ("--working-tree", args.working_tree),
+                        ("--path", args.path_filter.is_some()),
+                        ("--file", args.file_path.is_some()),
+                        ("--all-files", args.all_files),
+                    ] {
+                        if given {
+                            return Err(clap::Error::raw(
+                                clap::error::ErrorKind::ArgumentConflict,
+                                format!("{flag} cannot be used with `tuicr pr`\n"),
+                            ));
+                        }
+                    }
+                }
+                // clap only checks conflicts within one command level, and
+                // the root, `tui` and `pr` levels are merged afterwards.
+                let any_diff_scope =
+                    args.revisions.is_some() || args.working_tree || args.path_filter.is_some();
+                if (args.file_path.is_some() || args.all_files) && any_diff_scope
+                    || args.file_path.is_some() && args.all_files
+                {
+                    return Err(clap::Error::raw(
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "--file, --all-files and the diff scope flags (--revisions, --working-tree, --path) cannot be combined\n",
                     ));
                 }
                 if args.start_line.is_some()
@@ -490,15 +523,16 @@ fn non_empty_theme_name(s: &str) -> Result<String, String> {
 }
 
 /// Reject `--repo-url` values that don't parse as a supported forge remote URL
-/// (GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit) so the failure is
-/// surfaced at startup rather than when the PR tab is opened.
+/// (GitHub, GitLab, Heptapod, Gitea, Bitbucket, Azure DevOps, or Gerrit) so the
+/// failure is surfaced at startup rather than when the PR tab is opened.
 fn parse_repo_url(s: &str) -> Result<String, String> {
     if crate::forge::parse_any_remote_url(s).is_some() {
         Ok(s.to_string())
     } else {
         Err(format!(
-            "--repo-url value '{s}' is not a recognized GitHub, GitLab, Gitea, Bitbucket, \
-             Azure DevOps, or Gerrit URL. Expected forms like: https://github.com/owner/repo, \
+            "--repo-url value '{s}' is not a recognized GitHub, GitLab, Heptapod, Gitea, \
+             Bitbucket, Azure DevOps, or Gerrit URL. Expected forms like: \
+             https://github.com/owner/repo, \
              git@gitlab.com:owner/repo, https://gitea.com/owner/repo, \
              https://bitbucket.org/workspace/repo, \
              https://dev.azure.com/org/project/_git/repo, or \
@@ -547,6 +581,45 @@ mod tests {
 
     fn parse_for_test(args: &[&str]) -> Result<CliArgs, clap::Error> {
         Cli::try_parse_from(args).and_then(Cli::try_into_args)
+    }
+
+    #[test]
+    fn help_text_names_every_supported_forge() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let root_about = cmd.get_about().expect("root about").to_string();
+        let pr = cmd.find_subcommand("pr").expect("pr subcommand");
+        let pr_about = pr.get_about().expect("pr about").to_string();
+        let repo_url_help = pr
+            .get_arguments()
+            .find(|arg| arg.get_long() == Some("repo-url"))
+            .and_then(|arg| arg.get_help())
+            .expect("pr --repo-url help")
+            .to_string();
+        for forge in [
+            "GitHub",
+            "GitLab",
+            "Heptapod",
+            "Gitea",
+            "Bitbucket",
+            "Azure DevOps",
+            "Gerrit",
+        ] {
+            assert!(
+                root_about.contains(forge),
+                "root about omits {forge}: {root_about}"
+            );
+            assert!(
+                repo_url_help.contains(forge),
+                "pr --repo-url help omits {forge}: {repo_url_help}"
+            );
+        }
+        // The pr summary names review kinds rather than forges; it must not
+        // regress to a GitHub/GitLab-only description.
+        assert!(
+            !pr_about.contains("GitHub") && pr_about.contains("Gerrit"),
+            "pr about is forge-specific: {pr_about}"
+        );
     }
 
     #[test]
@@ -601,6 +674,40 @@ mod tests {
                     .contains("--line cannot be used with `tuicr pr`")
             );
         }
+    }
+
+    #[test]
+    fn should_reject_conflicting_flags_split_across_levels() {
+        for args in [
+            &["tuicr", "-A", "tui", "--file", "f.md"][..],
+            &["tuicr", "--file", "f.md", "tui", "--path", "src/"][..],
+            &["tuicr", "-r", "HEAD", "tui", "-A"][..],
+            &["tuicr", "-w", "tui", "--file", "f.md"][..],
+        ] {
+            let err = parse_for_test(args).expect_err("parse should fail");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn should_reject_local_only_flags_with_pr_subcommand() {
+        for args in [
+            &["tuicr", "pr", "125", "--file", "f.md"][..],
+            &["tuicr", "pr", "125", "-A"][..],
+            &["tuicr", "pr", "125", "-p", "src/"][..],
+            &["tuicr", "pr", "125", "-r", "HEAD~2..HEAD", "-w"][..],
+            &["tuicr", "-w", "pr", "125"][..],
+        ] {
+            let err = parse_for_test(args).expect_err("parse should fail");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn should_allow_revisions_with_working_tree() {
+        let parsed =
+            parse_for_test(&["tuicr", "-r", "HEAD~2..HEAD", "tui", "-w"]).expect("should parse");
+        assert!(parsed.working_tree);
     }
 
     #[test]
@@ -928,9 +1035,37 @@ mod tests {
     }
 
     #[test]
-    fn should_error_when_pr_target_is_missing() {
-        let err = parse_for_test(&["tuicr", "pr"]).expect_err("parse should fail");
-        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    fn should_use_current_branch_when_pr_target_is_missing() {
+        for argv in [
+            &["tuicr", "pr"][..],
+            &["tuicr", "mr"],
+            &["tuicr", "tui", "pr"],
+            &["tuicr", "pr", "--theme", "dark"],
+        ] {
+            let parsed = parse_for_test(argv).expect("parse should succeed");
+            assert_eq!(parsed.pr_target, None, "{argv:?}");
+            assert!(parsed.pr_current_branch, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn should_not_use_current_branch_when_pr_target_is_given() {
+        let parsed = parse_for_test(&["tuicr", "pr", "125"]).expect("parse should succeed");
+        assert!(!parsed.pr_current_branch);
+        let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
+        assert!(!parsed.pr_current_branch);
+    }
+
+    #[test]
+    fn should_reject_local_review_flags_with_current_branch_pr() {
+        for flag in [&["-w"][..], &["-r", "HEAD~1"], &["--file", "a.rs"], &["-A"]] {
+            let mut argv = vec!["tuicr", "pr"];
+            argv.extend_from_slice(flag);
+            let err = parse_for_test(&argv).expect_err("parse should fail");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{argv:?}");
+        }
+        let err = parse_for_test(&["tuicr", "pr", "--line", "3"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -1028,7 +1163,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
         assert!(
             err.to_string()
-                .contains("not a recognized GitHub, GitLab, Gitea, Bitbucket, Azure"),
+                .contains("not a recognized GitHub, GitLab, Heptapod, Gitea, Bitbucket, Azure"),
             "unexpected error: {err}"
         );
     }

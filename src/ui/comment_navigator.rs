@@ -18,9 +18,7 @@ pub(super) fn render_comment_navigator(
     items: &[CommentNavigatorItem],
 ) {
     let focused = app.focused_panel == FocusedPanel::Comments;
-    let title = format!(" Comments · {} ", items.len());
     let block = Block::default()
-        .title(title)
         .borders(Borders::ALL)
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
@@ -30,6 +28,11 @@ pub(super) fn render_comment_navigator(
     app.comment_navigator_state.viewport_width = inner.width as usize;
     app.comment_navigator_state.viewport_height = inner.height as usize;
     app.sync_comment_navigator_selection(items);
+    // The title is built after the sync so it names the row drawn as selected.
+    let block = block.title(navigator_title(
+        app.comment_navigator_state.list_state.selected(),
+        items.len(),
+    ));
 
     let row_lines: Vec<Line> = items
         .iter()
@@ -55,6 +58,16 @@ pub(super) fn render_comment_navigator(
         .block(block);
 
     frame.render_stateful_widget(list, area, &mut app.comment_navigator_state.list_state);
+}
+
+/// `Comments · 17/38`: the selected row's 1-based position, then the total.
+/// The pane has no scrollbar, so this is the only cue for how far through
+/// the list the selection is.
+fn navigator_title(selected: Option<usize>, total: usize) -> String {
+    match selected {
+        Some(idx) if idx < total => format!(" Comments · {}/{} ", idx + 1, total),
+        _ => format!(" Comments · {total} "),
+    }
 }
 
 fn render_comment_row(app: &App, item: &CommentNavigatorItem) -> Line<'static> {
@@ -114,4 +127,139 @@ fn comment_location(item: &CommentNavigatorItem) -> String {
         location.push_str(&line.to_string());
     }
     location
+}
+
+#[cfg(test)]
+mod tests {
+    use super::navigator_title;
+    use crate::app::{App, DiffSource, FocusedPanel, InputMode};
+    use crate::model::{
+        Comment, CommentType, DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource,
+    };
+    use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::path::PathBuf;
+
+    struct StubVcs(VcsInfo);
+    impl VcsBackend for StubVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.0
+        }
+        fn get_working_tree_diff(
+            &self,
+            _hl: &crate::syntax::SyntaxHighlighter,
+        ) -> crate::error::Result<Vec<DiffFile>> {
+            Ok(Vec::new())
+        }
+        fn fetch_context_lines(
+            &self,
+            _path: &std::path::Path,
+            _status: FileStatus,
+            _ref_commit: Option<&str>,
+            _start: u32,
+            _end: u32,
+        ) -> crate::error::Result<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+        fn file_line_count(
+            &self,
+            _path: &std::path::Path,
+            _status: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> crate::error::Result<u32> {
+            Ok(0)
+        }
+    }
+
+    /// An app over `paths` with one file-level comment on each, so the
+    /// navigator lists one row per file.
+    fn app_with_file_comments(paths: &[&str]) -> App {
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "head".into(),
+            branch_name: Some("main".into()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+        let files = paths
+            .iter()
+            .map(|path| DiffFile {
+                old_path: None,
+                new_path: Some(PathBuf::from(path)),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                is_binary: false,
+                is_too_large: false,
+                is_commit_message: false,
+                content_hash: 0,
+            })
+            .collect();
+        let mut app = App::build(
+            Box::new(StubVcs(vcs_info.clone())),
+            vcs_info,
+            crate::theme::Theme::dark(),
+            None,
+            false,
+            files,
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("build app");
+        for path in paths {
+            app.session
+                .files
+                .get_mut(&PathBuf::from(path))
+                .expect("file registered in the session")
+                .file_comments
+                .push(Comment::new(
+                    format!("note on {path}"),
+                    CommentType::from_id("note"),
+                    None,
+                ));
+        }
+        app.rebuild_annotations();
+        app
+    }
+
+    #[test]
+    fn should_title_the_navigator_with_the_selected_comment_position() {
+        let mut app = app_with_file_comments(&["a.rs", "b.rs", "c.rs"]);
+        app.focused_panel = FocusedPanel::Comments;
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut screen = |app: &mut App| {
+            terminal
+                .draw(|frame| crate::ui::render(frame, app))
+                .unwrap();
+            terminal.backend().to_string()
+        };
+
+        assert!(screen(&mut app).contains("Comments · 1/3"));
+        app.comment_navigator_down(1);
+        assert!(screen(&mut app).contains("Comments · 2/3"));
+        app.comment_navigator_down(5);
+        assert!(screen(&mut app).contains("Comments · 3/3"));
+    }
+
+    #[test]
+    fn should_show_the_selected_position_before_the_total() {
+        assert_eq!(navigator_title(Some(0), 38), " Comments · 1/38 ");
+        assert_eq!(navigator_title(Some(16), 38), " Comments · 17/38 ");
+        assert_eq!(navigator_title(Some(37), 38), " Comments · 38/38 ");
+    }
+
+    #[test]
+    fn should_show_only_the_total_without_a_valid_selection() {
+        assert_eq!(navigator_title(None, 38), " Comments · 38 ");
+        assert_eq!(navigator_title(Some(38), 38), " Comments · 38 ");
+    }
 }

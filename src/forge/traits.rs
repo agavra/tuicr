@@ -42,6 +42,29 @@ impl ForgeKind {
             ForgeKind::Heptapod => "Heptapod",
         }
     }
+
+    /// PR list scopes this forge can query, in the order `r` steps through
+    /// them in the selector's Pull Requests tab. `Open` always comes first.
+    pub fn pr_list_scopes(self) -> &'static [PullRequestListScope] {
+        match self {
+            // Only GitHub tells a personal review request apart from one
+            // made through a team the user belongs to.
+            ForgeKind::GitHub => &[
+                PullRequestListScope::Open,
+                PullRequestListScope::ReviewRequested,
+                PullRequestListScope::PersonallyRequested,
+            ],
+            ForgeKind::GitLab
+            | ForgeKind::Heptapod
+            | ForgeKind::Gitea
+            | ForgeKind::Bitbucket
+            | ForgeKind::AzureDevOps
+            | ForgeKind::Gerrit => &[
+                PullRequestListScope::Open,
+                PullRequestListScope::ReviewRequested,
+            ],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,21 +255,31 @@ impl PullRequestTarget {
 pub enum PullRequestListScope {
     #[default]
     Open,
+    /// PRs requesting the user's review, directly or through a team.
     ReviewRequested,
+    /// PRs requesting the user's review by name, excluding team requests.
+    /// Only offered where `ForgeKind::pr_list_scopes` lists it.
+    PersonallyRequested,
 }
 
 impl PullRequestListScope {
-    pub fn toggled(self) -> Self {
-        match self {
-            Self::Open => Self::ReviewRequested,
-            Self::ReviewRequested => Self::Open,
-        }
+    /// The scope after this one in `forge`'s cycle, wrapping back to `Open`.
+    /// A scope the forge does not list also falls back to `Open`.
+    pub fn next_for(self, forge: ForgeKind) -> Self {
+        let scopes = forge.pr_list_scopes();
+        scopes
+            .iter()
+            .position(|scope| *scope == self)
+            .and_then(|idx| scopes.get(idx + 1))
+            .copied()
+            .unwrap_or(Self::Open)
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Open => "all",
             Self::ReviewRequested => "requested",
+            Self::PersonallyRequested => "requested (me)",
         }
     }
 }
@@ -257,6 +290,10 @@ pub struct PullRequestListQuery {
     pub already_loaded: usize,
     pub page_size: usize,
     pub scope: PullRequestListScope,
+    /// GitHub `gh pr list --search` value for the
+    /// [`PullRequestListScope::ReviewRequested`] scope. Other forges leave it
+    /// unread. `None` or a blank string keeps `review-requested:@me`.
+    pub search: Option<String>,
 }
 
 impl PullRequestListQuery {
@@ -274,6 +311,7 @@ impl PullRequestListQuery {
             already_loaded: 0,
             page_size,
             scope,
+            search: None,
         }
     }
 }
@@ -287,6 +325,11 @@ pub struct PullRequestSummary {
     pub head_ref_name: String,
     pub base_ref_name: String,
     pub updated_at: Option<DateTime<Utc>>,
+    /// Committer date of the newest commit. Unlike `updated_at`, it moves
+    /// only when the code does (a rebase counts). Only GitHub fills it; the
+    /// row omits it when `None`.
+    #[serde(default)]
+    pub last_commit_at: Option<DateTime<Utc>>,
     pub url: String,
     pub state: String,
     pub is_draft: bool,
@@ -414,7 +457,8 @@ pub struct ForgeFileLinesRequest {
     pub path: PathBuf,
     /// File status, used to choose the appropriate side without forcing the
     /// caller to also compute it. Renames use `Renamed`; `path` should already
-    /// reflect the chosen side.
+    /// reflect the chosen side. Kept public for library callers; not read
+    /// internally.
     pub status: FileStatus,
     /// Which side to read from. The caller is responsible for picking the
     /// right side per the spec mapping rules.
@@ -425,6 +469,31 @@ pub struct ForgeFileLinesRequest {
 }
 
 impl ForgeFileLinesRequest {
+    /// Build a request for `status`'s side of a file, or `None` when the diff
+    /// carries no path for that side.
+    pub fn for_file(
+        repository: ForgeRepository,
+        base_sha: String,
+        head_sha: String,
+        status: FileStatus,
+        old_path: Option<&PathBuf>,
+        new_path: Option<&PathBuf>,
+        line_range: (u32, u32),
+    ) -> Option<Self> {
+        let side = Self::side_for_status(status);
+        let path = Self::path_for_side(side, old_path, new_path)?;
+        Some(Self {
+            repository,
+            base_sha,
+            head_sha,
+            path,
+            status,
+            side,
+            start_line: line_range.0,
+            end_line: line_range.1,
+        })
+    }
+
     /// Resolve the side and path for a given file based on its status.
     /// Helper for callers that have a `DiffFile` and want to fetch context.
     pub fn side_for_status(status: FileStatus) -> ForgeFileSide {
@@ -475,6 +544,31 @@ pub struct GhCreateReviewResponse {
     pub state: String,
 }
 
+/// What a multi-request submit had already posted when it failed. Forges
+/// without a single review object (GitLab, Bitbucket, Azure) post the summary
+/// and each inline comment separately, so a later failure leaves some of them
+/// live on the forge.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubmitReceipts {
+    /// The review body (summary + review-level comments) was posted.
+    pub body_posted: bool,
+    /// `InlineComment::comment_id`s that were posted.
+    pub comment_ids: Vec<String>,
+}
+
+impl SubmitReceipts {
+    /// Attach these receipts to `err`; with nothing posted, `err` is unchanged.
+    pub fn into_error(self, err: TuicrError) -> TuicrError {
+        if !self.body_posted && self.comment_ids.is_empty() {
+            return err;
+        }
+        TuicrError::PartialSubmit {
+            message: err.to_string(),
+            receipts: self,
+        }
+    }
+}
+
 /// Request to create a review against a PR. The payload is the forge-agnostic
 /// shape of the JSON body the backend will POST; downstream the GitHub
 /// backend reshapes it via `build_review_payload` and writes it on stdin.
@@ -482,6 +576,10 @@ pub struct GhCreateReviewResponse {
 pub struct CreateReviewRequest<'a> {
     pub event: SubmitEvent,
     pub commit_id: &'a str,
+    /// Revision of the displayed diff's old side when the inline commit
+    /// selector shows a strict subset (the parent of its oldest commit).
+    /// `None` for the cumulative PR diff, whose old side is the merge base.
+    pub base_commit_id: Option<&'a str>,
     pub body: &'a str,
     pub comments: &'a [crate::forge::submit::InlineComment],
 }
@@ -496,6 +594,10 @@ pub struct PullRequestCommit {
     pub oid: String,
     pub short_oid: String,
     pub summary: String,
+    /// The commit message after its subject line. `None` when the commit
+    /// has a subject only, or the backend could not supply the rest.
+    #[serde(default)]
+    pub body: Option<String>,
     pub author: String,
     pub timestamp: Option<DateTime<Utc>>,
 }
@@ -516,7 +618,10 @@ pub struct PullRequestReviewRecord {
     pub commit_oid: Option<String>,
 }
 
-/// A reviewer's latest response on a pull request.
+/// A reviewer's effective response on a pull request: normally the latest
+/// response, but a later comment-only review does not replace an earlier
+/// decisive vote (approval or change request), and dismissed votes are ignored
+/// (Gitea). `submitted_at` is the time of the effective row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestReviewStatus {
     pub author: Option<String>,
@@ -574,8 +679,79 @@ impl PullRequestInfo {
     }
 }
 
+/// Open PRs read per request while looking for the one on the current branch.
+const BRANCH_SCAN_PAGE_SIZE: usize = 50;
+/// Upper bound on that scan (1,000 open PRs). Past it the lookup refuses
+/// instead of guessing, like every other bounded forge loop (FORGES.md G8a).
+const BRANCH_SCAN_MAX_PAGES: usize = 20;
+
+/// Pick the PR a branch lookup found: exactly one match wins, none or several
+/// are errors that tell the user to name the PR instead.
+pub(crate) fn single_branch_match(
+    repository: &ForgeRepository,
+    branch: &str,
+    mut numbers: Vec<u64>,
+) -> Result<u64> {
+    numbers.sort_unstable();
+    numbers.dedup();
+    match numbers.as_slice() {
+        [number] => Ok(*number),
+        [] => Err(TuicrError::Forge(format!(
+            "No open pull request found for branch `{branch}` in {}. \
+             Pass a target: tuicr pr <number>.",
+            repository.display_name()
+        ))),
+        many => Err(TuicrError::Forge(format!(
+            "Branch `{branch}` matches several open pull requests in {} ({}). \
+             Pass a target: tuicr pr <number>.",
+            repository.display_name(),
+            many.iter()
+                .map(|n| format!("#{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
 pub trait ForgeBackend {
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests>;
+    /// Number of the open pull request for `branch` (`tuicr pr` with no
+    /// target). The default scans the open list for a matching head branch and
+    /// stops at the first page that has a match, so a very large repository
+    /// costs one page per 50 PRs, bounded by [`BRANCH_SCAN_MAX_PAGES`].
+    /// Backends whose list does not carry branch names override it.
+    fn find_pull_request_for_branch(
+        &self,
+        repository: &ForgeRepository,
+        branch: &str,
+    ) -> Result<u64> {
+        let mut loaded = 0;
+        for _ in 0..BRANCH_SCAN_MAX_PAGES {
+            let page = self.list_pull_requests(PullRequestListQuery {
+                repository: repository.clone(),
+                already_loaded: loaded,
+                page_size: BRANCH_SCAN_PAGE_SIZE,
+                scope: PullRequestListScope::Open,
+                search: None,
+            })?;
+            let matches = page
+                .pull_requests
+                .iter()
+                .filter(|pr| pr.head_ref_name == branch)
+                .map(|pr| pr.number)
+                .collect::<Vec<_>>();
+            if !matches.is_empty() || !page.has_more {
+                return single_branch_match(repository, branch, matches);
+            }
+            loaded = page.total_loaded;
+        }
+        Err(TuicrError::ForgeLimit(format!(
+            "More than {} open pull requests in {}; cannot tell which one is on branch \
+             `{branch}`. Pass a target: tuicr pr <number>.",
+            BRANCH_SCAN_MAX_PAGES * BRANCH_SCAN_PAGE_SIZE,
+            repository.display_name()
+        )))
+    }
     fn get_pull_request(&self, target: PullRequestTarget) -> Result<PullRequestDetails>;
     /// Fetch PR metadata for the description panel. The default builds a
     /// minimal [`PullRequestInfo`] from [`Self::get_pull_request`].
@@ -586,8 +762,18 @@ pub trait ForgeBackend {
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>>;
     /// Fetch the requested file lines from the forge for context expansion.
     /// Implementations may optimize by reading from a local checkout when
-    /// available; the trait does not require that path.
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>>;
+    /// available; the trait does not require that path. The default slices
+    /// [`Self::fetch_file_content`]; an empty or inverted range reads nothing.
+    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
+        if request.start_line == 0 || request.start_line > request.end_line {
+            return Ok(Vec::new());
+        }
+        let (start_line, end_line) = (request.start_line, request.end_line);
+        let content = self.fetch_file_content(request)?;
+        Ok(crate::vcs::slice_context_lines(
+            &content, start_line, end_line,
+        ))
+    }
     /// Return the whole file at the revision described by `request`, exactly as
     /// stored: unlike [`Self::fetch_file_lines`], tabs are not expanded, so the
     /// result is safe to write back out as a file. `start_line` and `end_line`
@@ -603,6 +789,16 @@ pub trait ForgeBackend {
     /// ignored. Default returns `Ok(0)`; real forge backends override this.
     fn file_line_count(&self, _request: ForgeFileLinesRequest) -> Result<u32> {
         Ok(0)
+    }
+    /// [`Self::file_line_count`] for many files of one repository at once, in
+    /// request order, with `None` where a file could not be read. PR open needs
+    /// every changed file's count, so backends that can batch the reads should
+    /// override the default, which asks one file at a time.
+    fn file_line_counts(&self, requests: Vec<ForgeFileLinesRequest>) -> Vec<Option<u32>> {
+        requests
+            .into_iter()
+            .map(|request| self.file_line_count(request).ok())
+            .collect()
     }
     /// Fetch existing review discussions for a PR, including their resolved
     /// and outdated state. Implementations should return all threads in
@@ -672,10 +868,52 @@ pub trait ForgeBackend {
         pr: &PullRequestDetails,
         request: CreateReviewRequest<'_>,
     ) -> Result<GhCreateReviewResponse>;
+
+    /// Whether `delete_draft_comment` works on this forge. Only a forge that
+    /// stores an unpublished draft per comment, and lets its author remove one
+    /// without touching anyone else's view, says yes.
+    fn can_delete_draft_comments(&self) -> bool {
+        false
+    }
+
+    /// Delete one of the signed-in user's unpublished draft comments, named by
+    /// `RemoteReviewComment::id`. A published comment is never deleted: a
+    /// backend refuses an id that is not one of the caller's drafts.
+    fn delete_draft_comment(&self, _pr: &PullRequestDetails, _comment_id: &str) -> Result<()> {
+        Err(TuicrError::UnsupportedOperation(
+            "this forge cannot delete draft comments".to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn should_leave_error_unchanged_when_nothing_was_posted() {
+        let err = SubmitReceipts::default().into_error(TuicrError::Forge("x".to_string()));
+        assert!(matches!(err, TuicrError::Forge(_)), "{err:?}");
+    }
+
+    #[test]
+    fn should_wrap_error_when_only_the_body_was_posted() {
+        let receipts = SubmitReceipts {
+            body_posted: true,
+            comment_ids: Vec::new(),
+        };
+        let err = receipts.into_error(TuicrError::Forge("x".to_string()));
+        assert!(matches!(err, TuicrError::PartialSubmit { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn should_wrap_error_when_only_comments_were_posted() {
+        let receipts = SubmitReceipts {
+            body_posted: false,
+            comment_ids: vec!["c".to_string()],
+        };
+        let err = receipts.into_error(TuicrError::Forge("x".to_string()));
+        assert!(matches!(err, TuicrError::PartialSubmit { .. }), "{err:?}");
+    }
+
     use super::*;
 
     #[test]
@@ -739,5 +977,214 @@ mod tests {
             ForgeFileLinesRequest::side_for_status(FileStatus::Deleted),
             ForgeFileSide::Base,
         );
+    }
+
+    #[test]
+    fn should_cycle_github_scopes_through_personally_requested() {
+        // given
+        let forge = ForgeKind::GitHub;
+        // when
+        let first = PullRequestListScope::Open.next_for(forge);
+        let second = first.next_for(forge);
+        let third = second.next_for(forge);
+        // then
+        assert_eq!(first, PullRequestListScope::ReviewRequested);
+        assert_eq!(second, PullRequestListScope::PersonallyRequested);
+        assert_eq!(third, PullRequestListScope::Open);
+    }
+
+    #[test]
+    fn should_skip_personally_requested_on_forges_without_it() {
+        for forge in [
+            ForgeKind::GitLab,
+            ForgeKind::Gitea,
+            ForgeKind::Bitbucket,
+            ForgeKind::AzureDevOps,
+            ForgeKind::Gerrit,
+        ] {
+            // when
+            let first = PullRequestListScope::Open.next_for(forge);
+            let second = first.next_for(forge);
+            // then
+            assert_eq!(first, PullRequestListScope::ReviewRequested, "{forge:?}");
+            assert_eq!(second, PullRequestListScope::Open, "{forge:?}");
+            assert!(
+                !forge
+                    .pr_list_scopes()
+                    .contains(&PullRequestListScope::PersonallyRequested),
+                "{forge:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_fall_back_to_open_for_a_scope_the_forge_does_not_list() {
+        assert_eq!(
+            PullRequestListScope::PersonallyRequested.next_for(ForgeKind::GitLab),
+            PullRequestListScope::Open
+        );
+    }
+}
+
+#[cfg(test)]
+mod branch_lookup_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    fn repo() -> ForgeRepository {
+        ForgeRepository::github("github.com", "agavra", "tuicr")
+    }
+
+    fn summary(number: u64, head: &str) -> PullRequestSummary {
+        PullRequestSummary {
+            repository: repo(),
+            number,
+            title: String::new(),
+            author: None,
+            head_ref_name: head.to_string(),
+            base_ref_name: "main".to_string(),
+            updated_at: None,
+            last_commit_at: None,
+            url: String::new(),
+            state: "OPEN".to_string(),
+            is_draft: false,
+        }
+    }
+
+    /// Serves `rows` as open PRs and records each page query's offset.
+    struct ListingBackend {
+        rows: Vec<PullRequestSummary>,
+        offsets: Mutex<Vec<usize>>,
+    }
+
+    impl ListingBackend {
+        fn new(rows: Vec<PullRequestSummary>) -> Self {
+            Self {
+                rows,
+                offsets: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ForgeBackend for ListingBackend {
+        fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests> {
+            assert_eq!(query.scope, PullRequestListScope::Open);
+            self.offsets.lock().unwrap().push(query.already_loaded);
+            let pull_requests = self
+                .rows
+                .iter()
+                .skip(query.already_loaded)
+                .take(query.page_size)
+                .cloned()
+                .collect::<Vec<_>>();
+            Ok(PagedPullRequests {
+                has_more: self.rows.len() > query.already_loaded + pull_requests.len(),
+                total_loaded: query.already_loaded + pull_requests.len(),
+                pull_requests,
+            })
+        }
+        fn get_pull_request(&self, _: PullRequestTarget) -> Result<PullRequestDetails> {
+            unimplemented!()
+        }
+        fn get_pull_request_diff(&self, _: &PullRequestDetails) -> Result<Vec<FilePatch>> {
+            unimplemented!()
+        }
+        fn list_review_threads(&self, _: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>> {
+            unimplemented!()
+        }
+        fn list_pull_request_commits(
+            &self,
+            _: &PullRequestDetails,
+        ) -> Result<Vec<PullRequestCommit>> {
+            unimplemented!()
+        }
+        fn get_pull_request_commit_range_diff(
+            &self,
+            _: &PullRequestDetails,
+            _: &str,
+            _: &str,
+        ) -> Result<Vec<FilePatch>> {
+            unimplemented!()
+        }
+        fn create_review(
+            &self,
+            _: &PullRequestDetails,
+            _: CreateReviewRequest<'_>,
+        ) -> Result<GhCreateReviewResponse> {
+            unimplemented!()
+        }
+    }
+
+    #[test]
+    fn should_find_the_pr_whose_head_is_the_branch() {
+        let backend = ListingBackend::new(vec![summary(3, "other"), summary(7, "feature")]);
+        assert_eq!(
+            backend
+                .find_pull_request_for_branch(&repo(), "feature")
+                .unwrap(),
+            7
+        );
+    }
+
+    #[test]
+    fn should_stop_at_the_first_page_with_a_match() {
+        let mut rows = (1..=60).map(|n| summary(n, "other")).collect::<Vec<_>>();
+        rows[10] = summary(11, "feature");
+        let backend = ListingBackend::new(rows);
+        assert_eq!(
+            backend
+                .find_pull_request_for_branch(&repo(), "feature")
+                .unwrap(),
+            11
+        );
+        assert_eq!(*backend.offsets.lock().unwrap(), vec![0]);
+    }
+
+    #[test]
+    fn should_page_until_the_match_is_found() {
+        let mut rows = (1..=120).map(|n| summary(n, "other")).collect::<Vec<_>>();
+        rows[100] = summary(101, "feature");
+        let backend = ListingBackend::new(rows);
+        assert_eq!(
+            backend
+                .find_pull_request_for_branch(&repo(), "feature")
+                .unwrap(),
+            101
+        );
+        assert_eq!(*backend.offsets.lock().unwrap(), vec![0, 50, 100]);
+    }
+
+    #[test]
+    fn should_error_when_no_open_pr_has_the_branch() {
+        let backend = ListingBackend::new(vec![summary(3, "other")]);
+        let err = backend
+            .find_pull_request_for_branch(&repo(), "feature")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("No open pull request found for branch `feature`"),
+            "{err}"
+        );
+        assert!(err.contains("tuicr pr <number>"), "{err}");
+    }
+
+    #[test]
+    fn should_error_when_several_open_prs_share_the_branch() {
+        let backend = ListingBackend::new(vec![summary(3, "feature"), summary(9, "feature")]);
+        let err = backend
+            .find_pull_request_for_branch(&repo(), "feature")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("several open pull requests"), "{err}");
+        assert!(err.contains("#3, #9"), "{err}");
+    }
+
+    #[test]
+    fn should_refuse_rather_than_truncate_past_the_scan_bound() {
+        let rows = (1..=1_100).map(|n| summary(n, "other")).collect();
+        let err = ListingBackend::new(rows)
+            .find_pull_request_for_branch(&repo(), "feature")
+            .unwrap_err();
+        assert!(matches!(err, TuicrError::ForgeLimit(_)), "{err:?}");
     }
 }

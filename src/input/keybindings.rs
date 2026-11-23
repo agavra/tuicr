@@ -168,6 +168,8 @@ pub enum Action {
 
     /// `/` inside the theme picker — open its filter prompt.
     ThemePickerFilter,
+    /// `/` inside the file picker — open its filter prompt.
+    FilePickerFilter,
 
     // No-op
     None,
@@ -214,6 +216,7 @@ pub fn map_key_to_action_with_q_quits(
         InputMode::SubmitConfirm => map_submit_confirm_mode(key),
         InputMode::SubmitActionPicker => map_submit_action_picker_mode_with_q_quits(key, q_quits),
         InputMode::ThemePicker => map_theme_picker_mode(key),
+        InputMode::FilePicker => map_file_picker_mode(key),
     }
 }
 
@@ -616,6 +619,31 @@ fn map_theme_picker_mode(key: KeyEvent) -> Action {
     }
 }
 
+/// Navigation key map for `InputMode::FilePicker` while no `/` filter draft
+/// is open. `main.rs` routes to `map_file_picker_filter_mode` instead when
+/// `App::file_picker_filtering()` is true.
+fn map_file_picker_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
+        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
+        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        (KeyCode::Char('/'), KeyModifiers::NONE) => Action::FilePickerFilter,
+        _ => Action::None,
+    }
+}
+
+/// Key map used while the file picker's `/` filter draft is open: the theme
+/// picker's text prompt, plus `↑`/`↓` to move the selection, since letters
+/// are text here.
+pub fn map_file_picker_filter_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
+        (KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        _ => map_theme_picker_filter_mode(key),
+    }
+}
+
 /// Key map used while the theme picker's `/` filter draft is open. This is a
 /// sub-state of `InputMode::ThemePicker`; `main.rs` routes here when
 /// `App::theme_picker_filtering()` is true, mirroring
@@ -1010,6 +1038,33 @@ mod tests {
         assert_eq!(map_target_filter_mode(ctrl_l), Action::None);
         assert_eq!(map_theme_picker_mode(ctrl_l), Action::None);
         assert_eq!(map_theme_picker_filter_mode(ctrl_l), Action::None);
+        assert_eq!(map_file_picker_mode(ctrl_l), Action::None);
+        assert_eq!(map_file_picker_filter_mode(ctrl_l), Action::None);
+    }
+
+    #[test]
+    fn should_map_file_picker_navigation_keys() {
+        let map = |k| map_key_to_action(k, InputMode::FilePicker, DEFAULT_LEADER_KEY);
+        assert_eq!(map(key(KeyCode::Char('j'))), Action::CursorDown(1));
+        assert_eq!(map(key(KeyCode::Down)), Action::CursorDown(1));
+        assert_eq!(map(key(KeyCode::Char('k'))), Action::CursorUp(1));
+        assert_eq!(map(key(KeyCode::Up)), Action::CursorUp(1));
+        assert_eq!(map(key(KeyCode::Char('/'))), Action::FilePickerFilter);
+        assert_eq!(map(key(KeyCode::Enter)), Action::SubmitInput);
+        assert_eq!(map(key(KeyCode::Esc)), Action::ExitMode);
+        // Other letters are not text until `/` opens the filter draft.
+        assert_eq!(map(key(KeyCode::Char('x'))), Action::None);
+    }
+
+    #[test]
+    fn should_type_letters_but_move_with_arrows_in_the_file_picker_filter() {
+        let map = map_file_picker_filter_mode;
+        assert_eq!(map(key(KeyCode::Char('j'))), Action::InsertChar('j'));
+        assert_eq!(map(key(KeyCode::Char('k'))), Action::InsertChar('k'));
+        assert_eq!(map(key(KeyCode::Down)), Action::CursorDown(1));
+        assert_eq!(map(key(KeyCode::Up)), Action::CursorUp(1));
+        assert_eq!(map(key(KeyCode::Enter)), Action::SubmitInput);
+        assert_eq!(map(key(KeyCode::Esc)), Action::ExitMode);
     }
 
     #[test]

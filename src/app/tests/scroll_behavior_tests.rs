@@ -791,3 +791,18 @@ fn mouse_wheel_scrolls_diff_by_configured_lines() {
     wheel_over_diff(&mut app, crossterm::event::MouseEventKind::ScrollUp);
     assert_eq!(app.diff_state.scroll_offset, 1);
 }
+
+#[test]
+fn diff_state_wraps_off_by_default() {
+    assert!(!DiffState::default().wrap_lines);
+}
+
+#[test]
+fn reset_diff_state_preserves_wrap_preference() {
+    let mut app = build_scroll_app(40, 20, 5);
+    app.diff_state.wrap_lines = true;
+    app.diff_state.scroll_offset = 7;
+    app.reset_diff_state();
+    assert!(app.diff_state.wrap_lines);
+    assert_eq!(app.diff_state.scroll_offset, 0);
+}

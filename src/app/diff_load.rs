@@ -82,10 +82,7 @@ impl App {
         let content_hash = DiffFile::compute_content_hash(&hunks);
         let commit_msg_file = DiffFile {
             old_path: None,
-            new_path: Some(PathBuf::from(format!(
-                "Commit Message ({})",
-                commit.short_id
-            ))),
+            new_path: Some(DiffFile::commit_message_path(&commit.short_id)),
             status: FileStatus::Added,
             hunks,
             is_binary: false,
@@ -409,40 +406,124 @@ impl App {
             .collect()
     }
 
-    pub(in crate::app) fn load_staged_and_unstaged_selection(&mut self) -> Result<()> {
-        let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match Self::get_working_tree_diff_with_ignore(
-            self.vcs.as_ref(),
-            &self.vcs_info.root_path,
-            highlighter,
-            self.path_filter.as_deref(),
-        ) {
+    /// Install a staged/unstaged/working-tree review from a fetched diff.
+    ///
+    /// Returns `Ok(false)` and leaves the current review untouched when there
+    /// is nothing to show. Otherwise the outgoing session is saved first, the
+    /// new one replaces it, and the commit pane of the previous review is
+    /// dropped: none of these sources has one, and a stale pane would stamp
+    /// comments with a foreign commit and make `)` load the old range.
+    fn install_local_selection(
+        &mut self,
+        fetched: Result<Vec<DiffFile>>,
+        session_source: SessionDiffSource,
+        diff_source: DiffSource,
+        empty_message: &str,
+    ) -> Result<bool> {
+        let diff_files = match fetched {
             Ok(diff_files) => diff_files,
             Err(TuicrError::NoChanges) => {
-                self.set_message("No staged or unstaged changes");
-                return Ok(());
+                self.set_message(empty_message);
+                return Ok(false);
             }
             Err(e) => return Err(e),
         };
 
-        self.session =
-            Self::load_or_create_session(&self.vcs_info, SessionDiffSource::StagedAndUnstaged);
+        self.save_outgoing_session()?;
+        self.session = Self::load_or_create_session(&self.vcs_info, session_source);
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
         self.reset_persisted_session_tracking()?;
 
         self.diff_files = diff_files;
-        self.diff_source = DiffSource::StagedAndUnstaged;
+        self.diff_source = diff_source;
+        self.clear_commit_pane();
         self.input_mode = InputMode::Normal;
-        self.diff_state = DiffState::default();
+        self.reset_diff_state();
         self.file_list_state = FileListState::default();
         self.clear_expanded_gaps();
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();
 
+        Ok(true)
+    }
+
+    /// Forget the inline commit pane of the review being replaced.
+    fn clear_commit_pane(&mut self) {
+        self.pr_commits.clear();
+        self.pr_last_reviewed_commit_index = None;
+        self.review_commits.clear();
+        self.range_diff_files = None;
+        self.commit_list.clear();
+        self.commit_selection_range = None;
+        self.commit_list_cursor = 0;
+        self.commit_list_scroll_offset = 0;
+        self.visible_commit_count = 0;
+        self.has_more_commit = false;
+        self.show_commit_selector = false;
+        if self.focused_panel == FocusedPanel::CommitSelector {
+            self.focused_panel = FocusedPanel::Diff;
+        }
+        self.commit_diff_cache.clear();
+        self.saved_inline_selection = None;
+    }
+
+    /// Install the pane for a review of `review_commits` (newest first) and
+    /// finalize the diff. Shared by every local path that opens a commit
+    /// range, whether from the CLI, the selector or session resume.
+    pub(in crate::app) fn install_review_commits(
+        &mut self,
+        review_commits: Vec<CommitInfo>,
+        start: CommitSelectionStart,
+    ) -> Result<()> {
+        self.pr_commits.clear();
+        self.pr_last_reviewed_commit_index = None;
+        self.range_diff_files = Some(self.diff_files.clone());
+        self.commit_list = review_commits.clone();
+        let range = Self::initial_commit_range(start, review_commits.len());
+        self.commit_selection_range = range;
+        self.commit_list_cursor = range.map(|(start, _)| start).unwrap_or(0);
+        self.commit_list_scroll_offset = 0;
+        self.visible_commit_count = review_commits.len();
+        self.has_more_commit = false;
+        self.show_commit_selector = self.show_commits_on_open && review_commits.len() > 1;
+        if !self.show_commit_selector && self.focused_panel == FocusedPanel::CommitSelector {
+            self.focused_panel = FocusedPanel::Diff;
+        }
+        self.review_commits = review_commits;
+        self.commit_diff_cache.clear();
+        self.saved_inline_selection = None;
+
+        // `initial_commit_selection = oldest` opens scoped to a single commit; narrow
+        // the loaded diff to it. Otherwise finalize the full-range diff.
+        if Self::is_strict_commit_selection(self.commit_selection_range, self.review_commits.len())
+        {
+            self.reload_inline_selection()?;
+        } else {
+            self.insert_commit_message_if_single();
+            self.sort_files_by_directory(true);
+            self.expand_all_dirs();
+            self.rebuild_annotations();
+        }
         Ok(())
+    }
+
+    pub(in crate::app) fn load_staged_and_unstaged_selection(&mut self) -> Result<bool> {
+        let highlighter = self.theme.syntax_highlighter();
+        let fetched = Self::get_working_tree_diff_with_ignore(
+            self.vcs.as_ref(),
+            &self.vcs_info.root_path,
+            highlighter,
+            self.path_filter.as_deref(),
+        );
+        self.install_local_selection(
+            fetched,
+            SessionDiffSource::StagedAndUnstaged,
+            DiffSource::StagedAndUnstaged,
+            "No staged or unstaged changes",
+        )
     }
 
     /// Load a whole-working-tree review (`tuicr -w`).
@@ -450,109 +531,52 @@ impl App {
     /// This must record `SessionDiffSource::WorkingTree`. The source is part of
     /// the session identity, even though this loader and the staged-plus-
     /// unstaged loader read the same diff.
-    pub(in crate::app) fn load_working_tree_selection(&mut self) -> Result<()> {
+    pub(in crate::app) fn load_working_tree_selection(&mut self) -> Result<bool> {
         let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match Self::get_working_tree_diff_with_ignore(
+        let fetched = Self::get_working_tree_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
             self.path_filter.as_deref(),
-        ) {
-            Ok(diff_files) => diff_files,
-            Err(TuicrError::NoChanges) => {
-                self.set_message("No working tree changes");
-                return Ok(());
-            }
-            Err(e) => return Err(e),
-        };
-
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::WorkingTree);
-        for file in &diff_files {
-            self.session.add_diff_file(file);
-        }
-        self.reset_persisted_session_tracking()?;
-
-        self.diff_files = diff_files;
-        self.diff_source = DiffSource::WorkingTree;
-        self.input_mode = InputMode::Normal;
-        self.diff_state = DiffState::default();
-        self.file_list_state = FileListState::default();
-        self.clear_expanded_gaps();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
-
-        Ok(())
+        );
+        self.install_local_selection(
+            fetched,
+            SessionDiffSource::WorkingTree,
+            DiffSource::WorkingTree,
+            "No working tree changes",
+        )
     }
 
-    pub(in crate::app) fn load_staged_selection(&mut self) -> Result<()> {
+    pub(in crate::app) fn load_staged_selection(&mut self) -> Result<bool> {
         let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match Self::get_staged_diff_with_ignore(
+        let fetched = Self::get_staged_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
             self.path_filter.as_deref(),
-        ) {
-            Ok(diff_files) => diff_files,
-            Err(TuicrError::NoChanges) => {
-                self.set_message("No staged changes");
-                return Ok(());
-            }
-            Err(e) => return Err(e),
-        };
-
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Staged);
-        for file in &diff_files {
-            self.session.add_diff_file(file);
-        }
-        self.reset_persisted_session_tracking()?;
-
-        self.diff_files = diff_files;
-        self.diff_source = DiffSource::Staged;
-        self.input_mode = InputMode::Normal;
-        self.diff_state = DiffState::default();
-        self.file_list_state = FileListState::default();
-        self.clear_expanded_gaps();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
-
-        Ok(())
+        );
+        self.install_local_selection(
+            fetched,
+            SessionDiffSource::Staged,
+            DiffSource::Staged,
+            "No staged changes",
+        )
     }
 
-    pub(in crate::app) fn load_unstaged_selection(&mut self) -> Result<()> {
+    pub(in crate::app) fn load_unstaged_selection(&mut self) -> Result<bool> {
         let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match Self::get_unstaged_diff_with_ignore(
+        let fetched = Self::get_unstaged_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
             self.path_filter.as_deref(),
-        ) {
-            Ok(diff_files) => diff_files,
-            Err(TuicrError::NoChanges) => {
-                self.set_message("No unstaged changes");
-                return Ok(());
-            }
-            Err(e) => return Err(e),
-        };
-
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Unstaged);
-        for file in &diff_files {
-            self.session.add_diff_file(file);
-        }
-        self.reset_persisted_session_tracking()?;
-
-        self.diff_files = diff_files;
-        self.diff_source = DiffSource::Unstaged;
-        self.input_mode = InputMode::Normal;
-        self.diff_state = DiffState::default();
-        self.file_list_state = FileListState::default();
-        self.clear_expanded_gaps();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
-
-        Ok(())
+        );
+        self.install_local_selection(
+            fetched,
+            SessionDiffSource::Unstaged,
+            DiffSource::Unstaged,
+            "No unstaged changes",
+        )
     }
 
     /// Fetches diff files for the current `diff_source`.
@@ -578,6 +602,7 @@ impl App {
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             &fetch_source,
+            self.revision_range.as_ref(),
             highlighter,
             self.path_filter.as_deref(),
         )
@@ -707,17 +732,27 @@ impl App {
         vcs: &dyn VcsBackend,
         root_path: &Path,
         diff_source: &DiffSource,
+        revision_range: Option<&ResolvedRevisionRange<'_>>,
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         match diff_source {
-            DiffSource::CommitRange(commit_ids) => Self::get_commit_range_diff_with_ignore(
-                vcs,
-                root_path,
-                &ResolvedRevisionRange::from_commit_ids(commit_ids, RevisionDiffTarget::CommitList),
-                highlighter,
-                path_filter,
-            ),
+            DiffSource::CommitRange(commit_ids) => {
+                // The `-r` range's own base, not the oldest commit's parent,
+                // which differs once the range contains a merge.
+                let diff_target = revision_range
+                    .filter(|range| range.commit_ids.as_ref() == commit_ids.as_slice())
+                    .map_or(RevisionDiffTarget::CommitList, |range| {
+                        range.diff_target.clone()
+                    });
+                Self::get_commit_range_diff_with_ignore(
+                    vcs,
+                    root_path,
+                    &ResolvedRevisionRange::from_commit_ids(commit_ids, diff_target),
+                    highlighter,
+                    path_filter,
+                )
+            }
             DiffSource::StagedUnstagedAndCommits(commit_ids) => {
                 Self::get_working_tree_with_commits_diff_with_ignore(
                     vcs,
@@ -779,6 +814,14 @@ impl App {
         self.diff_files = diff_files;
         self.clear_expanded_gaps();
         self.insert_commit_message_if_single();
+
+        // Reload is the point where an edited `.gitattributes` should take
+        // effect, so discard the probe memo and re-detect eagerly — the height
+        // math below runs before `rebuild_annotations` would have done it.
+        // `collapse_override` survives: it is the user's override, not
+        // detected state, and it retires itself once a file's content changes.
+        self.invalidate_generated_detection();
+        self.detect_generated_files();
 
         self.sort_files_by_directory(false);
         self.populate_file_line_count_cache();
@@ -873,6 +916,7 @@ impl App {
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             &fetch_source,
+            self.revision_range.as_ref(),
             self.theme.syntax_highlighter(),
             self.path_filter.as_deref(),
             diff_files_fingerprint(&self.diff_files),
@@ -896,6 +940,7 @@ impl App {
         vcs: &dyn VcsBackend,
         root_path: &Path,
         fetch_source: &DiffSource,
+        revision_range: Option<&ResolvedRevisionRange<'_>>,
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
         current: u64,
@@ -904,6 +949,7 @@ impl App {
             vcs,
             root_path,
             fetch_source,
+            revision_range,
             probe_highlighter(),
             path_filter,
         )?;
@@ -919,6 +965,7 @@ impl App {
             vcs,
             root_path,
             fetch_source,
+            revision_range,
             highlighter,
             path_filter,
         )?;
@@ -932,7 +979,7 @@ impl App {
         &mut self,
         selected_ids: Vec<String>,
         selected_commits: Vec<CommitInfo>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let highlighter = self.theme.syntax_highlighter();
         let diff_files = match Self::get_working_tree_with_commits_diff_with_ignore(
             self.vcs.as_ref(),
@@ -944,11 +991,12 @@ impl App {
             Ok(diff_files) => diff_files,
             Err(TuicrError::NoChanges) => {
                 self.set_message("No changes in selected commits + staged/unstaged");
-                return Ok(());
+                return Ok(false);
             }
             Err(e) => return Err(e),
         };
 
+        self.save_outgoing_session()?;
         self.session =
             Self::load_or_create_staged_unstaged_and_commits_session(&self.vcs_info, &selected_ids);
 
@@ -960,38 +1008,12 @@ impl App {
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedUnstagedAndCommits(selected_ids);
         self.input_mode = InputMode::Normal;
-        self.diff_state = DiffState::default();
+        self.reset_diff_state();
         self.file_list_state = FileListState::default();
 
-        // Set up inline commit selector (newest-first display order)
-        self.pr_commits.clear();
-        self.pr_last_reviewed_commit_index = None;
-        self.review_commits = selected_commits.into_iter().rev().collect();
-        self.range_diff_files = Some(self.diff_files.clone());
-        self.commit_list = self.review_commits.clone();
-        let range =
-            Self::initial_commit_range(self.commit_selection_start, self.review_commits.len());
-        self.commit_selection_range = range;
-        self.commit_list_cursor = range.map(|(start, _)| start).unwrap_or(0);
-        self.commit_list_scroll_offset = 0;
-        self.visible_commit_count = self.review_commits.len();
-        self.has_more_commit = false;
-        self.show_commit_selector = self.review_commits.len() > 1;
-        self.commit_diff_cache.clear();
-        self.saved_inline_selection = None;
-
-        // `initial_commit_selection = oldest` opens scoped to a single commit; narrow
-        // the loaded diff to it. Otherwise finalize the full-range diff.
-        if Self::is_strict_commit_selection(self.commit_selection_range, self.review_commits.len())
-        {
-            self.reload_inline_selection()?;
-        } else {
-            self.insert_commit_message_if_single();
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
-            self.rebuild_annotations();
-        }
-        Ok(())
+        let rows: Vec<CommitInfo> = selected_commits.into_iter().rev().collect();
+        self.install_review_commits(rows, self.commit_selection_start)?;
+        Ok(true)
     }
 
     /// Sets the diff-watch interval. `0` disables it, which is the default.
@@ -1090,6 +1112,7 @@ impl App {
         };
         let current = diff_files_fingerprint(&self.diff_files);
         let review_commits = self.review_commits.clone();
+        let revision_range = self.revision_range.clone();
         let path_filter = self.path_filter.clone();
         let vcs_open_options = self.vcs_open_options.clone();
         let highlighter = self.theme.syntax_highlighter_arc();
@@ -1106,6 +1129,7 @@ impl App {
                 vcs_open_options,
                 &request,
                 &review_commits,
+                revision_range.as_ref(),
                 path_filter.as_deref(),
                 &highlighter,
                 current,
@@ -1129,13 +1153,14 @@ impl App {
         vcs_open_options: VcsOpenOptions,
         request: &DiffWatchReloadRequest,
         review_commits: &[CommitInfo],
+        revision_range: Option<&ResolvedRevisionRange<'_>>,
         path_filter: Option<&str>,
         highlighter: &SyntaxHighlighter,
         current: u64,
     ) -> Result<DiffWatchFetched> {
         let vcs = detect_vcs(
             vcs_open_options.git_backend_preference,
-            vcs_open_options.diff_whitespace_mode,
+            vcs_open_options.diff_options(),
         )?;
         let root_path = &vcs.info().root_path;
         let fetch_source = Self::narrowed_fetch_source(
@@ -1147,6 +1172,7 @@ impl App {
             vcs.as_ref(),
             root_path,
             &fetch_source,
+            revision_range,
             highlighter,
             path_filter,
             current,
@@ -1800,6 +1826,7 @@ mod tests {
             crate::vcs::git::diff::get_working_tree_diff(
                 &self.repo,
                 &self.whitespace_mode,
+                true,
                 highlighter,
             )
         }
@@ -1882,6 +1909,100 @@ mod tests {
             .find(|file| file.display_path() == Path::new(path))
     }
 
+    /// The repro from #850: `feature` merged `main` after branching.
+    fn merged_feature_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let root = dir.path();
+        git_in(root, &["init", "-q", "-b", "main"]);
+        git_in(root, &["config", "user.name", "Tuicr Test"]);
+        git_in(root, &["config", "user.email", "tuicr@example.com"]);
+        std::fs::write(root.join("base.txt"), "base\n").unwrap();
+        git_in(root, &["add", "."]);
+        git_in(root, &["commit", "-qm", "base"]);
+        git_in(root, &["switch", "-qc", "feature"]);
+        std::fs::write(root.join("feature.txt"), "feature\n").unwrap();
+        git_in(root, &["add", "."]);
+        git_in(root, &["commit", "-qm", "feature: add feature.txt"]);
+        git_in(root, &["switch", "-q", "main"]);
+        std::fs::write(root.join("main-only.txt"), "main\n").unwrap();
+        git_in(root, &["add", "."]);
+        git_in(root, &["commit", "-qm", "main: add main-only.txt"]);
+        git_in(root, &["switch", "-q", "feature"]);
+        git_in(root, &["merge", "-q", "--no-edit", "main"]);
+        std::fs::write(root.join("feature.txt"), "feature\nmore\n").unwrap();
+        git_in(root, &["commit", "-qam", "feature: edit feature.txt"]);
+        dir
+    }
+
+    fn paths(files: &[DiffFile]) -> Vec<String> {
+        let mut paths: Vec<String> = files
+            .iter()
+            .map(|file| file.display_path().to_string_lossy().into_owned())
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    #[test]
+    fn reload_keeps_the_resolved_base_of_a_revision_range() {
+        let dir = merged_feature_repo();
+        let root = dir.path();
+        let highlighter = SyntaxHighlighter::default();
+        for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+            let vcs = crate::vcs::GitBackend::discover_from(
+                root,
+                preference,
+                crate::vcs::VcsDiffOptions::default(),
+            )
+            .unwrap();
+            for revisions in ["main...feature", "main..feature"] {
+                let range = vcs.resolve_revision_range(revisions).unwrap();
+                let source = DiffSource::CommitRange(range.commit_ids.to_vec());
+                let reload = |range| {
+                    App::fetch_diff_files_for_source(&vcs, root, &source, range, &highlighter, None)
+                        .unwrap()
+                };
+                assert_eq!(
+                    paths(&reload(Some(&range))),
+                    ["feature.txt"],
+                    "{preference:?} {revisions}"
+                );
+                // Without the resolved base, the merged-in file shows up.
+                assert_eq!(
+                    paths(&reload(None)),
+                    ["feature.txt", "main-only.txt"],
+                    "{preference:?} {revisions}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reload_of_a_narrowed_selection_ignores_the_revision_range() {
+        let dir = merged_feature_repo();
+        let root = dir.path();
+        let vcs = crate::vcs::GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            crate::vcs::VcsDiffOptions::default(),
+        )
+        .unwrap();
+        let range = vcs.resolve_revision_range("main...feature").unwrap();
+        let newest = range.commit_ids.last().unwrap().clone();
+        let files = App::fetch_diff_files_for_source(
+            &vcs,
+            root,
+            &DiffSource::CommitRange(vec![newest]),
+            Some(&range),
+            &SyntaxHighlighter::default(),
+            None,
+        )
+        .unwrap();
+        // Only the last commit's own change, diffed from its parent.
+        assert_eq!(paths(&files), ["feature.txt"]);
+        assert_eq!(files[0].status, FileStatus::Modified);
+    }
+
     #[test]
     fn watch_worker_open_options_retain_whitespace_overrides() {
         let mode = DiffWhitespaceMode::Auto(crate::vcs::WhitespaceAutoPolicy::with_overrides([
@@ -1889,6 +2010,7 @@ mod tests {
             ("custom".into(), true),
         ]));
         let options = AppStartupOptions {
+            include_untracked: false,
             revisions: None,
             working_tree: false,
             path_filter: None,
@@ -1901,9 +2023,11 @@ mod tests {
             diff_whitespace_mode: mode.clone(),
             commit_selection: CommitSelectionStart::All,
             pr_target: None,
+            pr_current_branch: false,
             repo_url_override: None,
         };
         let captured = options.vcs_open_options();
+        assert!(!captured.include_untracked);
         assert_eq!(captured.git_backend_preference, GitBackendPreference::Cli);
         assert_eq!(captured.diff_whitespace_mode, mode);
         assert_eq!(captured.clone().diff_whitespace_mode, mode);
@@ -1917,6 +2041,7 @@ mod tests {
             ("custom".into(), true),
         ]));
         let captured = VcsOpenOptions {
+            include_untracked: true,
             git_backend_preference: GitBackendPreference::Libgit2,
             diff_whitespace_mode: mode.clone(),
         };
@@ -1926,6 +2051,7 @@ mod tests {
             &vcs,
             &vcs.info.root_path,
             &DiffSource::WorkingTree,
+            None,
             &highlighter,
             None,
         )
@@ -1953,6 +2079,7 @@ mod tests {
             &vcs,
             &vcs.info.root_path,
             &DiffSource::WorkingTree,
+            None,
             &highlighter,
             None,
             diff_files_fingerprint(&initial),
@@ -1968,6 +2095,7 @@ mod tests {
             &vcs,
             &vcs.info.root_path,
             &DiffSource::WorkingTree,
+            None,
             &highlighter,
             None,
             diff_files_fingerprint(&initial),
@@ -1978,6 +2106,7 @@ mod tests {
             &vcs,
             &vcs.info.root_path,
             &DiffSource::WorkingTree,
+            None,
             &highlighter,
             None,
         )

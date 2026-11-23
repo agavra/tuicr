@@ -13,22 +13,12 @@ use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
 use tuicr::cli::parse_cli_args;
 use tuicr::config::IgnoreWhitespaceConfig;
 use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, EditorTarget};
-use tuicr::handler::{
-    handle_command_action, handle_comment_action, handle_comment_navigator_action,
-    handle_commit_select_action, handle_commit_selector_action, handle_confirm_action,
-    handle_diff_action, handle_file_list_action, handle_help_action, handle_mouse_event,
-    handle_search_action, handle_submit_action_picker_action, handle_submit_confirm_action,
-    handle_submit_resolver_action, handle_summary_action, handle_theme_picker_action,
-    handle_visual_action,
-};
-use tuicr::input::{
-    Action, map_file_tree_mode_with_q_quits, map_file_tree_prompt_mode,
-    map_key_to_action_with_q_quits, map_target_filter_mode, map_theme_picker_filter_mode,
-};
+use tuicr::handler::{handle_mouse_event, handle_paste};
+use tuicr::input::Action;
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
 use tuicr::theme::{is_syntax_theme_fallback_warning, resolve_theme_with_config};
 use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference, WhitespaceAutoPolicy};
-use tuicr::{config, handler, profile, ui, update};
+use tuicr::{config, handler, profile, syntax, ui, update};
 
 /// Timeout for the "press Ctrl+C again to exit" feature
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -57,6 +47,19 @@ fn event_drain_timeout(drained: usize) -> Option<Duration> {
         n if n < EVENT_DRAIN_LIMIT => Some(Duration::ZERO),
         _ => None,
     }
+}
+
+/// Room for a full repaint of a large terminal, so a frame leaves in one write.
+const TTY_WRITE_BUFFER: usize = 1 << 16;
+
+/// The `/dev/tty` writer under `--stdout`, buffered like `io::stdout()` is.
+/// ratatui queues every cell's escape sequences separately, so a bare `File`
+/// turns one frame into thousands of write(2) calls. Frames then take long
+/// enough that zellij, which does not present a pane mid synchronized update,
+/// shows nothing while a wheel scroll keeps tuicr redrawing. `terminal.draw`
+/// and the `execute!` that ends each frame flush it.
+fn buffered_tty<W: Write>(tty: W) -> io::BufWriter<W> {
+    io::BufWriter::with_capacity(TTY_WRITE_BUFFER, tty)
 }
 
 fn should_probe_keyboard_enhancement(output_to_stdout: bool, stdin_is_terminal: bool) -> bool {
@@ -141,6 +144,11 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(2);
     });
     startup_warnings.extend(theme_warnings);
+    if let Ok(dir) = config::syntaxes_dir() {
+        startup_warnings.extend(profile::time("startup.load_user_syntaxes", || {
+            syntax::load_user_syntaxes(&dir)
+        }));
+    }
 
     let transparent = config_outcome
         .config
@@ -148,7 +156,7 @@ fn main() -> anyhow::Result<()> {
         .and_then(|cfg| cfg.transparent_background)
         .unwrap_or(true);
     if transparent {
-        theme.panel_bg = ratatui::style::Color::Reset;
+        theme = theme.with_transparent_background();
     }
 
     let no_update_check = cli_args.no_update_check
@@ -188,11 +196,20 @@ fn main() -> anyhow::Result<()> {
         None => DiffWhitespaceMode::Normal,
     };
 
+    let include_untracked = config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.include_untracked)
+        .unwrap_or(true);
+
     let repo_url_override = match cli_args.remote.as_deref() {
         Some(name) => {
             let vcs = tuicr::vcs::GitBackend::discover(
                 git_backend_preference,
-                diff_whitespace_mode.clone(),
+                tuicr::vcs::VcsDiffOptions {
+                    whitespace_mode: diff_whitespace_mode.clone(),
+                    include_untracked,
+                },
             )?;
             Some(tuicr::forge::resolve_remote_repository(&vcs, name)?)
         }
@@ -255,14 +272,17 @@ fn main() -> anyhow::Result<()> {
                 pr_comments_visibility,
                 git_backend_preference,
                 diff_whitespace_mode,
+                include_untracked,
                 commit_selection,
                 pr_target: cli_args.pr_target.as_deref(),
+                pr_current_branch: cli_args.pr_current_branch,
                 repo_url_override,
             },
         )
     }) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
+            app.transparent_background = transparent;
             startup_warnings.extend(app.vcs.startup_warnings());
             if let Some(cfg) = config_outcome.config.as_ref() {
                 if let Some(forge_cfg) = cfg.forge.clone() {
@@ -330,7 +350,7 @@ fn main() -> anyhow::Result<()> {
 
     // When --stdout is used, render TUI to /dev/tty so stdout is free for export output
     let tty_output: Box<dyn Write> = if cli_args.output_to_stdout {
-        Box::new(File::options().write(true).open("/dev/tty")?)
+        Box::new(buffered_tty(File::options().write(true).open("/dev/tty")?))
     } else {
         Box::new(io::stdout())
     };
@@ -350,17 +370,22 @@ fn main() -> anyhow::Result<()> {
         app.show_pr_comments = cfg.show_pr_comments.unwrap_or(true);
         app.initial_comments_visibility = pr_comments_visibility;
         app.set_compact_folders(cfg.compact_folders.unwrap_or(false));
+        if cfg.file_list_position.as_deref() == Some("right") {
+            app.file_list_position = app::FileListPosition::Right;
+        }
         if cfg.show_file_list == Some(false) {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
         }
-        // Start with the commit selector pane hidden. `(` / `)` still cycle the
-        // selected commit while hidden; `<leader>s` / `:set commits!` reveal it.
-        if cfg.show_commits == Some(false) {
-            app.show_commit_selector = false;
-            if app.focused_panel == FocusedPanel::CommitSelector {
-                app.focused_panel = FocusedPanel::Diff;
-            }
+        if cfg.minimal_ui == Some(true) {
+            app.minimal_ui = true;
+        }
+        // Keep the commit selector pane hidden for every multi-commit review,
+        // including ones opened later from the selector or a PR. `(` / `)`
+        // still cycle the selected commit while hidden; `<leader>s` /
+        // `:set commits!` reveal it for the current review.
+        if let Some(show) = cfg.show_commits {
+            app.apply_show_commits_config(show);
         }
         // Start with files already marked reviewed hidden. `init_` rather than
         // `set_` so startup leaves no status message behind; `H` /
@@ -386,7 +411,16 @@ fn main() -> anyhow::Result<()> {
         if cfg.single_file_view == Some(true) && !app.is_single_file_view {
             app.toggle_single_file_view();
         }
+        // Build ran before this flag existed on the app, so the opening
+        // cursor is still the overview landing. Queue the move onto the
+        // first file; it lands after the first render measures the viewport.
+        if app.minimal_ui {
+            app.apply_minimal_ui_start();
+        }
         app.export = cfg.resolved_export();
+        startup_warnings.extend(app.apply_clipboard_config(cfg.clipboard.as_deref()));
+        app.clipboard_command = cfg.clipboard_command.clone();
+        app.apply_generated_config(&cfg.generated.clone().unwrap_or_default());
         if cfg.cursor_line == Some(false) {
             app.cursor_line_highlight = false;
         }
@@ -395,6 +429,11 @@ fn main() -> anyhow::Result<()> {
         }
         if let Some(scroll_offset) = cfg.scroll_offset {
             app.scroll_offset = scroll_offset;
+        }
+        match cfg.hunk_jump_align.as_deref() {
+            Some("top") => app.hunk_jump_align = app::HunkJumpAlign::Top,
+            Some("center") => app.hunk_jump_align = app::HunkJumpAlign::Center,
+            _ => {}
         }
         if let Some(lines) = cfg.mouse_scroll_lines {
             app.mouse_scroll_lines = lines;
@@ -467,6 +506,7 @@ fn main() -> anyhow::Result<()> {
         app.poll_pr_range_reload_events();
         app.poll_pr_threads_events();
         app.poll_pr_submit_events();
+        app.poll_pr_draft_delete_events();
         needs_redraw |= app.poll_editor_launches();
         needs_redraw |= app.poll_persisted_session_changes();
         needs_redraw |= app.poll_diff_watch_changes();
@@ -487,10 +527,13 @@ fn main() -> anyhow::Result<()> {
             terminal.draw(|frame| {
                 ui::render(frame, &mut app);
             })?;
-            // `--line` needs the viewport measured by the render above. When
-            // it moves the cursor, repaint inside the same synchronized
-            // update so the unpositioned frame is never presented.
-            if app.apply_pending_start_line() {
+            // Minimal mode's first-file landing and `--line` both need the
+            // viewport measured by the render above. When either moves the
+            // cursor, repaint inside the same synchronized update so the
+            // unpositioned frame is never presented. `--line` runs second so
+            // an explicit target wins.
+            let landed = app.apply_pending_minimal_ui_start();
+            if app.apply_pending_start_line() || landed {
                 terminal.draw(|frame| {
                     ui::render(frame, &mut app);
                 })?;
@@ -605,12 +648,7 @@ fn main() -> anyhow::Result<()> {
                         match key.code {
                             crossterm::event::KeyCode::Char('Z') => {
                                 // ZZ: save session, export, and quit (same as :wq)
-                                let _ = app.save_current_session_merging_external();
-                                if app.session.has_comments() {
-                                    handler::handle_export_and_quit(&mut app);
-                                } else {
-                                    app.should_quit = true;
-                                }
+                                handler::handle_write_and_quit(&mut app);
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('Q') => {
@@ -652,7 +690,9 @@ fn main() -> anyhow::Result<()> {
                                     "Comment already pushed to {forge} — read only in tuicr"
                                 ));
                             } else if !app.delete_comment_at_cursor() {
-                                if app.cursor_on_remote_thread() {
+                                if app.begin_remote_draft_delete() {
+                                    // Waiting on the confirmation prompt.
+                                } else if app.cursor_on_remote_thread() {
                                     let forge = app.forge_display_name();
                                     app.set_message(format!(
                                         "{forge} comment — read only in tuicr"
@@ -717,6 +757,10 @@ fn main() -> anyhow::Result<()> {
                                 app.relative_line_numbers = !app.relative_line_numbers;
                                 continue;
                             }
+                            crossterm::event::KeyCode::Char('p') => {
+                                app.enter_file_picker_mode();
+                                continue;
+                            }
                             _ => {}
                         }
                         // Otherwise fall through to normal handling
@@ -735,35 +779,7 @@ fn main() -> anyhow::Result<()> {
                     // route through the filter-specific key map so typed
                     // characters update the filter buffer rather than driving
                     // commit-list navigation.
-                    let mut action = if app.input_mode == InputMode::CommitSelect
-                        && app.pr_filter_editing()
-                    {
-                        map_target_filter_mode(key)
-                    } else if app.input_mode == InputMode::Normal && app.file_tree_prompt_editing()
-                    {
-                        // An open file-tree prompt (`i`/`e`/`/`) captures all
-                        // input until Enter/Esc, like the PR filter above.
-                        map_file_tree_prompt_mode(key)
-                    } else if app.input_mode == InputMode::ThemePicker
-                        && app.theme_picker_filtering()
-                    {
-                        // The theme picker's `/` filter draft captures all
-                        // input until Enter/Esc, same shape as the two above.
-                        map_theme_picker_filter_mode(key)
-                    } else if app.input_mode == InputMode::Normal
-                        && app.focused_panel == FocusedPanel::FileList
-                    {
-                        // The tree claims i/e/I/E and `/` for filtering; the
-                        // diff keeps its own meanings for those keys.
-                        map_file_tree_mode_with_q_quits(key, app.leader_key, app.q_quits)
-                    } else {
-                        map_key_to_action_with_q_quits(
-                            key,
-                            app.input_mode,
-                            app.leader_key,
-                            app.q_quits,
-                        )
-                    };
+                    let mut action = handler::map_normal_path_key(&app, key);
 
                     // Handle pending command setters (these work in any mode)
                     match action {
@@ -829,7 +845,7 @@ fn main() -> anyhow::Result<()> {
                                             // last one runs through normal dispatch
                                             // below.
                                             for _ in 1..count {
-                                                dispatch_action(&mut app, action.clone());
+                                                handler::dispatch_action(&mut app, action.clone());
                                             }
                                         }
                                         _ => {
@@ -843,7 +859,7 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     let previous_mode = app.input_mode;
-                    dispatch_action(&mut app, action);
+                    handler::dispatch_action(&mut app, action);
                     if previous_mode != InputMode::Summary && app.input_mode == InputMode::Summary {
                         // Summary identities are populated by rendering before queued input.
                         break;
@@ -909,16 +925,7 @@ fn main() -> anyhow::Result<()> {
                         app.comment_vim_feed_paste(text);
                         continue;
                     }
-                    let action = Action::Paste(text);
-                    match app.input_mode {
-                        InputMode::Comment => handle_comment_action(&mut app, action),
-                        InputMode::Command => handle_command_action(&mut app, action),
-                        InputMode::Search => handle_search_action(&mut app, action),
-                        InputMode::CommitSelect if app.pr_filter_editing() => {
-                            handle_commit_select_action(&mut app, action)
-                        }
-                        _ => {}
-                    }
+                    handle_paste(&mut app, text);
                 }
                 _ => {}
             }
@@ -937,6 +944,9 @@ fn main() -> anyhow::Result<()> {
     if let Err(e) = app.clear_active_session_marker() {
         eprintln!("Warning: failed to clear active review session marker: {e}");
     }
+    if let Some(warning) = &app.pending_exit_warning {
+        eprintln!("Warning: {warning}");
+    }
 
     // Always report how the review ended, even with zero comments, so a
     // human or agent watching the pane can tell "reviewed everything, had
@@ -953,29 +963,6 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-fn dispatch_action(app: &mut App, action: Action) {
-    match app.input_mode {
-        InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
-        InputMode::Summary => handle_summary_action(app, action),
-        InputMode::Command => handle_command_action(app, action),
-        InputMode::Search => handle_search_action(app, action),
-        InputMode::Comment => handle_comment_action(app, action),
-        InputMode::Confirm => handle_confirm_action(app, action),
-        InputMode::CommitSelect => handle_commit_select_action(app, action),
-        InputMode::VisualSelect => handle_visual_action(app, action),
-        InputMode::SubmitResolver => handle_submit_resolver_action(app, action),
-        InputMode::SubmitConfirm => handle_submit_confirm_action(app, action),
-        InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
-        InputMode::ThemePicker => handle_theme_picker_action(app, action),
-        InputMode::Normal => match app.focused_panel {
-            FocusedPanel::FileList => handle_file_list_action(app, action),
-            FocusedPanel::Comments => handle_comment_navigator_action(app, action),
-            FocusedPanel::Diff => handle_diff_action(app, action),
-            FocusedPanel::CommitSelector => handle_commit_selector_action(app, action),
-        },
-    }
 }
 
 /// Handle a comment-mode key while vim is active: app-level keys keep their
@@ -1124,6 +1111,60 @@ mod tests {
             event_drain_timeout(EVENT_DRAIN_LIMIT),
             None,
             "a capped burst must repaint instead of draining forever"
+        );
+    }
+
+    /// A tty stand-in that keeps each write it receives, one entry per write(2).
+    #[derive(Clone, Default)]
+    struct RecordingTty(std::rc::Rc<std::cell::RefCell<Vec<Vec<u8>>>>);
+
+    impl Write for RecordingTty {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().push(buf.to_vec());
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn stdout_mode_frame_reaches_the_tty_whole() {
+        use ratatui::layout::Rect;
+        use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
+
+        let tty = RecordingTty::default();
+        let mut terminal = Terminal::with_options(
+            CrosstermBackend::new(buffered_tty(tty.clone())),
+            TerminalOptions {
+                viewport: Viewport::Fixed(Rect::new(0, 0, 160, 45)),
+            },
+        )
+        .unwrap();
+        let rows = vec![ratatui::text::Line::from("x".repeat(160)); 45];
+
+        // The main loop's frame: every cell changes, as when a scroll moves the diff.
+        queue!(terminal.backend_mut(), BeginSynchronizedUpdate).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(ratatui::widgets::Paragraph::new(rows), frame.area());
+            })
+            .unwrap();
+        execute!(terminal.backend_mut(), EndSynchronizedUpdate).unwrap();
+
+        let writes = tty.0.borrow();
+        let frame = &writes[0];
+        assert!(
+            frame.starts_with(b"\x1b[?2026h")
+                && frame.iter().filter(|b| **b == b'x').count() == 160 * 45,
+            "the first write must carry the whole repaint ({} writes in total)",
+            writes.len()
+        );
+        assert_eq!(
+            writes.last().map(Vec::as_slice),
+            Some(b"\x1b[?2026l".as_slice()),
+            "the frame must end with the synchronized-update close"
         );
     }
 

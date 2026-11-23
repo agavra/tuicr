@@ -212,10 +212,6 @@ mod tests {
                 responses: RefCell::new(responses),
             }
         }
-
-        fn call_count(&self) -> usize {
-            self.calls.borrow().len()
-        }
     }
 
     impl GlabCommandRunner for RecordingRunner {

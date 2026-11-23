@@ -348,15 +348,12 @@ mod tests {
 
     #[test]
     fn should_leave_hunks_uncolored_after_the_shared_parser() {
-        let files = crate::vcs::diff_parser::parse_file_patches(
-            vec![FilePatch::new(
-                Some(PathBuf::from("sample.rs")),
-                Some(PathBuf::from("sample.rs")),
-                FileStatus::Modified,
-                "@@ -1 +1 @@\n-fn a() {}\n+fn b() {}\n",
-            )],
-            &SyntaxHighlighter::default(),
-        )
+        let files = crate::vcs::diff_parser::parse_file_patches(vec![FilePatch::new(
+            Some(PathBuf::from("sample.rs")),
+            Some(PathBuf::from("sample.rs")),
+            FileStatus::Modified,
+            "@@ -1 +1 @@\n-fn a() {}\n+fn b() {}\n",
+        )])
         .expect("parse");
 
         assert_uncolored(&files, "shared parser");
@@ -382,7 +379,7 @@ mod tests {
             let backend = crate::vcs::GitBackend::discover_from(
                 dir.path(),
                 preference,
-                crate::vcs::DiffWhitespaceMode::Normal,
+                crate::vcs::VcsDiffOptions::default(),
             )
             .expect("open repo");
             let files = backend
@@ -411,15 +408,12 @@ mod tests {
     #[test]
     fn should_color_a_hunk_exactly_as_parsing_did() {
         let patch = "@@ -1,3 +1,3 @@\n pub fn alpha(x: u32) -> u32 {\n-    x + 1\n+    x * 2\n }\n";
-        let mut files = crate::vcs::diff_parser::parse_file_patches(
-            vec![FilePatch::new(
-                Some(PathBuf::from("sample.rs")),
-                Some(PathBuf::from("sample.rs")),
-                FileStatus::Modified,
-                patch,
-            )],
-            &SyntaxHighlighter::default(),
-        )
+        let mut files = crate::vcs::diff_parser::parse_file_patches(vec![FilePatch::new(
+            Some(PathBuf::from("sample.rs")),
+            Some(PathBuf::from("sample.rs")),
+            FileStatus::Modified,
+            patch,
+        )])
         .expect("parse");
         let mut hunk = files.remove(0).hunks.remove(0);
 

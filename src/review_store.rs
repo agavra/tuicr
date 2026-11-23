@@ -134,6 +134,18 @@ impl ReviewStore {
         storage::delete_inactive_session_in_dir(session_ref.path(), &reviews_dir)
     }
 
+    /// Delete a persisted session this process itself has open.
+    ///
+    /// The registration this process wrote does not block the delete, while a
+    /// registration from any other live tuicr still reports
+    /// [`DeleteOutcome::Active`]. The owning TUI must also drop its in-memory
+    /// copy (as the Sessions tab does), or its next save writes the review
+    /// back.
+    pub fn delete_open_review(&self, session_ref: &SessionRef) -> Result<DeleteOutcome> {
+        let reviews_dir = self.reviews_dir()?;
+        storage::delete_inactive_session_except_own_pid_in_dir(session_ref.path(), &reviews_dir)
+    }
+
     /// Save a session through this store's storage root.
     pub fn save_review(&self, session: &ReviewSession) -> Result<SessionRef> {
         let reviews_dir = self.reviews_dir()?;
@@ -161,6 +173,21 @@ fn summary_from_entry(
     let kind = match entry.kind {
         ManifestKind::Local => SessionKind::Local,
         ManifestKind::Pr { .. } => SessionKind::Pr,
+    };
+    // A legacy hostless manifest key for a non-default host only resolves
+    // through its `@host` form, which the file's own key supplies.
+    let slug = if kind == SessionKind::Pr {
+        storage::load_session(&path)
+            .ok()
+            .and_then(|s| storage::session_marker_slug(&s).ok())
+            .filter(|marker| {
+                marker
+                    .strip_prefix(&slug)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('@'))
+            })
+            .unwrap_or(slug)
+    } else {
+        slug
     };
     SessionSummary {
         session_ref: SessionRef::from_path(path),
@@ -564,5 +591,47 @@ mod tests {
 
         let listed = store.list_sessions_for_repo(&repo).unwrap();
         assert_eq!(listed[0].comment_count, 1);
+    }
+}
+
+#[cfg(test)]
+mod list_slug_tests {
+    use super::*;
+    use crate::forge::traits::{ForgeRepository, PrSessionKey};
+    use crate::model::SessionDiffSource;
+
+    // A legacy hostless manifest entry of a non-default host must be listed
+    // with a slug that `resolve_pr_session` accepts (list -> --session flow).
+    #[test]
+    fn should_list_resolvable_slug_for_legacy_non_default_host_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("reviews");
+        let key = PrSessionKey::new(ForgeRepository::github("ghe.internal", "o", "r"), 42, "abc");
+        let mut session = ReviewSession::new(
+            PathBuf::from("forge:ghe.internal/o/r"),
+            "abc".to_string(),
+            Some("b".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        session.pr_session_key = Some(key.clone());
+        let target = storage::legacy_pr_target(&key);
+        let path = dir.join(&target.relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string(&session).unwrap()).unwrap();
+        let entry = crate::persistence::manifest::entry_from_session(
+            &session,
+            target.relative,
+            target.anchor,
+        );
+        let mut m = crate::persistence::manifest::load_manifest(&dir).unwrap_or_default();
+        m.upsert(target.manifest_slug, entry);
+        crate::persistence::manifest::save_manifest(&dir, &m).unwrap();
+
+        let store = ReviewStore::with_reviews_dir(&dir);
+        let listed = store.list_all_sessions().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].slug, "gh:o/r/pr/42@ghe.internal");
+        let resolved = store.resolve_pr_session(&listed[0].slug).unwrap();
+        assert_eq!(resolved.map(|r| r.path().to_path_buf()), Some(path));
     }
 }

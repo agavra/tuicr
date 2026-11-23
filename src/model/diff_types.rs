@@ -120,6 +120,12 @@ impl DiffHunk {
 }
 
 impl DiffFile {
+    /// Synthetic path keyed by short id so different commits' messages have
+    /// distinct session keys and exported comments identify their commit.
+    pub fn commit_message_path(short_id: &str) -> PathBuf {
+        PathBuf::from(format!("Commit Message ({short_id})"))
+    }
+
     /// Stable key for a reviewed hunk.
     ///
     /// Unique hunk content ignores hunk header line numbers so unrelated

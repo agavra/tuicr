@@ -250,11 +250,39 @@ impl App {
     }
 
     /// `<leader>h` — move focus one panel left. In side-by-side view the two
-    /// diff columns are stops on that walk, so the order is
-    /// file list → old → new; from the new side this only steps to the old one.
+    /// diff columns are stops on that walk, so with the file list on the left
+    /// the order is file list → old → new, and with it on the right
+    /// old → new → file list.
     pub fn focus_pane_left(&mut self) {
-        if self.diff_panes_are_walkable() && self.cursor_side == LineSide::New {
-            self.set_cursor_side(LineSide::Old);
+        match self.file_list_position {
+            FileListPosition::Left => self.focus_toward_file_list(),
+            FileListPosition::Right => self.focus_away_from_file_list(),
+        }
+    }
+
+    /// `<leader>l` — move focus one panel right; the mirror of
+    /// [`focus_pane_left`].
+    pub fn focus_pane_right(&mut self) {
+        match self.file_list_position {
+            FileListPosition::Left => self.focus_away_from_file_list(),
+            FileListPosition::Right => self.focus_toward_file_list(),
+        }
+    }
+
+    /// The side-by-side column that borders the file list.
+    fn diff_side_nearest_file_list(&self) -> LineSide {
+        match self.file_list_position {
+            FileListPosition::Left => LineSide::Old,
+            FileListPosition::Right => LineSide::New,
+        }
+    }
+
+    /// One step of the panel walk toward the file list: from the far diff
+    /// column to the near one, then out to the file list (if shown).
+    fn focus_toward_file_list(&mut self) {
+        let near = self.diff_side_nearest_file_list();
+        if self.diff_panes_are_walkable() && self.cursor_side != near {
+            self.set_cursor_side(near);
             return;
         }
         if self.show_file_list {
@@ -262,13 +290,17 @@ impl App {
         }
     }
 
-    /// `<leader>l` — move focus one panel right; the mirror of
-    /// [`focus_pane_left`]. Entering the diff from the file list keeps
-    /// whichever side was already active rather than resetting it.
-    pub fn focus_pane_right(&mut self) {
+    /// One step of the panel walk away from the file list. Entering the diff
+    /// from the file list keeps whichever side was already active rather than
+    /// resetting it; inside the diff it steps to the far column and stops.
+    fn focus_away_from_file_list(&mut self) {
         if self.diff_panes_are_walkable() {
-            if self.cursor_side == LineSide::Old {
-                self.set_cursor_side(LineSide::New);
+            let near = self.diff_side_nearest_file_list();
+            if self.cursor_side == near {
+                self.set_cursor_side(match near {
+                    LineSide::Old => LineSide::New,
+                    LineSide::New => LineSide::Old,
+                });
             }
             return;
         }
@@ -344,6 +376,27 @@ impl App {
         {
             self.diff_state.scroll_offset =
                 (self.diff_state.cursor_line + bottom_margin - visible_lines + 1).min(max_scroll);
+        }
+    }
+
+    /// Position the viewport after a deliberate `]`/`[` hunk jump, according
+    /// to `hunk_jump_align`. `Top` and `Center` reuse the existing `zt`/`zz`
+    /// helpers, so both honour the `scroll_offset` margin and the end-of-diff
+    /// clamping.
+    fn align_after_jump(&mut self) {
+        match self.hunk_jump_align {
+            HunkJumpAlign::Visible => self.ensure_cursor_visible(),
+            HunkJumpAlign::Top => self.cursor_to_top(),
+            HunkJumpAlign::Center => self.center_cursor(),
+        }
+    }
+
+    /// `jump_to_file` already puts the new file's header at the top, so
+    /// `visible` keeps that placement instead of letting `scroll_offset` push
+    /// the header down. `top`/`center` re-align from there.
+    fn align_after_file_jump(&mut self) {
+        if self.hunk_jump_align != HunkJumpAlign::Visible {
+            self.align_after_jump();
         }
     }
 
@@ -460,6 +513,15 @@ impl App {
 
     pub fn go_to_source_line(&mut self, target_lineno: u32, side: LineSide) {
         let current_file = self.diff_state.current_file_idx;
+        // A collapsed file has no line rows to land on, so open it first,
+        // the way a summary jump does. Reviewed files stay shut.
+        let reviewed = self
+            .diff_files
+            .get(current_file)
+            .is_some_and(|file| self.session.is_file_reviewed(file.display_path()));
+        if !reviewed && self.reveal_file_if_collapsed(current_file) {
+            self.rebuild_annotations();
+        }
         let mut result = self.find_source_line_in_diff(target_lineno, side);
         let side_label = match side {
             LineSide::New => "",
@@ -474,6 +536,7 @@ impl App {
         // unreached half of the gap stays collapsed behind an expander.
         if !matches!(result, FindSourceLineResult::Exact(_))
             && let Some(gap_id) = self.find_gap_containing_lineno(current_file, target_lineno, side)
+            && !self.gap_is_hidden(&gap_id)
         {
             let (direction, limit) = self.expand_plan_to_reach(&gap_id, target_lineno, side);
             if let Err(e) = self.expand_gap(gap_id, direction, limit) {
@@ -595,8 +658,8 @@ impl App {
         }
     }
 
-    /// In SBS, picks Old or New per `side`, falling back to the other pane
-    /// if the requested one is empty. Unified diff rows ignore `side`.
+    /// In SBS, picks Old or New per `side`; `None` when that pane is empty on
+    /// the row. Unified diff rows ignore `side`.
     pub fn content_for_side(&self, ann_idx: usize, side: LineSide) -> Option<&str> {
         self.diff_line_for_side(ann_idx, side)
             .map(|line| line.content.as_str())
@@ -635,8 +698,8 @@ impl App {
                 let add = add_line_idx.and_then(|i| hunk.lines.get(i));
                 let del = del_line_idx.and_then(|i| hunk.lines.get(i));
                 match side {
-                    LineSide::New => add.or(del),
-                    LineSide::Old => del.or(add),
+                    LineSide::New => add,
+                    LineSide::Old => del,
                 }
             }
             AnnotatedLine::ExpandedContext { gap_id, line_idx } => {
@@ -877,6 +940,7 @@ impl App {
         if self.diff_state.cursor_line < self.review_comments_render_height() {
             if !self.diff_files.is_empty() {
                 self.jump_to_file(0);
+                self.align_after_file_jump();
             }
             return;
         }
@@ -888,6 +952,7 @@ impl App {
                 && *file_idx > current_file_idx
             {
                 self.jump_to_file(*file_idx);
+                self.align_after_file_jump();
                 return;
             }
         }
@@ -902,6 +967,7 @@ impl App {
                 && *file_idx < current_file_idx
             {
                 self.jump_to_file(*file_idx);
+                self.align_after_file_jump();
                 return;
             }
         }
@@ -943,7 +1009,7 @@ impl App {
         for pos in self.hunk_positions() {
             if pos > self.diff_state.cursor_line {
                 self.diff_state.cursor_line = pos;
-                self.ensure_cursor_visible();
+                self.align_after_jump();
                 self.update_current_file_from_cursor();
                 return;
             }
@@ -960,7 +1026,7 @@ impl App {
                 self.jump_to_file(next_idx);
                 if let Some(&first) = self.hunk_positions().first() {
                     self.diff_state.cursor_line = first;
-                    self.ensure_cursor_visible();
+                    self.align_after_jump();
                     self.update_current_file_from_cursor();
                 }
             }
@@ -976,7 +1042,7 @@ impl App {
         for &pos in positions.iter().rev() {
             if pos < self.diff_state.cursor_line {
                 self.diff_state.cursor_line = pos;
-                self.ensure_cursor_visible();
+                self.align_after_jump();
                 self.update_current_file_from_cursor();
                 return;
             }
@@ -992,13 +1058,13 @@ impl App {
             self.jump_to_file(prev_idx);
             if let Some(&last) = self.hunk_positions().last() {
                 self.diff_state.cursor_line = last;
-                self.ensure_cursor_visible();
+                self.align_after_jump();
                 self.update_current_file_from_cursor();
                 return;
             }
         }
         self.diff_state.cursor_line = 0;
-        self.ensure_cursor_visible();
+        self.align_after_jump();
         self.update_current_file_from_cursor();
     }
 
@@ -1130,6 +1196,13 @@ impl App {
             }
         }
 
+        // Remote threads with no hunk row render under the file header.
+        for thread_idx in self.remote_threads_outside_hunks(file) {
+            comment_lines += crate::forge::remote_comments::thread_display_lines(
+                &self.forge_review_threads[thread_idx],
+            );
+        }
+
         if file.is_binary || file.hunks.is_empty() {
             content_lines = 1;
         } else {
@@ -1233,28 +1306,36 @@ impl App {
                                 LineOrigin::Context => {
                                     content_lines += 1;
 
-                                    // Comments for context line
-                                    if let Some(line_comments) = line_comments
-                                        && let Some(new_ln) = diff_line.new_lineno
-                                        && let Some(comments) = line_comments.get(&new_ln)
-                                    {
-                                        for comment in comments {
-                                            if comment.side != Some(LineSide::Old)
-                                                && Self::comment_visible_with(
-                                                    comment,
-                                                    commit_set.as_ref(),
-                                                )
-                                            {
-                                                comment_lines += Self::comment_display_lines(
-                                                    comment,
-                                                    self.diff_state.viewport_width,
-                                                );
+                                    // Comments for context line (both sides)
+                                    for (line_no, side) in [
+                                        (diff_line.old_lineno, LineSide::Old),
+                                        (diff_line.new_lineno, LineSide::New),
+                                    ] {
+                                        let Some(ln) = line_no else { continue };
+                                        if let Some(comments) =
+                                            line_comments.and_then(|lc| lc.get(&ln))
+                                        {
+                                            for comment in comments {
+                                                let matches_side = if side == LineSide::Old {
+                                                    comment.side == Some(LineSide::Old)
+                                                } else {
+                                                    comment.side != Some(LineSide::Old)
+                                                };
+                                                if matches_side
+                                                    && Self::comment_visible_with(
+                                                        comment,
+                                                        commit_set.as_ref(),
+                                                    )
+                                                {
+                                                    comment_lines += Self::comment_display_lines(
+                                                        comment,
+                                                        self.diff_state.viewport_width,
+                                                    );
+                                                }
                                             }
                                         }
-                                    }
-                                    if let Some(new_ln) = diff_line.new_lineno {
                                         comment_lines += remote_thread_rows
-                                            .get(&(new_ln, LineSide::New))
+                                            .get(&(ln, side))
                                             .copied()
                                             .unwrap_or(0);
                                     }
@@ -1498,15 +1579,7 @@ impl App {
     /// Uses viewport_width to account for pre-wrapped visual segments so the
     /// annotation count stays in sync with what format_comment_lines renders.
     pub(crate) fn comment_display_lines(comment: &Comment, viewport_width: usize) -> usize {
-        // Mirrors the content_area calculation in format_comment_lines:
-        // indicator(1) + border_prefix(7) + safety_margin(2) = 10
-        let content_area = viewport_width.saturating_sub(10);
-        let visual_lines: usize = comment
-            .content
-            .split('\n')
-            .map(|line| crate::ui::comment_panel::wrap_segments(line, content_area).len())
-            .sum();
-        2 + visual_lines // top border + visual segments + bottom border
+        crate::ui::comment_panel::comment_box_rows(&comment.content, viewport_width)
     }
 
     /// Update viewport_width and trigger annotation rebuild if it changed.
@@ -1566,5 +1639,14 @@ impl App {
                 .map(|ln| (ln, LineSide::New))
                 .or_else(|| old_lineno.map(|ln| (ln, LineSide::Old))),
         }
+    }
+}
+
+impl App {
+    /// Reset scroll/cursor state while keeping the user's wrap preference.
+    pub(super) fn reset_diff_state(&mut self) {
+        let wrap = self.diff_state.wrap_lines;
+        self.diff_state = DiffState::default();
+        self.diff_state.wrap_lines = wrap;
     }
 }

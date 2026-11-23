@@ -244,12 +244,9 @@ main() {
     exit 1
   fi
 
-  # Check if tuicr is already running
-  if check_tuicr_running "$target_dir"; then
-    log_warn "tuicr is already running"
-    log_info "Switch to its pane with Alt-arrow keys (default zellij binding)"
-    exit 0
-  fi
+  # Wait for a tuicr that is already open on this repo, or this launch would
+  # end with exit 0 and no review
+  tuicr_wait_for_running check_tuicr_running "$target_dir"
 
   # Launch tuicr in a split pane
   launch_tuicr_pane "$target_dir" "${TUICR_PASSTHROUGH_ARGS[@]+"${TUICR_PASSTHROUGH_ARGS[@]}"}"

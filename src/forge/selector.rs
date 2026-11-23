@@ -4,7 +4,6 @@
 //! initial fetch) and by background fetch results delivered through an
 //! `mpsc::Receiver`. UI rendering, filter input, and key dispatch all read
 //! from this state; no I/O happens here.
-#![allow(dead_code)]
 
 use crate::forge::traits::{ForgeRepository, PullRequestListScope, PullRequestSummary};
 
@@ -165,13 +164,14 @@ impl PullRequestsTab {
         None
     }
 
-    /// Toggle between all open PRs and PRs awaiting the current user's review,
-    /// then transition to `Loading` so the caller can refetch page 1.
+    /// Step to the next list scope the repository's forge supports (see
+    /// `ForgeKind::pr_list_scopes`), then transition to `Loading` so the
+    /// caller can refetch page 1.
     pub fn toggle_scope_and_start_reload(
         &mut self,
     ) -> Option<(ForgeRepository, PullRequestListScope)> {
         let repository = self.repository()?.clone();
-        let next_scope = self.scope().toggled();
+        let next_scope = self.scope().next_for(repository.kind);
         *self = PullRequestsTab::Loading {
             repository: repository.clone(),
             scope: next_scope,
@@ -224,32 +224,18 @@ impl PullRequestsTab {
     /// Apply the result of a load-more fetch. Appends rows.
     pub fn apply_load_more(&mut self, result: Result<(Vec<PullRequestSummary>, bool), String>) {
         if let PullRequestsTab::Loaded {
-            repository,
             rows,
             has_more,
             loading_more,
-            scope,
             ..
         } = self
         {
             *loading_more = false;
-            match result {
-                Ok((new_rows, more)) => {
-                    rows.extend(new_rows);
-                    *has_more = more;
-                }
-                Err(message) => {
-                    // Don't tear down the loaded list on a load-more failure;
-                    // surface the message and clear the busy flag so the user
-                    // can try again.
-                    let repository = Some(repository.clone());
-                    let scope = *scope;
-                    *self = PullRequestsTab::Error {
-                        repository,
-                        scope,
-                        message,
-                    };
-                }
+            // On failure keep the loaded rows (the caller surfaces the
+            // error) so the user can retry the load-more row.
+            if let Ok((new_rows, more)) = result {
+                rows.extend(new_rows);
+                *has_more = more;
             }
         }
     }
@@ -511,6 +497,7 @@ mod tests {
             head_ref_name: head.to_string(),
             base_ref_name: base.to_string(),
             updated_at: Some(Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()),
+            last_commit_at: None,
             url: format!("https://github.com/agavra/tuicr/pull/{number}"),
             state: "OPEN".to_string(),
             is_draft: false,
@@ -710,8 +697,10 @@ mod tests {
         tab.start_load_more();
         // when
         tab.apply_load_more(Err("net down".to_string()));
-        // then — moves into Error but the original rows can be re-fetched
-        assert!(matches!(tab, PullRequestsTab::Error { .. }));
+        // then — rows kept and load-more can be retried
+        assert!(matches!(tab, PullRequestsTab::Loaded { .. }));
+        assert_eq!(tab.visible_indices().len(), 1);
+        assert!(tab.start_load_more().is_some());
     }
 
     #[test]
@@ -744,6 +733,62 @@ mod tests {
         assert_eq!(
             request.unwrap(),
             (repo(), PullRequestListScope::ReviewRequested, 1)
+        );
+    }
+
+    #[test]
+    fn should_cycle_github_scopes_and_reload_each() {
+        // given
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        let mut seen = Vec::new();
+        // when
+        for _ in 0..3 {
+            let (_, scope) = tab.toggle_scope_and_start_reload().unwrap();
+            assert!(matches!(tab.view().status, PrTabStatus::Loading));
+            tab.apply_initial_load(Ok((vec![pr(1, "a", "a", "h", "m")], true)));
+            seen.push(scope);
+        }
+        // then
+        assert_eq!(
+            seen,
+            vec![
+                PullRequestListScope::ReviewRequested,
+                PullRequestListScope::PersonallyRequested,
+                PullRequestListScope::Open,
+            ]
+        );
+    }
+
+    #[test]
+    fn should_toggle_between_two_scopes_on_forges_without_personal_requests() {
+        // given
+        let gitlab = ForgeRepository::gitlab("gitlab.com", "group", "project");
+        let mut tab = PullRequestsTab::new(Some(gitlab.clone()));
+        // when
+        let first = tab.toggle_scope_and_start_reload();
+        let second = tab.toggle_scope_and_start_reload();
+        // then
+        assert_eq!(
+            first.unwrap(),
+            (gitlab.clone(), PullRequestListScope::ReviewRequested)
+        );
+        assert_eq!(second.unwrap(), (gitlab, PullRequestListScope::Open));
+    }
+
+    #[test]
+    fn should_preserve_personally_requested_scope_for_load_more() {
+        // given
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.toggle_scope_and_start_reload();
+        tab.toggle_scope_and_start_reload();
+        tab.apply_initial_load(Ok((vec![pr(1, "a", "a", "h", "m")], true)));
+        tab.set_filter("a".to_string());
+        // when
+        let request = tab.start_load_more();
+        // then
+        assert_eq!(
+            request.unwrap(),
+            (repo(), PullRequestListScope::PersonallyRequested, 1)
         );
     }
 }

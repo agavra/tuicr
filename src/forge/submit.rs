@@ -10,7 +10,9 @@
 
 use std::path::PathBuf;
 
-use crate::app::CommentTypeDefinition;
+use crate::app::{
+    CommentTypeDefinition, resolve_comment_type_label, resolve_comment_type_raw_label,
+};
 use crate::config::ForgeConfig;
 use crate::model::comment::{Comment, CommentType};
 use crate::model::{DiffFile, FileStatus, LineOrigin, LineRange, LineSide};
@@ -32,23 +34,21 @@ impl<'a> SubmitContext<'a> {
         }
     }
 
-    /// Resolved `[TYPE]` text, or an empty string for `None` so callers omit
-    /// the tag. Mirrors `App::comment_type_label` and
-    /// `export_comment_type_label` — those three must agree.
-    fn type_label(&self, comment_type: &CommentType) -> String {
-        if comment_type.is_none() {
+    /// The type prefix rendered through `forge.comment_type_format`, or an
+    /// empty string for `None`. Independent of `comment_type_prefix` so the
+    /// submit modals can preview it.
+    pub fn type_tag(&self, comment_type: &CommentType) -> String {
+        let raw = resolve_comment_type_raw_label(comment_type, self.comment_types);
+        if raw.is_empty() {
             return String::new();
         }
-
-        if let Some(definition) = self
-            .comment_types
-            .iter()
-            .find(|definition| definition.id == comment_type.id())
-        {
-            return definition.label.to_ascii_uppercase();
-        }
-
-        comment_type.as_str()
+        self.forge
+            .comment_type_format
+            .replace(
+                "{LABEL}",
+                &resolve_comment_type_label(comment_type, self.comment_types),
+            )
+            .replace("{label}", &raw)
     }
 }
 
@@ -127,6 +127,18 @@ pub struct DiffAnchor {
     pub origin: LineOrigin,
 }
 
+impl DiffAnchor {
+    /// Line number on the opposite side, for context lines only. Added and
+    /// deleted lines occupy a single side, so GitLab gets no counterpart.
+    pub fn counterpart_line(&self, side: LineSide) -> Option<u32> {
+        match (self.origin, side) {
+            (LineOrigin::Context, LineSide::New) => Some(self.old_line),
+            (LineOrigin::Context, LineSide::Old) => Some(self.new_line),
+            _ => None,
+        }
+    }
+}
+
 /// Both ends of a multi-line selection, addressed in both line counters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RangeAnchors {
@@ -186,6 +198,9 @@ pub enum UnmappableReason {
     /// for line comments authored through tuicr today, but we keep the
     /// variant so the resolver can surface a clear message if it ever does.
     LineNotInDiff,
+    /// The comment is on a commit message, which is not a file of the PR
+    /// diff. tuicr posts no inline comments there.
+    CommitMessage,
 }
 
 impl UnmappableReason {
@@ -196,6 +211,7 @@ impl UnmappableReason {
             UnmappableReason::BinaryFile => "binary file",
             UnmappableReason::TooLargeFile => "file too large",
             UnmappableReason::LineNotInDiff => "line not in current diff",
+            UnmappableReason::CommitMessage => "commit message comments are not posted inline",
         }
     }
 }
@@ -219,12 +235,7 @@ fn build_inline_body(comment: &Comment, file_level: bool, ctx: SubmitContext<'_>
     }
     // `None` comments carry no `[TYPE]` tag, but file-level ones keep the
     // `File-level:` marker so the reader still knows where the comment applies.
-    let label = ctx.type_label(&comment.comment_type);
-    let type_tag = if label.is_empty() {
-        String::new()
-    } else {
-        format!("[{label}] ")
-    };
+    let type_tag = ctx.type_tag(&comment.comment_type);
     let prefix = if file_level {
         format!("{type_tag}File-level: ")
     } else {
@@ -256,7 +267,7 @@ pub enum CommentAnchor {
 /// Map a single local `Comment` to either an inline GitHub comment or an
 /// `Unmappable` outcome. `file` must be the diff file that produced this
 /// comment (lookup is the caller's responsibility — it owns the current
-/// `diff_files` / `range_diff_files` slice).
+/// displayed `diff_files`).
 pub fn map_comment(
     comment: &Comment,
     anchor: CommentAnchor,
@@ -284,10 +295,10 @@ pub fn map_comment(
     match anchor {
         CommentAnchor::FileLevel => match file.first_valid_line(LineSide::New) {
             Some(line) => {
-                // Use find_line_with_counterpart so context lines include both
-                // new_line and old_line in the GitLab position object.
-                let counterpart_line =
-                    find_line_with_counterpart(file, line, LineSide::New).and_then(|(_, cp)| cp);
+                // Context lines include both new_line and old_line in the
+                // GitLab position object.
+                let counterpart_line = find_diff_anchor(file, line, LineSide::New)
+                    .and_then(|a| a.counterpart_line(LineSide::New));
                 MappedComment::Inline(InlineComment {
                     path,
                     line,
@@ -315,17 +326,17 @@ pub fn map_comment(
                 reason: UnmappableReason::MixedSideRange,
             },
         },
-        CommentAnchor::Line { line, side } => match find_line_with_counterpart(file, line, side) {
+        CommentAnchor::Line { line, side } => match find_diff_anchor(file, line, side) {
             None => MappedComment::Unmappable {
                 comment: comment.clone(),
                 file: path,
                 reason: UnmappableReason::LineNotInDiff,
             },
-            Some((primary_line, counterpart_line)) => MappedComment::Inline(InlineComment {
+            Some(found) => MappedComment::Inline(InlineComment {
                 path,
-                line: primary_line,
+                line,
                 side: side.into(),
-                counterpart_line,
+                counterpart_line: found.counterpart_line(side),
                 start_line: None,
                 start_side: None,
                 range_anchors: None,
@@ -347,37 +358,6 @@ fn renamed_old_path(file: &DiffFile) -> Option<PathBuf> {
     let old = file.old_path.as_ref()?;
     let new = file.new_path.as_ref()?;
     if old == new { None } else { Some(old.clone()) }
-}
-
-/// True when `line` appears on `side` somewhere in the file's hunks.
-fn line_present_on_side(file: &DiffFile, line: u32, side: LineSide) -> bool {
-    find_line_with_counterpart(file, line, side).is_some()
-}
-
-/// Find `line` on `side` and return `(line, counterpart)` where `counterpart`
-/// is the line number on the opposite side for context lines (`None` for
-/// purely added/deleted lines).
-fn find_line_with_counterpart(
-    file: &DiffFile,
-    line: u32,
-    side: LineSide,
-) -> Option<(u32, Option<u32>)> {
-    for hunk in &file.hunks {
-        for dl in &hunk.lines {
-            let candidate = match side {
-                LineSide::New => dl.new_lineno,
-                LineSide::Old => dl.old_lineno,
-            };
-            if candidate == Some(line) {
-                let counterpart = match side {
-                    LineSide::New => dl.old_lineno,
-                    LineSide::Old => dl.new_lineno,
-                };
-                return Some((line, counterpart));
-            }
-        }
-    }
-    None
 }
 
 /// Locate `line` on `side` and report both of its diff counters.
@@ -446,26 +426,27 @@ fn map_range(
     // Verify both ends of the range exist on `side`. The hunks may not
     // contain every intermediate line (the user could have selected across
     // a gap), but the start and end must be anchorable.
-    if !range_endpoints_present(file, range, side) {
+    // Context lines count on either side, like single-line mapping.
+    let (Some(start), Some(end)) = (
+        find_diff_anchor(file, range.start, side),
+        find_diff_anchor(file, range.end, side),
+    ) else {
         return MappedComment::Unmappable {
             comment: comment.clone(),
             file: path,
             reason: UnmappableReason::MixedSideRange,
         };
-    }
+    };
 
     let old_path = renamed_old_path(file);
     // A range anchored on a context line must name both sides in the position,
     // exactly like a single-line comment on that same line.
-    let counterpart_of =
-        |line: u32| find_line_with_counterpart(file, line, side).and_then(|(_, cp)| cp);
-
     if range.is_single() {
         return MappedComment::Inline(InlineComment {
             path,
             line: range.start,
             side: side.into(),
-            counterpart_line: counterpart_of(range.start),
+            counterpart_line: start.counterpart_line(side),
             start_line: None,
             start_side: None,
             range_anchors: None,
@@ -475,15 +456,13 @@ fn map_range(
         });
     }
 
-    let range_anchors = find_diff_anchor(file, range.start, side)
-        .zip(find_diff_anchor(file, range.end, side))
-        .map(|(start, end)| RangeAnchors { start, end });
+    let range_anchors = Some(RangeAnchors { start, end });
 
     MappedComment::Inline(InlineComment {
         path,
         line: range.end,
         side: side.into(),
-        counterpart_line: counterpart_of(range.end),
+        counterpart_line: end.counterpart_line(side),
         start_line: Some(range.start),
         start_side: Some(side.into()),
         range_anchors,
@@ -491,39 +470,6 @@ fn map_range(
         body: build_inline_body(comment, false, ctx),
         comment_id: comment.id.clone(),
     })
-}
-
-/// True when both the start and end of `range` appear on the requested side
-/// somewhere in `file`'s hunks. Used to detect ranges that would straddle a
-/// side boundary (e.g. user selected through deleted+added lines).
-fn range_endpoints_present(file: &DiffFile, range: LineRange, side: LineSide) -> bool {
-    let mut saw_start = false;
-    let mut saw_end = false;
-    for hunk in &file.hunks {
-        for line in &hunk.lines {
-            let lineno = match side {
-                LineSide::New => match line.origin {
-                    crate::model::LineOrigin::Context | crate::model::LineOrigin::Addition => {
-                        line.new_lineno
-                    }
-                    crate::model::LineOrigin::Deletion => None,
-                },
-                LineSide::Old => match line.origin {
-                    crate::model::LineOrigin::Deletion => line.old_lineno,
-                    _ => None,
-                },
-            };
-            if let Some(n) = lineno {
-                if n == range.start {
-                    saw_start = true;
-                }
-                if n == range.end {
-                    saw_end = true;
-                }
-            }
-        }
-    }
-    saw_start && saw_end
 }
 
 /// Output of preflight — drives the resolver and confirmation modal.
@@ -583,9 +529,8 @@ pub fn build_review_body(
             if i > 0 {
                 block.push_str("\n\n");
             }
-            let label = ctx.type_label(&c.comment_type);
-            if ctx.forge.comment_type_prefix && !label.is_empty() {
-                block.push_str(&format!("[{label}] "));
+            if ctx.forge.comment_type_prefix {
+                block.push_str(&ctx.type_tag(&c.comment_type));
             }
             block.push_str(&c.content);
         }
@@ -595,9 +540,8 @@ pub fn build_review_body(
     if !moved_to_summary.is_empty() {
         let mut block = String::from("## Unplaced comments\n");
         for item in moved_to_summary {
-            let label = ctx.type_label(&item.comment.comment_type);
-            let prefix = if ctx.forge.comment_type_prefix && !label.is_empty() {
-                format!("[{label}] ")
+            let prefix = if ctx.forge.comment_type_prefix {
+                ctx.type_tag(&item.comment.comment_type)
             } else {
                 String::new()
             };
@@ -1058,6 +1002,131 @@ mod tests {
         }
     }
 
+    #[test]
+    fn should_map_old_side_range_over_deletion_and_context_lines() {
+        let file = file_with_hunks(vec![hunk(vec![
+            line(LineOrigin::Deletion, None, Some(11)),
+            line(LineOrigin::Context, Some(11), Some(12)),
+            line(LineOrigin::Context, Some(12), Some(13)),
+        ])]);
+        for range in [LineRange::new(11, 12), LineRange::new(12, 13)] {
+            let comment = comment_range(LineSide::Old, range);
+            let mapped = map_comment(
+                &comment,
+                anchor_from(&comment),
+                &file,
+                ctx_of(&default_config(), &test_comment_types()),
+            );
+            match mapped {
+                MappedComment::Inline(ic) => {
+                    assert_eq!(ic.start_line, Some(range.start));
+                    assert_eq!(ic.line, range.end);
+                    assert_eq!(ic.side, GhSide::Left);
+                }
+                other => panic!("expected Inline for {range:?}, got {other:?}"),
+            }
+        }
+    }
+
+    fn range_result(file: &DiffFile, side: LineSide, range: LineRange) -> MappedComment {
+        let comment = comment_range(side, range);
+        map_comment(
+            &comment,
+            anchor_from(&comment),
+            file,
+            ctx_of(&default_config(), &test_comment_types()),
+        )
+    }
+
+    #[test]
+    fn should_mark_range_with_only_start_on_side_as_unmappable() {
+        let file = file_with_hunks(vec![hunk(vec![
+            line(LineOrigin::Addition, Some(10), None),
+            line(LineOrigin::Deletion, None, Some(20)),
+        ])]);
+        match range_result(&file, LineSide::New, LineRange::new(10, 20)) {
+            MappedComment::Unmappable { reason, .. } => {
+                assert_eq!(reason, UnmappableReason::MixedSideRange)
+            }
+            other => panic!("expected Unmappable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_mark_range_with_only_end_on_side_as_unmappable() {
+        let file = file_with_hunks(vec![hunk(vec![
+            line(LineOrigin::Deletion, None, Some(20)),
+            line(LineOrigin::Addition, Some(30), None),
+        ])]);
+        match range_result(&file, LineSide::New, LineRange::new(20, 30)) {
+            MappedComment::Unmappable { reason, .. } => {
+                assert_eq!(reason, UnmappableReason::MixedSideRange)
+            }
+            other => panic!("expected Unmappable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_anchor_old_side_range_from_context_to_deletion() {
+        let file = file_with_hunks(vec![hunk(vec![
+            line(LineOrigin::Context, Some(4), Some(5)),
+            line(LineOrigin::Deletion, None, Some(6)),
+        ])]);
+        match range_result(&file, LineSide::Old, LineRange::new(5, 6)) {
+            MappedComment::Inline(ic) => {
+                // End is a deletion: no counterpart.
+                assert_eq!(ic.counterpart_line, None);
+                assert_eq!(ic.side, GhSide::Left);
+                let a = ic.range_anchors.expect("anchors");
+                assert_eq!(
+                    a.start,
+                    DiffAnchor {
+                        old_line: 5,
+                        new_line: 4,
+                        origin: LineOrigin::Context
+                    }
+                );
+                assert_eq!(a.start.counterpart_line(LineSide::Old), Some(4));
+                assert_eq!(
+                    a.end,
+                    DiffAnchor {
+                        old_line: 6,
+                        new_line: 5,
+                        origin: LineOrigin::Deletion
+                    }
+                );
+                assert_eq!(a.end.counterpart_line(LineSide::Old), None);
+            }
+            other => panic!("expected Inline, got {other:?}"),
+        }
+        // Reverse: ending on context gives the new-side counterpart.
+        let file = file_with_hunks(vec![hunk(vec![
+            line(LineOrigin::Deletion, None, Some(6)),
+            line(LineOrigin::Context, Some(6), Some(7)),
+        ])]);
+        match range_result(&file, LineSide::Old, LineRange::new(6, 7)) {
+            MappedComment::Inline(ic) => assert_eq!(ic.counterpart_line, Some(6)),
+            other => panic!("expected Inline, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_resolve_type_label_from_config_then_id() {
+        let types = test_comment_types();
+        let config = default_config();
+        let ctx = ctx_of(&config, &types);
+        assert_eq!(ctx.type_tag(&CommentType::None), "");
+        let custom = vec![CommentTypeDefinition {
+            id: "issue".into(),
+            label: "bug".into(),
+            definition: None,
+            color: None,
+        }];
+        let ctx = ctx_of(&config, &custom);
+        assert_eq!(ctx.type_tag(&CommentType::from_id("issue")), "[BUG] ");
+        assert_eq!(ctx.type_tag(&CommentType::from_id("note")), "[NOTE] ");
+    }
+
     // File-level mapping
 
     #[test]
@@ -1158,6 +1227,7 @@ mod tests {
         let comment = comment_with_line(LineSide::New, Some(11), None);
         let cfg = ForgeConfig {
             comment_type_prefix: false,
+            ..ForgeConfig::default()
         };
         let mapped = map_comment(
             &comment,
@@ -1233,6 +1303,7 @@ mod tests {
     fn should_omit_type_prefix_in_body_when_disabled() {
         let cfg = ForgeConfig {
             comment_type_prefix: false,
+            ..ForgeConfig::default()
         };
         let comments = vec![note("just text")];
         let body = build_review_body(&comments, &[], ctx_of(&cfg, &test_comment_types()));
@@ -1339,6 +1410,51 @@ mod tests {
         assert!(
             body.contains("[💬 NOTE] a.rs: unplaced"),
             "body was: {body}"
+        );
+    }
+
+    #[test]
+    fn should_render_type_prefix_through_configured_format() {
+        let types = vec![CommentTypeDefinition {
+            id: "nit".into(),
+            label: "nitpick (non-blocking)".into(),
+            definition: None,
+            color: None,
+        }];
+        let cases = [
+            ("[{LABEL}] ", "[NITPICK (NON-BLOCKING)] tidy"),
+            ("**{label}:** ", "**nitpick (non-blocking):** tidy"),
+            ("{label}: ", "nitpick (non-blocking): tidy"),
+        ];
+        for (format, want) in cases {
+            let cfg = ForgeConfig {
+                comment_type_format: format.to_string(),
+                ..ForgeConfig::default()
+            };
+            let ctx = ctx_of(&cfg, &types);
+            let comment = Comment::new("tidy".to_string(), CommentType::from_id("nit"), None);
+            assert_eq!(build_inline_body(&comment, false, ctx), want, "{format}");
+            assert!(
+                build_review_body(std::slice::from_ref(&comment), &[], ctx).starts_with(want),
+                "{format}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_render_unconfigured_type_id_through_lowercase_format() {
+        let cfg = ForgeConfig {
+            comment_type_format: "{label}: ".to_string(),
+            ..ForgeConfig::default()
+        };
+        let comment = Comment::new("fix".to_string(), CommentType::from_id("ghost"), None);
+        assert_eq!(
+            build_inline_body(&comment, true, ctx_of(&cfg, &test_comment_types())),
+            "ghost: File-level: fix"
+        );
+        assert_eq!(
+            ctx_of(&cfg, &test_comment_types()).type_tag(&CommentType::None),
+            ""
         );
     }
 

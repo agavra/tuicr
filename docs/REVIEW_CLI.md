@@ -50,6 +50,11 @@ standing in its checkout or passing `--repo slatedb/slatedb` — surfaces them.
 `list` emits a usable slug for each; pass a PR slug to `--session` to read or
 annotate it (no `--repo` needed, since PR slugs are self-contained).
 
+A PR slug names the forge's default host (`gh:` is github.com) implicitly. A PR
+session on any other host (a GitHub Enterprise server, a self-hosted GitLab,
+and always Gerrit) is listed and resolved with an `@<host>` suffix, e.g.
+`gh:owner/repo/pr/42@ghe.example.com`; a hostless slug never reaches it.
+
 ```bash
 # from anywhere:
 tuicr review list --repo slatedb/slatedb
@@ -75,6 +80,12 @@ tuicr review list --repo https://gitlab.com/org/team/svc
 tuicr review list --repo git@gitlab.com:org/team/svc.git
 #   -> [ ..., { "slug": "gl:org/team/svc/pr/123", "kind": "pr", ... } ]
 ```
+
+The `forge:<host>/<owner>/<repo>` form is the path tuicr stores for PR sessions
+and keeps every owner segment, so `forge:dev.azure.com/myorg/myproject/myrepo`
+and `forge:gerrit.example.org/a/tools` (owner `a`) select exactly that repo.
+A path whose repo segment is empty (`forge:host/owner/.git`) is not a valid
+selector.
 
 `--repo` for `add` / `comments` is only consulted when resolving a *local*
 slug; PR slugs and JSON paths ignore it.
@@ -111,7 +122,9 @@ tuicr review delete --session agavra/tuicr@main/worktree --comment-id <id>
 ```
 
 The id is the `id` field reported by `tuicr review comments`. Deleting a
-comment that does not exist is an error.
+comment that does not exist is an error. Only local drafts can be deleted: a
+comment already pushed to the forge is refused with `Comment already pushed to
+<forge> — read only in tuicr`.
 
 Clear every comment in a session:
 
@@ -183,6 +196,11 @@ Target types:
 - `line`
 - `line_range` or `range`
 
+Inside `target`, `kind` is accepted as an alias for `type`, and `-` is read as `_`, so
+`"kind": "line-range"` works. When `type` is omitted it is inferred from the
+fields present: no `file` means `review`, `file` alone means `file`, a `line` or
+`start_line` means `line`, and an added `end_line` means `line_range`.
+
 ## Output
 
 `list` returns a JSON array:
@@ -193,7 +211,7 @@ Target types:
     "slug": "agavra/tuicr@main/worktree",
     "kind": "local",
     "path": "/Users/alice/Library/Application Support/tuicr/reviews/sessions/9f6c1b3e09a54e2a.json",
-    "updated_at": "2026-05-22T17:20:00Z",
+    "updated_at": "2026-05-22T17:20:00.123456+00:00",
     "comment_count": 1,
     "reviewed_count": 0,
     "file_count": 3,
@@ -212,7 +230,7 @@ PR slug:
     "slug": "gh:slatedb/slatedb/pr/1745",
     "kind": "pr",
     "path": "/Users/alice/Library/Application Support/tuicr/reviews/sessions/172e168db0d525e5.json",
-    "updated_at": "2026-05-22T17:20:00Z",
+    "updated_at": "2026-05-22T17:20:00.123456+00:00",
     "comment_count": 0,
     "reviewed_count": 0,
     "file_count": 12,
@@ -236,11 +254,35 @@ PR slug:
     "comment_type": "issue",
     "author": "alice",
     "lifecycle_state": "local_draft",
-    "created_at": "2026-05-22T17:20:00Z",
+    "created_at": "2026-05-22T17:20:00.123456+00:00",
     "content": "Handle the empty case here."
   }
 ]
 ```
+
+`add` returns the new comment as a single object with the same fields as one
+`comments` entry (not an array).
+
+`delete` returns the id it removed:
+
+```json
+{
+  "deleted": "79c9b3e1-0a7a-4efe-9d43-f7085d7c1a82"
+}
+```
+
+`clearc` and `clear` return how many comments they removed and how many files
+lost review marks (`unreviewed` is always `0` for `clearc`):
+
+```json
+{
+  "cleared": 3,
+  "unreviewed": 1
+}
+```
+
+Timestamps are RFC 3339 in UTC with a `+00:00` offset and, when nonzero,
+sub-second digits.
 
 The `author` field is the username stored with the comment. It is present in
 the JSON emitted by both `review add` and `review comments`.
