@@ -198,7 +198,7 @@ impl App {
         vcs: &dyn VcsBackend,
         repo_root: &Path,
         highlighter: &SyntaxHighlighter,
-        path_filter: Option<&str>,
+        options: DiffLoadOptions<'_>,
     ) -> Result<Vec<DiffFile>> {
         let diff_files = crate::profile::time_with(
             "diff.load_working_tree",
@@ -206,13 +206,16 @@ impl App {
             profile_diff_result,
         )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
-        let diff_files = if let Some(path) = path_filter {
+        let diff_files = if let Some(path) = options.path_filter {
             Self::filter_by_path(diff_files, path)
         } else {
             diff_files
         };
         let mut diff_files = Self::require_non_empty_diff_files(diff_files)?;
-        if let Some((staged, unstaged)) = Self::stage_mark_side_diffs(vcs, repo_root, path_filter) {
+        if options.staged_markers
+            && let Some((staged, unstaged)) =
+                Self::stage_mark_side_diffs(vcs, repo_root, options.path_filter)
+        {
             crate::vcs::stage_marks::apply_stage_marks(&mut diff_files, &staged, &unstaged);
         }
         Ok(diff_files)
@@ -614,7 +617,7 @@ impl App {
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
-            self.path_filter.as_deref(),
+            self.diff_load_options(),
         );
         self.install_local_selection(
             fetched,
@@ -636,7 +639,7 @@ impl App {
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
-            self.path_filter.as_deref(),
+            self.diff_load_options(),
         );
         self.install_local_selection(
             fetched,
@@ -785,6 +788,11 @@ impl App {
         self.fetch_diff_files_with(self.theme.syntax_highlighter())
     }
 
+    pub(in crate::app) fn diff_load_options(&self) -> DiffLoadOptions<'_> {
+        self.vcs_open_options
+            .load_options(self.path_filter.as_deref())
+    }
+
     /// Same as `fetch_diff_files`, with the highlighter as a parameter so the
     /// diff-watch gate can run a cheap parse against `probe_highlighter()` before
     /// deciding to pay for a highlighted one.
@@ -800,7 +808,7 @@ impl App {
             &fetch_source,
             self.revision_range.as_ref(),
             highlighter,
-            self.path_filter.as_deref(),
+            self.diff_load_options(),
         )
     }
 
@@ -930,8 +938,9 @@ impl App {
         diff_source: &DiffSource,
         revision_range: Option<&ResolvedRevisionRange<'_>>,
         highlighter: &SyntaxHighlighter,
-        path_filter: Option<&str>,
+        options: DiffLoadOptions<'_>,
     ) -> Result<Vec<DiffFile>> {
+        let path_filter = options.path_filter;
         match diff_source {
             DiffSource::CommitRange(commit_ids) => {
                 // The `-r` range's own base, not the oldest commit's parent,
@@ -965,7 +974,7 @@ impl App {
                 Self::get_unstaged_diff_with_ignore(vcs, root_path, highlighter, path_filter)
             }
             DiffSource::StagedAndUnstaged | DiffSource::WorkingTree => {
-                Self::get_working_tree_diff_with_ignore(vcs, root_path, highlighter, path_filter)
+                Self::get_working_tree_diff_with_ignore(vcs, root_path, highlighter, options)
             }
             DiffSource::PullRequest(_) => Err(TuicrError::UnsupportedOperation(
                 "Use :reload from the command line in PR mode".to_string(),
@@ -1114,8 +1123,8 @@ impl App {
             &fetch_source,
             self.revision_range.as_ref(),
             self.theme.syntax_highlighter(),
-            self.path_filter.as_deref(),
-            diff_files_fingerprint(&self.diff_files),
+            self.diff_load_options(),
+            diff_files_fingerprint(&self.diff_files, self.vcs_open_options.staged_markers),
         )
     }
 
@@ -1138,7 +1147,7 @@ impl App {
         fetch_source: &DiffSource,
         revision_range: Option<&ResolvedRevisionRange<'_>>,
         highlighter: &SyntaxHighlighter,
-        path_filter: Option<&str>,
+        options: DiffLoadOptions<'_>,
         current: u64,
     ) -> Result<Option<Vec<DiffFile>>> {
         let probe = Self::fetch_diff_files_for_source(
@@ -1147,9 +1156,9 @@ impl App {
             fetch_source,
             revision_range,
             probe_highlighter(),
-            path_filter,
+            options,
         )?;
-        if diff_files_fingerprint(&probe) == current {
+        if diff_files_fingerprint(&probe, options.staged_markers) == current {
             return Ok(None);
         }
 
@@ -1163,9 +1172,9 @@ impl App {
             fetch_source,
             revision_range,
             highlighter,
-            path_filter,
+            options,
         )?;
-        if diff_files_fingerprint(&fetched) == current {
+        if diff_files_fingerprint(&fetched, options.staged_markers) == current {
             return Ok(None);
         }
         Ok(Some(fetched))
@@ -1306,7 +1315,8 @@ impl App {
             diff_source: self.diff_source.clone(),
             commit_selection_range: self.commit_selection_range,
         };
-        let current = diff_files_fingerprint(&self.diff_files);
+        let current =
+            diff_files_fingerprint(&self.diff_files, self.vcs_open_options.staged_markers);
         let review_commits = self.review_commits.clone();
         let revision_range = self.revision_range.clone();
         let path_filter = self.path_filter.clone();
@@ -1370,7 +1380,7 @@ impl App {
             &fetch_source,
             revision_range,
             highlighter,
-            path_filter,
+            vcs_open_options.load_options(path_filter),
             current,
         );
         let files = match files {
@@ -1499,7 +1509,10 @@ impl App {
     /// expanded gaps and print a second "Reloaded" message with nothing new to
     /// show.
     fn apply_watched_diff(&mut self, diff_files: Vec<DiffFile>) -> bool {
-        if diff_files_fingerprint(&diff_files) == diff_files_fingerprint(&self.diff_files) {
+        let staged_markers = self.vcs_open_options.staged_markers;
+        if diff_files_fingerprint(&diff_files, staged_markers)
+            == diff_files_fingerprint(&self.diff_files, staged_markers)
+        {
             return false;
         }
         let (count, invalidated) = self.apply_diff_files(diff_files);
@@ -1874,7 +1887,7 @@ fn probe_highlighter() -> &'static SyntaxHighlighter {
 /// Everything written after the path is fixed width, which is what keeps the
 /// variable-length path unambiguous. Adding another variable-length field here
 /// would need a delimiter.
-fn file_fingerprint(file: &DiffFile) -> u64 {
+fn file_fingerprint(file: &DiffFile, staged_markers: bool) -> u64 {
     let mut hasher = crate::hash::Fnv1aHasher::new();
     hasher.write(file.display_path().to_string_lossy().as_bytes());
     hasher.write(&[
@@ -1883,8 +1896,10 @@ fn file_fingerprint(file: &DiffFile) -> u64 {
         file.is_too_large as u8,
     ]);
     hasher.write(&file.content_hash.to_le_bytes());
-    // Staging changes the marks but not the content.
-    hasher.write(&crate::vcs::stage_marks::stage_marks_hash(file).to_le_bytes());
+    if staged_markers {
+        // Staging changes the marks but not the content.
+        hasher.write(&crate::vcs::stage_marks::stage_marks_hash(file).to_le_bytes());
+    }
     hasher.finish()
 }
 
@@ -1893,11 +1908,11 @@ fn file_fingerprint(file: &DiffFile) -> u64 {
 /// sorted by directory and a freshly fetched one is not (see
 /// `sort_files_by_directory`).
 /// Commit messages are synthetic and never returned by a VCS diff fetch.
-fn diff_files_fingerprint(files: &[DiffFile]) -> u64 {
+fn diff_files_fingerprint(files: &[DiffFile], staged_markers: bool) -> u64 {
     let mut per_file: Vec<u64> = files
         .iter()
         .filter(|file| !file.is_commit_message)
-        .map(file_fingerprint)
+        .map(|file| file_fingerprint(file, staged_markers))
         .collect();
     per_file.sort_unstable();
     let mut hasher = crate::hash::Fnv1aHasher::new();
@@ -1939,8 +1954,8 @@ mod tests {
         let files = vec![file("a.rs"), file("b.rs")];
         let other = files.clone();
         assert_eq!(
-            diff_files_fingerprint(&files),
-            diff_files_fingerprint(&other)
+            diff_files_fingerprint(&files, false),
+            diff_files_fingerprint(&other, false)
         );
     }
 
@@ -1952,8 +1967,8 @@ mod tests {
         let forward = vec![file("a.rs"), file("b.rs"), file("c.rs")];
         let reversed = vec![file("c.rs"), file("b.rs"), file("a.rs")];
         assert_eq!(
-            diff_files_fingerprint(&forward),
-            diff_files_fingerprint(&reversed)
+            diff_files_fingerprint(&forward, false),
+            diff_files_fingerprint(&reversed, false)
         );
     }
 
@@ -1962,14 +1977,14 @@ mod tests {
         let before = vec![make_file("a.rs", FileStatus::Modified, 1, false, false)];
         let after = vec![make_file("a.rs", FileStatus::Modified, 2, false, false)];
         assert_ne!(
-            diff_files_fingerprint(&before),
-            diff_files_fingerprint(&after)
+            diff_files_fingerprint(&before, false),
+            diff_files_fingerprint(&after, false)
         );
     }
 
-    /// Staging changes only the marks, and the watcher must still see it.
+    /// Staging changes only the marks. The watcher compares them when enabled.
     #[test]
-    fn should_differ_when_only_the_stage_marks_change() {
+    fn should_compare_stage_marks_only_when_enabled() {
         let mut unstaged = file("a.rs");
         unstaged.hunks = vec![crate::model::DiffHunk {
             header: String::new(),
@@ -1989,9 +2004,15 @@ mod tests {
         }];
         let mut staged = unstaged.clone();
         staged.hunks[0].lines[0].stage = Some(crate::model::StageState::Staged);
+        let unstaged = &[unstaged];
+        let staged = &[staged];
+        assert_eq!(
+            diff_files_fingerprint(unstaged, false),
+            diff_files_fingerprint(staged, false)
+        );
         assert_ne!(
-            diff_files_fingerprint(&[unstaged]),
-            diff_files_fingerprint(&[staged])
+            diff_files_fingerprint(unstaged, true),
+            diff_files_fingerprint(staged, true)
         );
     }
 
@@ -2000,8 +2021,8 @@ mod tests {
         let before = vec![make_file("a.rs", FileStatus::Modified, 1, false, false)];
         let after = vec![make_file("a.rs", FileStatus::Added, 1, false, false)];
         assert_ne!(
-            diff_files_fingerprint(&before),
-            diff_files_fingerprint(&after)
+            diff_files_fingerprint(&before, false),
+            diff_files_fingerprint(&after, false)
         );
     }
 
@@ -2010,8 +2031,8 @@ mod tests {
         let before = vec![file("a.rs")];
         let after = vec![file("z.rs")];
         assert_ne!(
-            diff_files_fingerprint(&before),
-            diff_files_fingerprint(&after)
+            diff_files_fingerprint(&before, false),
+            diff_files_fingerprint(&after, false)
         );
     }
 
@@ -2020,8 +2041,8 @@ mod tests {
         let before = vec![file("a.rs")];
         let after = vec![file("a.rs"), file("b.rs")];
         assert_ne!(
-            diff_files_fingerprint(&before),
-            diff_files_fingerprint(&after)
+            diff_files_fingerprint(&before, false),
+            diff_files_fingerprint(&after, false)
         );
     }
 
@@ -2030,8 +2051,8 @@ mod tests {
         let before = vec![file("a.rs"), file("b.rs")];
         let after = vec![file("a.rs")];
         assert_ne!(
-            diff_files_fingerprint(&before),
-            diff_files_fingerprint(&after)
+            diff_files_fingerprint(&before, false),
+            diff_files_fingerprint(&after, false)
         );
     }
 
@@ -2040,8 +2061,8 @@ mod tests {
         let before = vec![make_file("a.rs", FileStatus::Modified, 1, false, false)];
         let after = vec![make_file("a.rs", FileStatus::Modified, 1, true, false)];
         assert_ne!(
-            diff_files_fingerprint(&before),
-            diff_files_fingerprint(&after)
+            diff_files_fingerprint(&before, false),
+            diff_files_fingerprint(&after, false)
         );
     }
 
@@ -2050,8 +2071,8 @@ mod tests {
         let before = vec![make_file("a.rs", FileStatus::Modified, 1, false, false)];
         let after = vec![make_file("a.rs", FileStatus::Modified, 1, false, true)];
         assert_ne!(
-            diff_files_fingerprint(&before),
-            diff_files_fingerprint(&after)
+            diff_files_fingerprint(&before, false),
+            diff_files_fingerprint(&after, false)
         );
     }
 
@@ -2061,7 +2082,10 @@ mod tests {
     fn should_differ_when_paths_are_split_differently_across_files() {
         let a = vec![file("ab"), file("c")];
         let b = vec![file("a"), file("bc")];
-        assert_ne!(diff_files_fingerprint(&a), diff_files_fingerprint(&b));
+        assert_ne!(
+            diff_files_fingerprint(&a, false),
+            diff_files_fingerprint(&b, false)
+        );
     }
 
     struct PolicyGitVcs {
@@ -2212,8 +2236,15 @@ mod tests {
                 let range = vcs.resolve_revision_range(revisions).unwrap();
                 let source = DiffSource::CommitRange(range.commit_ids.to_vec());
                 let reload = |range| {
-                    App::fetch_diff_files_for_source(&vcs, root, &source, range, &highlighter, None)
-                        .unwrap()
+                    App::fetch_diff_files_for_source(
+                        &vcs,
+                        root,
+                        &source,
+                        range,
+                        &highlighter,
+                        DiffLoadOptions::default(),
+                    )
+                    .unwrap()
                 };
                 assert_eq!(
                     paths(&reload(Some(&range))),
@@ -2248,7 +2279,7 @@ mod tests {
             &DiffSource::CommitRange(vec![newest]),
             Some(&range),
             &SyntaxHighlighter::default(),
-            None,
+            DiffLoadOptions::default(),
         )
         .unwrap();
         // Only the last commit's own change, diffed from its parent.
@@ -2264,6 +2295,7 @@ mod tests {
         ]));
         let options = AppStartupOptions {
             include_untracked: false,
+            staged_markers: true,
             revisions: None,
             working_tree: false,
             path_filter: None,
@@ -2281,6 +2313,7 @@ mod tests {
         };
         let captured = options.vcs_open_options();
         assert!(!captured.include_untracked);
+        assert!(captured.load_options(None).staged_markers);
         assert_eq!(captured.git_backend_preference, GitBackendPreference::Cli);
         assert_eq!(captured.diff_whitespace_mode, mode);
         assert_eq!(captured.clone().diff_whitespace_mode, mode);
@@ -2295,6 +2328,7 @@ mod tests {
         ]));
         let captured = VcsOpenOptions {
             include_untracked: true,
+            staged_markers: false,
             git_backend_preference: GitBackendPreference::Libgit2,
             diff_whitespace_mode: mode.clone(),
         };
@@ -2306,7 +2340,7 @@ mod tests {
             &DiffSource::WorkingTree,
             None,
             &highlighter,
-            None,
+            DiffLoadOptions::default(),
         )
         .expect("initial mixed load");
         assert!(
@@ -2334,8 +2368,8 @@ mod tests {
             &DiffSource::WorkingTree,
             None,
             &highlighter,
-            None,
-            diff_files_fingerprint(&initial),
+            DiffLoadOptions::default(),
+            diff_files_fingerprint(&initial, false),
         )
         .expect("unchanged watch fetch");
         assert!(
@@ -2350,8 +2384,8 @@ mod tests {
             &DiffSource::WorkingTree,
             None,
             &highlighter,
-            None,
-            diff_files_fingerprint(&initial),
+            DiffLoadOptions::default(),
+            diff_files_fingerprint(&initial, false),
         )
         .expect("changed watch fetch")
         .expect("python edit should change the fingerprint");
@@ -2361,12 +2395,12 @@ mod tests {
             &DiffSource::WorkingTree,
             None,
             &highlighter,
-            None,
+            DiffLoadOptions::default(),
         )
         .expect("reload after python edit");
         assert_eq!(
-            diff_files_fingerprint(&refreshed),
-            diff_files_fingerprint(&reloaded)
+            diff_files_fingerprint(&refreshed, false),
+            diff_files_fingerprint(&reloaded, false)
         );
         assert!(
             named(&refreshed, "lib.rs")

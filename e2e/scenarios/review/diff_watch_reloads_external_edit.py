@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # `diff_watch_interval_ms` re-reads the working-tree diff on a timer: an edit made outside shows up without `:e`.
-# Without the setting (default 0) the same edit stays invisible until `:e`; #883 adds the unstaged gutter mark.
+# Without the setting (default 0) the same edit stays invisible until `:e`.
 from pathlib import Path
 
 from e2e import Scenario, repos, scenario
@@ -24,7 +24,7 @@ def main(s: Scenario) -> None:
     repos.git(repo, "checkout", "-q", "README.md")
     append(repo / "README.md", "x\n")
     off = s.start("-w", cwd=repo, name=f"{s.name}_off")
-    off.wait_for("5○▌ x")
+    off.wait_for("5 ▌ x")
     append(repo / "README.md", "edited behind its back\n")
     off.reject("edited behind its back", 2)
     off.cmd("e").wait_for("edited behind its back")

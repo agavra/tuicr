@@ -273,6 +273,11 @@ fn main() -> anyhow::Result<()> {
                 git_backend_preference,
                 diff_whitespace_mode,
                 include_untracked,
+                staged_markers: config_outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.staged_markers)
+                    .unwrap_or(false),
                 commit_selection,
                 pr_target: cli_args.pr_target.as_deref(),
                 pr_current_branch: cli_args.pr_current_branch,

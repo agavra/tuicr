@@ -264,6 +264,7 @@ pub struct AppConfig {
     /// (ASCII lowercase, no leading dot).
     pub ignore_whitespace_overrides: BTreeMap<String, bool>,
     pub include_untracked: Option<bool>,
+    pub staged_markers: Option<bool>,
     pub wrap: Option<bool>,
     /// Where wrapped unified diff rows continue: `"flow"` (the default) or
     /// `"gutter"`.
@@ -368,6 +369,7 @@ const KNOWN_KEYS: &[&str] = &[
     "ignore_whitespace",
     "ignore_whitespace_overrides",
     "include_untracked",
+    "staged_markers",
     "wrap",
     "wrap_style",
     "relative_line_numbers",
@@ -814,6 +816,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         ignore_whitespace,
         ignore_whitespace_overrides,
         include_untracked: read_bool(table, "include_untracked", &mut warnings),
+        staged_markers: read_bool(table, "staged_markers", &mut warnings),
         wrap: read_bool(table, "wrap", &mut warnings),
         wrap_style: read_enum(table, "wrap_style", &["flow", "gutter"], &mut warnings),
         export_legend: read_bool(table, "export_legend", &mut warnings),
@@ -2075,6 +2078,18 @@ mod tests {
             outcome.warnings[0],
             "Warning: Config key 'include_untracked' must be a boolean; ignoring value"
         );
+    }
+
+    #[test]
+    fn should_parse_staged_markers() {
+        for enabled in [false, true] {
+            let outcome = parse_config(&format!("staged_markers = {enabled}\n"));
+            assert_eq!(
+                outcome.config.and_then(|cfg| cfg.staged_markers),
+                Some(enabled)
+            );
+            assert!(outcome.warnings.is_empty());
+        }
     }
 
     // wrap

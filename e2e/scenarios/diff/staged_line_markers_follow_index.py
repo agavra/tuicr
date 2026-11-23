@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Covers #883 / #697: unified/SBS gutters identify each staged/unstaged edit and refresh after external staging.
-from e2e import Scenario, repos, scenario
+from e2e import Scenario, repos, scenario, wait_grep
 
 
 @scenario
@@ -15,10 +15,13 @@ def main(s: Scenario) -> None:
     repos.write(path, staged)
     repos.git(repo, "add", "markers.txt")
     repos.write(path, staged.replace("six", "UNSTAGED_ONLY"))
-    repos.write(s.dir / "config/tuicr/config.toml", "diff_watch_interval_ms = 200\n")
-    tui = s.start("-w", cwd=repo, keep=True)
+    repos.write(s.dir / "config/tuicr/config.toml", "diff_watch_interval_ms = 200\nstaged_markers = true\n")
+    profile = s.dir / "profile.log"
+    tui = s.start("-w", cwd=repo, keep=True, env={"TUICR_PROFILE": str(profile)})
     tui.wait_for("UNSTAGED_ONLY")
     tui.expect("2●.*STAGED_ONLY").expect("6○.*UNSTAGED_ONLY")
+    wait_grep(profile, r'diff\.load_staged"')
+    wait_grep(profile, r'diff\.load_unstaged"')
     tui.cmd("diff").wait_for("│.*2●.*STAGED_ONLY")
     tui.expect("│.*6○.*UNSTAGED_ONLY")
     repos.git(repo, "add", "markers.txt")

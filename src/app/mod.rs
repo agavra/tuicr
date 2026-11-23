@@ -1228,8 +1228,8 @@ pub struct App {
     /// and a snapshot left behind without its channel blocks every future
     /// tick from ever spawning again.
     pub diff_watch_reload: Option<DiffWatchReload>,
-    /// Everything `detect_vcs` needs to open a backend the same way the
-    /// startup one was opened. The diff-watch worker opens its own, because
+    /// Options for opening the local backend and loading working-tree diffs.
+    /// The diff-watch worker opens its own backend because
     /// `git2::Repository` is `Send` but not `Sync` and so cannot share
     /// `App::vcs`, and `AppStartupOptions` is dropped by the end of
     /// `App::new`. Kept as one value so a future setting is added in one
@@ -2104,14 +2104,20 @@ pub struct SummaryState {
     pub(crate) selection_needs_scroll: bool,
 }
 
-/// What `detect_vcs` needs to open a backend. Bundled because these two
-/// always travel together: they are chosen once at startup and then replayed
-/// verbatim by the diff-watch worker when it opens its own backend.
+#[derive(Clone, Copy, Default)]
+struct DiffLoadOptions<'a> {
+    path_filter: Option<&'a str>,
+    staged_markers: bool,
+}
+
+/// Settings captured at startup and replayed by the diff-watch worker when
+/// it opens its own backend and reloads the diff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct VcsOpenOptions {
     git_backend_preference: GitBackendPreference,
     diff_whitespace_mode: DiffWhitespaceMode,
     include_untracked: bool,
+    staged_markers: bool,
 }
 
 impl VcsOpenOptions {
@@ -2119,6 +2125,13 @@ impl VcsOpenOptions {
         crate::vcs::VcsDiffOptions {
             whitespace_mode: self.diff_whitespace_mode.clone(),
             include_untracked: self.include_untracked,
+        }
+    }
+
+    fn load_options<'a>(&self, path_filter: Option<&'a str>) -> DiffLoadOptions<'a> {
+        DiffLoadOptions {
+            path_filter,
+            staged_markers: self.staged_markers,
         }
     }
 }
@@ -2131,6 +2144,7 @@ impl Default for VcsOpenOptions {
             git_backend_preference: GitBackendPreference::Libgit2,
             diff_whitespace_mode: DiffWhitespaceMode::default(),
             include_untracked: true,
+            staged_markers: false,
         }
     }
 }
@@ -2153,6 +2167,8 @@ pub struct AppStartupOptions<'a> {
     pub diff_whitespace_mode: DiffWhitespaceMode,
     /// Whether untracked files are included in working-tree / unstaged diffs.
     pub include_untracked: bool,
+    /// Whether combined Git working-tree diffs mark staged and unstaged lines.
+    pub staged_markers: bool,
     /// Which commits are selected when a multi-commit review first opens.
     pub commit_selection: CommitSelectionStart,
     /// Direct PR target (`tuicr pr <target>`). Mutually exclusive with the
@@ -2168,13 +2184,13 @@ pub struct AppStartupOptions<'a> {
 }
 
 impl AppStartupOptions<'_> {
-    /// The subset `detect_vcs` needs, so an `App` can reopen a backend later
-    /// without holding on to the whole options struct.
+    /// Keep the local diff settings after startup for subsequent loads.
     fn vcs_open_options(&self) -> VcsOpenOptions {
         VcsOpenOptions {
             git_backend_preference: self.git_backend_preference,
             diff_whitespace_mode: self.diff_whitespace_mode.clone(),
             include_untracked: self.include_untracked,
+            staged_markers: self.staged_markers,
         }
     }
 }

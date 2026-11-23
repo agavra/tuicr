@@ -3016,6 +3016,7 @@ mod remote_comments_snapshot_tests {
                 old_lineno: Some(1),
                 new_lineno: None,
                 highlighted_spans: None,
+                stage: None,
             },
             DiffLine {
                 origin: LineOrigin::Addition,
@@ -3024,6 +3025,7 @@ mod remote_comments_snapshot_tests {
                 old_lineno: None,
                 new_lineno: Some(1),
                 highlighted_spans: None,
+                stage: None,
             },
         ];
         let hunks = vec![DiffHunk {

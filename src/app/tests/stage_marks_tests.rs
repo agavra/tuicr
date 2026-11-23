@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -73,9 +74,18 @@ fn marks(files: &[DiffFile]) -> Marks {
         .collect()
 }
 
-fn load(root: &Path, preference: GitBackendPreference) -> Vec<DiffFile> {
+fn load(root: &Path, preference: GitBackendPreference, staged_markers: bool) -> Vec<DiffFile> {
     let vcs = GitBackend::discover_from(root, preference, VcsDiffOptions::default()).unwrap();
-    App::get_working_tree_diff_with_ignore(&vcs, root, &SyntaxHighlighter::default(), None).unwrap()
+    App::get_working_tree_diff_with_ignore(
+        &vcs,
+        root,
+        &SyntaxHighlighter::default(),
+        DiffLoadOptions {
+            path_filter: None,
+            staged_markers,
+        },
+    )
+    .unwrap()
 }
 
 #[test]
@@ -110,7 +120,7 @@ fn should_mark_staged_and_unstaged_lines_the_same_on_both_git_backends() {
 
     for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
         assert_eq!(
-            marks(&load(dir.path(), preference)),
+            marks(&load(dir.path(), preference, true)),
             expected,
             "{preference:?}"
         );
@@ -122,7 +132,7 @@ fn should_move_the_marks_when_the_rest_is_staged() {
     let dir = fixture();
     git(dir.path(), &["add", "-A"]);
     for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
-        let files = load(dir.path(), preference);
+        let files = load(dir.path(), preference, true);
         let all_staged = marks(&files)
             .values()
             .flatten()
@@ -135,6 +145,8 @@ fn should_move_the_marks_when_the_rest_is_staged() {
 struct NoIndexVcs {
     info: VcsInfo,
     files: Vec<DiffFile>,
+    staged_calls: Cell<usize>,
+    unstaged_calls: Cell<usize>,
 }
 
 impl VcsBackend for NoIndexVcs {
@@ -143,6 +155,16 @@ impl VcsBackend for NoIndexVcs {
     }
 
     fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        Ok(self.files.clone())
+    }
+
+    fn get_staged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        self.staged_calls.set(self.staged_calls.get() + 1);
+        Err(TuicrError::UnsupportedOperation("No index".to_string()))
+    }
+
+    fn get_unstaged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        self.unstaged_calls.set(self.unstaged_calls.get() + 1);
         Ok(self.files.clone())
     }
 
@@ -168,9 +190,8 @@ impl VcsBackend for NoIndexVcs {
 }
 
 #[test]
-fn should_leave_lines_unmarked_on_backends_without_an_index() {
+fn should_only_probe_for_an_index_when_markers_are_enabled() {
     let dir = fixture();
-    let files = load(dir.path(), GitBackendPreference::Libgit2);
     let vcs = NoIndexVcs {
         info: VcsInfo {
             root_path: dir.path().to_path_buf(),
@@ -178,32 +199,31 @@ fn should_leave_lines_unmarked_on_backends_without_an_index() {
             branch_name: None,
             vcs_type: VcsType::Jujutsu,
         },
-        files: files
-            .into_iter()
-            .map(|mut file| {
-                for hunk in &mut file.hunks {
-                    for line in &mut hunk.lines {
-                        line.stage = None;
-                    }
-                }
-                file
-            })
-            .collect(),
+        files: load(dir.path(), GitBackendPreference::Libgit2, false),
+        staged_calls: Cell::new(0),
+        unstaged_calls: Cell::new(0),
     };
-    let loaded = App::get_working_tree_diff_with_ignore(
-        &vcs,
-        dir.path(),
-        &SyntaxHighlighter::default(),
-        None,
-    )
-    .unwrap();
-    assert!(!loaded.is_empty());
-    assert!(
-        marks(&loaded)
-            .values()
-            .flatten()
-            .all(|(_, _, stage)| stage.is_none())
-    );
+    for staged_markers in [false, true] {
+        let loaded = App::get_working_tree_diff_with_ignore(
+            &vcs,
+            dir.path(),
+            &SyntaxHighlighter::default(),
+            DiffLoadOptions {
+                path_filter: None,
+                staged_markers,
+            },
+        )
+        .unwrap();
+        assert!(!loaded.is_empty());
+        assert!(
+            marks(&loaded)
+                .values()
+                .flatten()
+                .all(|(_, _, stage)| stage.is_none())
+        );
+        assert_eq!(vcs.staged_calls.get(), usize::from(staged_markers));
+        assert_eq!(vcs.unstaged_calls.get(), 0);
+    }
 }
 
 fn display_paths(files: &[DiffFile]) -> Vec<String> {
@@ -246,7 +266,10 @@ fn should_filter_the_marker_diffs_like_the_reviewed_diff() {
             &vcs,
             root,
             &SyntaxHighlighter::default(),
-            Some("mixed.txt"),
+            DiffLoadOptions {
+                path_filter: Some("mixed.txt"),
+                staged_markers: true,
+            },
         )
         .unwrap();
         let expected: Marks = [(

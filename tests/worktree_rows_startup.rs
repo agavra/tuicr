@@ -50,6 +50,7 @@ fn options(revisions: Option<&str>, working_tree: bool) -> AppStartupOptions<'_>
         file_path: None,
         all_files: false,
         include_untracked: true,
+        staged_markers: false,
         show_pr_checks: false,
         show_pr_comments: false,
         pr_comments_visibility: None,

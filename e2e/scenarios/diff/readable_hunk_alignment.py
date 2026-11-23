@@ -11,8 +11,8 @@ FIXTURES = Path(__file__).resolve().parents[3] / "tests/fixtures/diff_alignment"
 def main(s: Scenario) -> None:
     repo = repos.empty_repo(s.dir / "repo")
     cases = (
-        ("reordered_functions", r"1   fn second\(\)", r"7○▌ fn first\(\)", 7),
-        ("inserted_block", r"6       if ready", r"2○▌     if ready", 2),
+        ("reordered_functions", r"1   fn second\(\)", r"7 ▌ fn first\(\)", 7),
+        ("inserted_block", r"6       if ready", r"2 ▌     if ready", 2),
     )
     for name, _, _, _ in cases:
         repos.write(repo / f"{name}.rs", (FIXTURES / f"{name}.old.rs").read_text())

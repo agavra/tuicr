@@ -47,6 +47,7 @@ fn hunk() -> DiffHunk {
             old_lineno: Some(i),
             new_lineno: Some(i),
             highlighted_spans: None,
+            stage: None,
             raw_content: None,
         })
         .collect();
