@@ -94,6 +94,55 @@ impl App {
         self.session.add_diff_file(&self.diff_files[0]);
     }
 
+    /// Which of the "Staged changes" and "Unstaged changes" rows a commit
+    /// list should carry, given the tree's real `status`.
+    ///
+    /// Git always carries both, so the two rows sit at fixed offsets whatever
+    /// the tree holds: a side emptying never shifts the commits below it, and
+    /// picking an empty side opens an empty review that says so. Other
+    /// backends keep a row only while its side has changes. Jujutsu has no
+    /// staging index, and Mercurial has nothing to stage.
+    ///
+    /// This decides rows only. Callers that pick a default diff source or
+    /// report "nothing to review" read the real status instead.
+    pub(in crate::app) fn worktree_row_status(
+        vcs_type: VcsType,
+        status: VcsChangeStatus,
+    ) -> VcsChangeStatus {
+        match vcs_type {
+            VcsType::Git => VcsChangeStatus {
+                staged: true,
+                unstaged: true,
+            },
+            _ => status,
+        }
+    }
+
+    /// Where the selector cursor starts: on the first row that has something
+    /// to review. Git keeps both working-tree rows even when they are empty
+    /// (`worktree_row_status`), so row 0 can be an empty side, and `Enter`
+    /// there would open an empty review rather than the newest commit.
+    ///
+    /// `status` is the tree's real status. Preference follows the row order:
+    /// unstaged, then staged, then the first commit.
+    pub(in crate::app) fn initial_selector_cursor(
+        rows: &[CommitInfo],
+        status: VcsChangeStatus,
+    ) -> usize {
+        let unstaged = status
+            .unstaged
+            .then(|| rows.iter().position(Self::is_unstaged_commit))
+            .flatten();
+        let staged = || {
+            status
+                .staged
+                .then(|| rows.iter().position(Self::is_staged_commit))
+                .flatten()
+        };
+        let first_commit = || rows.iter().position(|row| !Self::is_special_commit(row));
+        unstaged.or_else(staged).or_else(first_commit).unwrap_or(0)
+    }
+
     pub(in crate::app) fn is_staged_commit(commit: &CommitInfo) -> bool {
         commit.id == STAGED_SELECTION_ID
     }
@@ -408,8 +457,8 @@ impl App {
 
     /// Install a staged/unstaged/working-tree review from a fetched diff.
     ///
-    /// Returns `Ok(false)` and leaves the current review untouched when there
-    /// is nothing to show. Otherwise the outgoing session is saved first, the
+    /// An empty Git side can open from the selector; an empty session resume
+    /// returns `Ok(false)` without changing the review. The outgoing session is saved first, the
     /// new one replaces it, and the commit pane of the previous review is
     /// dropped: none of these sources has one, and a stale pane would stamp
     /// comments with a foreign commit and make `)` load the old range.
@@ -419,9 +468,13 @@ impl App {
         session_source: SessionDiffSource,
         diff_source: DiffSource,
         empty_message: &str,
+        allow_empty: bool,
     ) -> Result<bool> {
         let diff_files = match fetched {
             Ok(diff_files) => diff_files,
+            Err(TuicrError::NoChanges) if allow_empty && self.vcs_info.vcs_type == VcsType::Git => {
+                Vec::new()
+            }
             Err(TuicrError::NoChanges) => {
                 self.set_message(empty_message);
                 return Ok(false);
@@ -446,6 +499,9 @@ impl App {
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();
+        if let Some(message) = self.empty_review_placeholder() {
+            self.set_message(message);
+        }
 
         Ok(true)
     }
@@ -510,7 +566,10 @@ impl App {
         Ok(())
     }
 
-    pub(in crate::app) fn load_staged_and_unstaged_selection(&mut self) -> Result<bool> {
+    pub(in crate::app) fn load_staged_and_unstaged_selection(
+        &mut self,
+        allow_empty: bool,
+    ) -> Result<bool> {
         let highlighter = self.theme.syntax_highlighter();
         let fetched = Self::get_working_tree_diff_with_ignore(
             self.vcs.as_ref(),
@@ -523,6 +582,7 @@ impl App {
             SessionDiffSource::StagedAndUnstaged,
             DiffSource::StagedAndUnstaged,
             "No staged or unstaged changes",
+            allow_empty,
         )
     }
 
@@ -544,10 +604,11 @@ impl App {
             SessionDiffSource::WorkingTree,
             DiffSource::WorkingTree,
             "No working tree changes",
+            false,
         )
     }
 
-    pub(in crate::app) fn load_staged_selection(&mut self) -> Result<bool> {
+    pub(in crate::app) fn load_staged_selection(&mut self, allow_empty: bool) -> Result<bool> {
         let highlighter = self.theme.syntax_highlighter();
         let fetched = Self::get_staged_diff_with_ignore(
             self.vcs.as_ref(),
@@ -560,10 +621,11 @@ impl App {
             SessionDiffSource::Staged,
             DiffSource::Staged,
             "No staged changes",
+            allow_empty,
         )
     }
 
-    pub(in crate::app) fn load_unstaged_selection(&mut self) -> Result<bool> {
+    pub(in crate::app) fn load_unstaged_selection(&mut self, allow_empty: bool) -> Result<bool> {
         let highlighter = self.theme.syntax_highlighter();
         let fetched = Self::get_unstaged_diff_with_ignore(
             self.vcs.as_ref(),
@@ -576,7 +638,76 @@ impl App {
             SessionDiffSource::Unstaged,
             DiffSource::Unstaged,
             "No unstaged changes",
+            allow_empty,
         )
+    }
+
+    /// What the message bar says when the review behind a "Staged changes" or
+    /// "Unstaged changes" row (or both) is empty. `None` for any other source.
+    fn worktree_side_empty_message(source: &DiffSource) -> Option<&'static str> {
+        match source {
+            DiffSource::Staged => Some("No staged changes"),
+            DiffSource::Unstaged => Some("No unstaged changes"),
+            DiffSource::StagedAndUnstaged => Some("No staged or unstaged changes"),
+            _ => None,
+        }
+    }
+
+    /// The line the diff pane shows while a staged or unstaged review has no
+    /// files, so an empty review keeps saying why after the message bar
+    /// clears. `None` when there are files or the source cannot open empty.
+    pub fn empty_review_placeholder(&self) -> Option<&'static str> {
+        if !self.diff_files.is_empty() {
+            return None;
+        }
+        Self::worktree_side_empty_message(&Self::narrowed_fetch_source(
+            &self.diff_source,
+            &self.review_commits,
+            self.commit_selection_range,
+        ))
+    }
+
+    /// Whether `commit` is a working-tree row whose side the last status read
+    /// found empty. Git shows such rows anyway (`worktree_row_status`), and
+    /// the row renderer dims them so the user can tell before pressing Enter.
+    pub fn is_empty_worktree_row(&self, commit: &CommitInfo) -> bool {
+        let Some(status) = self.worktree_status else {
+            return false;
+        };
+        (Self::is_staged_commit(commit) && !status.staged)
+            || (Self::is_unstaged_commit(commit) && !status.unstaged)
+    }
+
+    /// Whether `:e` coming back with `NoChanges` means "this side is empty
+    /// now" rather than a failure. True for the staged, unstaged, and
+    /// staged-plus-unstaged reviews, which can open empty.
+    pub fn reload_can_empty(&self) -> bool {
+        Self::worktree_side_empty_message(&Self::narrowed_fetch_source(
+            &self.diff_source,
+            &self.review_commits,
+            self.commit_selection_range,
+        ))
+        .is_some()
+    }
+
+    /// `:e` on a staged/unstaged review whose side has emptied: show the
+    /// empty review and say why, the same way `:stage` does when it stages
+    /// the last file.
+    ///
+    /// The persisted session is deliberately not reconciled against the
+    /// empty list. Reconciling would drop every file entry, along with its
+    /// reviewed mark and comments, the moment a side happens to be empty,
+    /// for example between `git commit` and the next edit. The session stays
+    /// as it was, and the next non-empty reload reconciles as usual.
+    pub fn show_emptied_review(&mut self) {
+        self.diff_files.clear();
+        self.diff_state = DiffState::default();
+        self.file_list_state = FileListState::default();
+        self.clear_expanded_gaps();
+        self.rebuild_annotations();
+        if let Some(message) = self.empty_review_placeholder() {
+            self.set_message(message);
+        }
     }
 
     /// Fetches diff files for the current `diff_source`.
@@ -1176,7 +1307,11 @@ impl App {
             highlighter,
             path_filter,
             current,
-        )?;
+        );
+        let files = match files {
+            Err(TuicrError::NoChanges) => Some(Vec::new()),
+            other => other?,
+        };
         // Runs on the worker, alongside the diff fetch, so the event loop never
         // pays for it.
         //
@@ -1263,7 +1398,18 @@ impl App {
             }
             Ok(Some(diff_files)) => {
                 self.last_diff_watch_error = None;
-                self.apply_watched_diff(diff_files)
+                if diff_files.is_empty() && self.reload_can_empty() {
+                    if self.diff_files.is_empty() {
+                        false
+                    } else {
+                        self.show_emptied_review();
+                        true
+                    }
+                } else if diff_files.is_empty() {
+                    false
+                } else {
+                    self.apply_watched_diff(diff_files)
+                }
             }
             Err(err) => {
                 let text = format!("Diff watch failed: {err}");
@@ -1313,10 +1459,20 @@ impl App {
         change_status: Option<VcsChangeStatus>,
     ) -> bool {
         let fetched = fetched.filter(|_| Self::pane_tracks_history(&self.diff_source));
-        let change_status =
+        let vcs_type = self.vcs_info.vcs_type;
+        let real_status =
             change_status.filter(|_| Self::pane_tracks_working_tree(&self.diff_source));
+        // Recorded before the rows are widened: the renderer dims an empty
+        // side by this, and a side emptying or filling changes nothing else on
+        // a Git pane, so it alone has to ask for the redraw.
+        let status_changed = real_status.is_some_and(|status| {
+            let changed = self.worktree_status != Some(status);
+            self.worktree_status = Some(status);
+            changed
+        });
+        let change_status = real_status.map(|status| Self::worktree_row_status(vcs_type, status));
         let Some(rebuilt) = self.rebuilt_commit_pane(fetched, change_status) else {
-            return false;
+            return status_changed;
         };
         match Self::reanchored_commit_selection(
             self.commit_selection_range,
@@ -1327,7 +1483,7 @@ impl App {
                 self.install_refreshed_commit_pane(rebuilt, range);
                 true
             }
-            CommitSelectionAnchor::Lost => false,
+            CommitSelectionAnchor::Lost => status_changed,
         }
     }
 
@@ -1447,6 +1603,9 @@ impl App {
     /// diff fingerprint reports nothing, and without this the newly staged
     /// side would gain no row until the review target was reopened. A backend
     /// that cannot report status sends `None`, and the rows are left alone.
+    /// For Git, `apply_fetched_commits` has already widened `status` through
+    /// `worktree_row_status`, so both rows stay put as either side empties or
+    /// fills and the rows below them never shift.
     ///
     /// Rows already on screen keep their order, and a row that appears goes
     /// after them. The two startup paths disagree about that order: `App::new`
@@ -1624,15 +1783,14 @@ pub(in crate::app) fn diff_watch_result_is_stale(
 
 /// Maps the worker's fetch outcome onto the channel's `String`-error wire
 /// type (errors cross threads as text, not `TuicrError`, matching
-/// `PrRangeReloadEvent`). `NoChanges` is folded into `Ok(None)`, because it
-/// means the same thing to a caller as "fetched, nothing changed". Both are a
-/// silent no-op, never a warning.
+/// `PrRangeReloadEvent`). `NoChanges` carries an empty diff so eligible
+/// working-tree reviews can clear stale files; `Ok(None)` is an unchanged fetch.
 pub(in crate::app) fn normalize_diff_watch_result(
     result: Result<Option<Vec<DiffFile>>>,
 ) -> std::result::Result<Option<Vec<DiffFile>>, String> {
     match result {
         Ok(files) => Ok(files),
-        Err(TuicrError::NoChanges) => Ok(None),
+        Err(TuicrError::NoChanges) => Ok(Some(Vec::new())),
         Err(e) => Err(e.to_string()),
     }
 }

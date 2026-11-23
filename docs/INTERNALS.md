@@ -43,6 +43,8 @@ Subsystem invariants, loaded on demand from `AGENTS.md`. Cross-cutting rules and
 
 ## Diff watch and reloads
 
+- A watch result of `NoChanges` is an empty diff, distinct from an unchanged fetch (`None`). Eligible staged and unstaged targets clear via `show_emptied_review`, preserving persisted comments. Empty-target checks use `narrowed_fetch_source`.
+- **Staged/unstaged rows**: in Git the target selector and inline pane always show both rows, dimmed with "(no changes)" when a side is empty (`App::worktree_status`, updated on each diff-watch tick), so rows never shift. Opening an empty side, or `:e` on a review that emptied, shows an empty review with a message (`App::show_emptied_review` leaves the session unreconciled so marks and comments survive). The cursor starts on the first row with content (`App::initial_selector_cursor`). jj and Mercurial show a row only while its side has changes.
 - `diff_watch_interval_ms` reloads leave a `DiffSource::CommitRange` pane alone; `StagedUnstagedAndCommits` (`-r -w`) keeps its range and refreshes only the two working-tree rows.
 - Reloads of a `-r` range (watch ticks, `:e`) diff from the base resolved at startup (`App::revision_range`, used only while the fetched commit list matches), so `A...B` keeps its merge base.
 
