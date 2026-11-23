@@ -314,11 +314,8 @@ mod tests {
     fn search_match_clears_reversed_word_emphasis() {
         let mut named = Theme::dark();
         named.diff_add = Color::Green;
-        let emphasized = diff_add_style(&named).patch(word_emphasis_style(
-            &named,
-            LineOrigin::Addition,
-            false,
-        ));
+        let emphasized =
+            diff_add_style(&named).patch(word_emphasis_style(&named, LineOrigin::Addition, false));
         assert!(emphasized.add_modifier.contains(Modifier::REVERSED));
 
         let matched = emphasized.patch(search_match_style(&named));
