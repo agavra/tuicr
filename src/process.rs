@@ -108,7 +108,7 @@ where
         command.current_dir(current_dir);
     }
 
-    let mut child = command
+    let child = command
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -127,25 +127,7 @@ where
             }
         })?;
 
-    // Write the stdin payload before waiting on stdout, then drop the handle
-    // so the child sees EOF and can finish.
-    if let Some(mut child_stdin) = child.stdin.take() {
-        child_stdin
-            .write_all(stdin.as_bytes())
-            .map_err(|err| CommandOutputError {
-                kind: CommandOutputErrorKind::SpawnFailed,
-                status: None,
-                stderr: err.to_string(),
-            })?;
-        // `drop(child_stdin)` happens when the value goes out of scope, which
-        // closes the pipe and signals EOF.
-    }
-
-    let output = child.wait_with_output().map_err(|err| CommandOutputError {
-        kind: CommandOutputErrorKind::SpawnFailed,
-        status: None,
-        stderr: err.to_string(),
-    })?;
+    let output = wait_with_stdin(child, Some(stdin))?;
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -195,7 +177,7 @@ where
         command.current_dir(current_dir);
     }
 
-    let mut child = command
+    let child = command
         .args(args)
         .stdin(if stdin.is_some() {
             Stdio::piped()
@@ -218,27 +200,103 @@ where
             }
         })?;
 
-    if let Some(payload) = stdin
-        && let Some(mut child_stdin) = child.stdin.take()
-    {
-        child_stdin
-            .write_all(payload.as_bytes())
-            .map_err(|err| CommandOutputError {
-                kind: CommandOutputErrorKind::SpawnFailed,
-                status: None,
-                stderr: err.to_string(),
-            })?;
-    }
-
-    let output = child.wait_with_output().map_err(|err| CommandOutputError {
-        kind: CommandOutputErrorKind::SpawnFailed,
-        status: None,
-        stderr: err.to_string(),
-    })?;
+    let output = wait_with_stdin(child, stdin)?;
 
     Ok(CommandStreams {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         status: output.status.code(),
     })
+}
+
+/// Feed `stdin` to `child` on a background thread while reaping the child and
+/// draining stdout/stderr via `wait_with_output`.
+///
+/// Running the write concurrently prevents pipe-buffer deadlocks on large
+/// payloads, ignores `BrokenPipe` when the child exits before consuming stdin,
+/// and always reaps the child so no zombie leaks and CLI diagnostics on
+/// stderr/stdout are preserved.
+fn wait_with_stdin(
+    mut child: std::process::Child,
+    stdin: Option<&str>,
+) -> CommandOutputResult<std::process::Output> {
+    let writer = stdin.and_then(|payload| {
+        let mut child_stdin = child.stdin.take()?;
+        let bytes = payload.as_bytes().to_vec();
+        Some(std::thread::spawn(move || {
+            match child_stdin.write_all(&bytes) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                Err(err) => Err(err),
+            }
+        }))
+    });
+
+    let output = child.wait_with_output().map_err(|err| CommandOutputError {
+        kind: CommandOutputErrorKind::SpawnFailed,
+        status: None,
+        stderr: err.to_string(),
+    });
+
+    let write_result = writer.map(|handle| {
+        handle
+            .join()
+            .unwrap_or_else(|_| Err(std::io::Error::other("stdin writer thread panicked")))
+    });
+
+    let output = output?;
+
+    if output.status.success()
+        && let Some(Err(err)) = write_result
+    {
+        return Err(CommandOutputError {
+            kind: CommandOutputErrorKind::SpawnFailed,
+            status: None,
+            stderr: err.to_string(),
+        });
+    }
+
+    Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn stdin_broken_pipe_preserves_cli_stderr_in_output_and_streams() {
+        // Larger than OS pipe buffer (64 KiB on macOS/Linux) so synchronous
+        // write_all hits BrokenPipe when the child exits without reading stdin.
+        let large_payload = "x".repeat(512 * 1024);
+
+        let err = run_command_output_with_stdin(
+            "sh",
+            None,
+            ["-c", "echo real-cli-error >&2; exit 2"],
+            &large_payload,
+        )
+        .expect_err("non-zero exit should return Err");
+        assert_eq!(err.kind, CommandOutputErrorKind::Unsuccessful);
+        assert_eq!(err.status, Some(2));
+        assert!(
+            err.stderr.contains("real-cli-error"),
+            "expected CLI stderr to be preserved, got: {:?}",
+            err
+        );
+
+        let streams = run_command_streams(
+            "sh",
+            None,
+            [
+                "-c",
+                "echo real-stream-err >&2; echo real-stream-out; exit 3",
+            ],
+            Some(&large_payload),
+        )
+        .expect("run_command_streams should capture output even on early exit");
+        assert_eq!(streams.status, Some(3));
+        assert!(streams.stderr.contains("real-stream-err"));
+        assert!(streams.stdout.contains("real-stream-out"));
+    }
 }
