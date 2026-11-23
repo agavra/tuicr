@@ -31,6 +31,8 @@ jobs:
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-no-lto
       - name: Tools (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -40,14 +42,23 @@ jobs:
       - name: Tools (macOS)
         if: runner.os == 'macOS'
         run: brew install tmux mercurial
+      - name: Cache Jujutsu (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/tuicr-ci-jj
+          key: jj-${{ runner.os }}-${{ runner.arch }}-${{ env.JJ_VERSION }}
       - name: Jujutsu
         # Linux: the musl release binary panics on startup in some environments (pest stack check), so build the gnu one.
         run: |
-          mkdir -p "$RUNNER_TEMP/jj"
           if [ "$RUNNER_OS" = Linux ]; then
-            cargo install --locked --root "$RUNNER_TEMP/jjroot" jj-cli --version "$JJ_VERSION"
-            echo "E2E_JJ_DIR=$RUNNER_TEMP/jjroot/bin" >> "$GITHUB_ENV"
+            jj_root="$HOME/.cache/tuicr-ci-jj"
+            if [ ! -x "$jj_root/bin/jj" ]; then
+              cargo install --locked --root "$jj_root" jj-cli --version "$JJ_VERSION"
+            fi
+            echo "E2E_JJ_DIR=$jj_root/bin" >> "$GITHUB_ENV"
           else
+            mkdir -p "$RUNNER_TEMP/jj"
             case "$(uname -m)" in arm64) t=aarch64-apple-darwin ;; *) t=x86_64-apple-darwin ;; esac
             curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-$t.tar.gz" | tar -xz -C "$RUNNER_TEMP/jj"
             echo "E2E_JJ_DIR=$RUNNER_TEMP/jj" >> "$GITHUB_ENV"
@@ -58,7 +69,12 @@ jobs:
           hg --version | head -1
           "$E2E_JJ_DIR/jj" --version
           git fetch --no-tags origin site:refs/remotes/origin/site || true
-      - run: cargo build --locked --release
+      - name: Build tuicr
+        # Skip fat LTO / codegen-units=1 here; Static Linux binary in ci.yml exercises full release LTO.
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "off"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: cargo build --locked --release
       - name: Harness self-test
         run: uv run --python 3.12 e2e/selftest/run.py
       - name: E2E
