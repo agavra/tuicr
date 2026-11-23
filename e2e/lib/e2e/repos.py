@@ -3,14 +3,18 @@ environment (core.py) isolates git/hg/jj configuration."""
 
 from __future__ import annotations
 
+import hashlib
+import inspect
+import json
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
-from .core import Failure, Skip, grep
+from .core import GIT, ROOT, Failure, Skip, grep
 
 if TYPE_CHECKING:
     from .core import Scenario
@@ -20,7 +24,7 @@ def git(repo: str | Path, *args: str) -> str:
     """`git -C repo` with a fixed identity and no signing; returns stripped stdout, fails on a non-zero exit."""
     p = subprocess.run(
         [
-            "git",
+            GIT,
             "-C",
             str(repo),
             "-c",
@@ -64,15 +68,52 @@ def fresh(d: str | Path) -> Path:
     return d
 
 
+# Fixture templates: each git fixture is built once into <root>/.harness/fixtures and copied for every scenario that
+# asks for it. A template is rebuilt once it is FIXTURE_TTL seconds old, so commit times stay recent (commit rows show
+# "just now" for under a minute); its key covers the builder's arguments and source.
+FIXTURE_TTL = 20.0
+_FIXTURES = ROOT / ".harness" / "fixtures"
+
+
+def cached_fixture(d: str | Path, key: str, build: Callable[[Path], Any]) -> Any:
+    """A fresh copy at `d` of the git repository `build(dir)` makes, and the JSON value build returned (shas...).
+    The copy's index is refreshed (its stat data names the template's files), as if the repo had been built in place."""
+    src = inspect.getsourcefile(build)
+    digest = hashlib.sha1(key.encode() + (Path(src).read_bytes() if src else b"")).hexdigest()[:16]
+    tpl = _FIXTURES / f"{key.split(':', 1)[0]}-{digest}"
+    stored = tpl / "value.json"
+    if not (stored.exists() and time.time() - stored.stat().st_mtime < FIXTURE_TTL):
+        tmp = _FIXTURES / f".build-{os.getpid()}"
+        shutil.rmtree(tmp, ignore_errors=True)
+        value = build(tmp / "repo")
+        (tmp / "value.json").write_text(json.dumps(value))
+        shutil.rmtree(tpl, ignore_errors=True)
+        os.rename(tmp, tpl)
+    d = Path(d)
+    shutil.rmtree(d, ignore_errors=True)
+    d.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(tpl / "repo", d, symlinks=True)
+    if (d / ".git" / "index").exists():  # exits non-zero when the work tree has changes: that is fine
+        subprocess.run(
+            [GIT, "-C", str(d), "update-index", "-q", "--refresh"], stdin=subprocess.DEVNULL, capture_output=True
+        )
+    return json.loads(stored.read_text())
+
+
 def _fresh_git(d: str | Path) -> Path:
     d = fresh(d)
-    subprocess.run(["git", "init", "-q", "-b", "main", str(d)], check=True)
+    subprocess.run([GIT, "init", "-q", "-b", "main", str(d)], check=True)
     return d
 
 
 def empty_repo(d: str | Path) -> Path:
     """An empty git repository on main in a fresh directory `d` (the scenario commits what it needs)."""
-    return _fresh_git(d)
+    cached_fixture(d, "empty_repo", _build_empty_repo)
+    return Path(d)
+
+
+def _build_empty_repo(d: Path) -> None:
+    _fresh_git(d)
 
 
 def git_repo(d: str | Path) -> Path:
@@ -81,6 +122,11 @@ def git_repo(d: str | Path) -> Path:
     c1 base files; c2 modify/add/delete/rename/binary; c3 more edits. Layout: README.md, src/main.rs,
     src/lib.rs (no trailing newline), notes_cjk.txt, tabs.txt, data.bin; then a staged staged.txt, an unstaged
     README.md edit and an untracked untracked.txt. `-r HEAD~2..HEAD` shows 8 files."""
+    cached_fixture(d, "git_repo", _build_git_repo)
+    return Path(d)
+
+
+def _build_git_repo(d: Path) -> None:
     d = _fresh_git(d)
     write(d / "README.md", "# demo\n\nfirst line\n")
     write(d / "src/main.rs", 'fn main() {\n    println!("hi");\n}\n')
@@ -108,7 +154,6 @@ def git_repo(d: str | Path) -> Path:
     git(d, "add", "staged.txt")  # noqa: E702
     write(d / "README.md", "# demo\n\nfirst line\nsecond line\nunstaged line\n")
     write(d / "untracked.txt", "untracked\n")
-    return d
 
 
 class MergeBase(NamedTuple):
@@ -120,6 +165,11 @@ class MergeBase(NamedTuple):
 
 def git_merge_base(d: str | Path) -> MergeBase:
     """For `-r A...B`: branch topic forks from main, both advance."""
+    base, main, topic = cached_fixture(d, "git_merge_base", _build_git_merge_base)
+    return MergeBase(Path(d), base, main, topic)
+
+
+def _build_git_merge_base(d: Path) -> list[str]:
     d = _fresh_git(d)
     write(d / "shared.txt", "base\n")
     git(d, "add", "-A")
@@ -134,23 +184,32 @@ def git_merge_base(d: str | Path) -> MergeBase:
     write(d / "mainonly.txt", "main change\n")
     git(d, "add", "-A")
     git(d, "commit", "-qm", "main moves on")  # noqa: E702
-    return MergeBase(d, base, git(d, "rev-parse", "HEAD"), topic)
+    return [base, git(d, "rev-parse", "HEAD"), topic]
 
 
 def pr_repo(d: str | Path, origin: str = "https://github.com/octo/demo.git") -> Path:
     """Small git repo whose origin picks the fake forge (default github.com/octo/demo: fake gh, canned PR #1 touching
     README.md and src/greet.rs)."""
-    d = _fresh_git(d)
-    write(d / "README.md", "# demo\nold line\n")
-    git(d, "add", "-A")
-    git(d, "commit", "-qm", "base")  # noqa: E702
-    git(d, "remote", "add", "origin", origin)
-    return d
+
+    def build(d: Path) -> None:
+        d = _fresh_git(d)
+        write(d / "README.md", "# demo\nold line\n")
+        git(d, "add", "-A")
+        git(d, "commit", "-qm", "base")  # noqa: E702
+        git(d, "remote", "add", "origin", origin)
+
+    cached_fixture(d, f"pr_repo:{origin}", build)
+    return Path(d)
 
 
 def wide_repo(d: str | Path) -> Path:
     """Two commits. cjk.txt gains long CJK / VS16-emoji lines (to overflow a side-by-side pane), plus a deeply nested
     long-named file and a long directory name (to overflow the file tree). Review with `-r HEAD~1..HEAD`."""
+    cached_fixture(d, "wide_repo", _build_wide_repo)
+    return Path(d)
+
+
+def _build_wide_repo(d: Path) -> None:
     d = _fresh_git(d)
     write(d / "cjk.txt", "ascii one\nascii two\nascii three\n")
     write(d / "deep/dir/an_extremely_long_file_name_for_the_tree_pane.txt", "x\n")
@@ -176,16 +235,19 @@ def wide_repo(d: str | Path) -> Path:
     write(d / "zzzz_a_rather_long_directory_name_here/b.txt", "y\n")
     git(d, "add", "-A")
     git(d, "commit", "-qm", "change")  # noqa: E702
-    return d
 
 
 def long_file_repo(d: str | Path) -> Path:
     """git_repo plus a committed, unchanged 120-line long.txt ("line N"), for --file/--line."""
-    d = git_repo(d)
+    cached_fixture(d, "long_file_repo", _build_long_file_repo)
+    return Path(d)
+
+
+def _build_long_file_repo(d: Path) -> None:
+    _build_git_repo(d)
     write(d / "long.txt", "".join(f"line {i}\n" for i in range(1, 121)))
     git(d, "add", "long.txt")
     git(d, "commit", "-qm", "add long.txt")  # noqa: E702
-    return d
 
 
 # ---- Mercurial and Jujutsu ---------------------------------------------------------------------------------------

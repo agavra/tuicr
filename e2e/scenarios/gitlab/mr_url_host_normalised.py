@@ -18,7 +18,9 @@ def main(s: Scenario) -> None:
     log = s.dir / "forge.log"
     log.unlink(missing_ok=True)
     # The fake glab has no fixture for this project, so the open fails: only the host handed to glab is asserted.
-    s.allow_unexpected_forge_calls("no fixture for this project: the open fails on purpose")
+    s.allow_unexpected_forge_calls(
+        r'"projects/grp%2Fsub%2Fproj/merge_requests/7"', 1, "no fixture for this project: the open fails on purpose"
+    )
     r = s.cli_result(
         "--no-update-check",
         "pr",
@@ -35,3 +37,6 @@ def main(s: Scenario) -> None:
     hosts = [c["argv"][i + 1] for c in calls for i, a in enumerate(c["argv"][:-1]) if a == "--hostname"]
     assert not any(re.search("[@:]", h) for h in hosts), f"glab was called with userinfo/port in --hostname: {hosts}"
     assert "GitLab.Example.com" in hosts, f"no glab call with the bare host: {hosts}"
+    # the subgroup path survives as the project: grp/sub/proj, URL-encoded as one GitLab project id
+    eps = [c["argv"][-1] for c in calls if c["tool"] == "glab" and c["argv"][:1] == ["api"]]
+    assert "projects/grp%2Fsub%2Fproj/merge_requests/7" in eps, f"no MR fetch for project grp/sub/proj: {eps}"

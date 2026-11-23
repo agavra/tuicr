@@ -13,11 +13,11 @@ def main(s: Scenario) -> None:
     tui.keys(";k").keys("j", "Enter")  # narrow to bbbbbbb
     tui.wait_for(r"Commit Message \(bbbbbbb\)")
     tui.keys(")").wait_for(r"Commit Message \(aaaaaaa\)")
-    tui.keys(")").wait_gone(r"Commit Message \(").wait_for(r"\+?.*new line")  # whole PR again
+    tui.keys(")").wait_gone(r"Commit Message \(").wait_for("new line")  # whole PR again
     variant.write_text("cumulative_refresh\n")  # same head, but the cumulative diff changed
     tui.cmd("e")
     tui.wait_for("newer line")
-    tui.keys(";k").keys("k", "k", "k").settle().keys("Enter")
+    tui.keys(";k").keys("k", "k", "k").wait_for("▸.*2222222").keys("Enter")
     tui.wait_for(r"Commit Message \(2222222\)")
     tui.keys(")").wait_for(r"Commit Message \(bbbbbbb\)")
     tui.keys(")").wait_for(r"Commit Message \(aaaaaaa\)")

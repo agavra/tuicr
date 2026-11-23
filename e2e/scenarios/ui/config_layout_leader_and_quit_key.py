@@ -2,7 +2,7 @@
 # config.toml: `file_list_position = "right"` puts the file list right of the diff, `leader = ","` replaces `;` for
 # the sidebar
 # toggle, `q_quits = true` makes a bare `q` quit; `show_file_list = false` starts with the list hidden.
-from e2e import Scenario, repos, scenario
+from e2e import Scenario, because, repos, scenario
 
 
 @scenario
@@ -20,6 +20,15 @@ def main(s: Scenario) -> None:
     assert col > 100, f"file list is not on the right (column {col})\n{scr}"
     tui.keys(",e").wait_gone("Files · 0/8")  # the configured one hides the list
     tui.keys(",e").wait_for("Files · 0/8")
+    # `;` no longer leads: `;l` (towards the list on the right) leaves focus on the diff; help opening after it
+    # proves both keys were handled
+    diff_hint, tree_hint = r"j/k scroll · \{/\} file", r"j/k move · ↵ open"
+    with because("precondition: the diff is not focused"):
+        tui.wait_for(diff_hint)  # once the `File list: visible` message (3 s) gives the hint line back
+    tui.type(";l?").wait_for(r"Help \(j/k scroll").keys("?").wait_gone(r"Help \(j/k scroll")
+    with because('`;l` still moved focus to the file tree with leader = ","'):
+        tui.wait_for(diff_hint)
+    tui.type(",l").wait_for(tree_hint)  # control: the configured leader does
     tui.keys("q").wait_exit()  # bare q quits
     hidden = s.name + "_hidden"
     repos.write(

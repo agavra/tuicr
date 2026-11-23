@@ -19,11 +19,14 @@ def main(s: Scenario) -> None:
     def tree() -> Tui:
         return tui.keys(";h").settle()
 
-    tree().keys("Enter")
-    cur(r"README\.md")  # selection starts on the first file
-    tree().keys("j", "j", "Enter")
-    cur(r"gone\.txt")  # data.bin, gone.txt
-    tree().keys("k", "Enter")
+    # the diff opens on README.md, the first file: each step moves it somewhere a dead Enter would not
+    tree().keys("j", "Enter")
+    cur(r"data\.bin")  # the selection started on README.md, j moved it one row
+    tree().keys("j", "Enter")
+    cur(r"gone\.txt")
+    tree().keys("k", "k", "Enter")
+    cur(r"README\.md")  # k moves back up, Enter jumps the diff back to the first file
+    tree().keys("j", "Enter")
     cur(r"data\.bin")
     # gone, new_name, notes_cjk, tabs, then the src/ directory row
     tree().keys("j", "j", "j", "j", "j").expect(row)

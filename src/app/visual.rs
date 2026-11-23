@@ -7,6 +7,23 @@ impl App {
         let Some(sel) = self.visual_selection else {
             return Ok((0, None));
         };
+        let out = self.visual_selection_text(&sel);
+        if out.is_empty() {
+            return Ok((0, None));
+        }
+        let count = out.chars().count();
+        let copy = crate::output::copy_text_to_clipboard_with(
+            &out,
+            self.clipboard_override.as_deref(),
+            self.clipboard_command.as_deref(),
+        )
+        .map_err(|e| TuicrError::Clipboard(format!("{e}")))?;
+        Ok((count, copy.fallback_warning))
+    }
+
+    /// Text a visual selection copies, confined to the side it is anchored on:
+    /// side-by-side rows that are empty there contribute nothing.
+    pub(crate) fn visual_selection_text(&self, sel: &VisualSelection) -> String {
         let (start, end) = sel.ordered();
         let side = sel.anchor.side;
         let mut out = String::new();
@@ -27,17 +44,60 @@ impl App {
             out.push_str(&snippet);
             emitted += 1;
         }
-        if out.is_empty() {
-            return Ok((0, None));
+        out
+    }
+
+    /// Visual-mode `j`: in side-by-side, steps over rows with no content on
+    /// the selection's side so the range stays in its pane.
+    pub fn visual_cursor_down(&mut self, lines: usize) {
+        self.visual_cursor_move(lines, true);
+    }
+
+    /// Visual-mode `k`; mirror of [`Self::visual_cursor_down`].
+    pub fn visual_cursor_up(&mut self, lines: usize) {
+        self.visual_cursor_move(lines, false);
+    }
+
+    fn visual_cursor_move(&mut self, lines: usize, down: bool) {
+        let Some(side) = self.visual_selection.map(|sel| sel.anchor.side) else {
+            return;
+        };
+        let skip_empty_sides = self.diff_view_mode == DiffViewMode::SideBySide;
+        'steps: for _ in 0..lines {
+            let before = self.diff_state.cursor_line;
+            self.step_cursor(down);
+            if self.diff_state.cursor_line == before {
+                break;
+            }
+            while skip_empty_sides && !self.row_covers_side(self.diff_state.cursor_line, side) {
+                let current = self.diff_state.cursor_line;
+                self.step_cursor(down);
+                if self.diff_state.cursor_line == current {
+                    // No selectable row further along; stay on the last one
+                    // that had content on this side.
+                    self.move_cursor_to_annotation(before);
+                    break 'steps;
+                }
+            }
         }
-        let count = out.chars().count();
-        let copy = crate::output::copy_text_to_clipboard_with(
-            &out,
-            self.clipboard_override.as_deref(),
-            self.clipboard_command.as_deref(),
-        )
-        .map_err(|e| TuicrError::Clipboard(format!("{e}")))?;
-        Ok((count, copy.fallback_warning))
+        self.extend_visual_to_cursor();
+    }
+
+    fn step_cursor(&mut self, down: bool) {
+        if down {
+            self.cursor_down(1);
+        } else {
+            self.cursor_up(1);
+        }
+    }
+
+    fn row_covers_side(&self, idx: usize, side: LineSide) -> bool {
+        match self.line_annotations.get(idx) {
+            Some(AnnotatedLine::SideBySideLine { .. }) => {
+                self.content_for_side(idx, side).is_some()
+            }
+            _ => true,
+        }
     }
 
     pub fn enter_visual_mode_at_cursor(&mut self) {
@@ -122,11 +182,33 @@ impl App {
         if annotation_file_idx(self.line_annotations.get(end.annotation_idx)?)? != file_idx {
             return None;
         }
-        let start_line = self.annotation_line_for_side(start.annotation_idx, start.side);
-        let end_line = self.annotation_line_for_side(end.annotation_idx, end.side);
-        let start_ln = start_line?;
-        let end_ln = end_line?;
+        let start_ln =
+            self.edge_line_for_side(start.annotation_idx, end.annotation_idx, start.side)?;
+        let end_ln =
+            self.edge_line_for_side(end.annotation_idx, start.annotation_idx, start.side)?;
         Some((file_idx, LineRange::new(start_ln, end_ln), start.side))
+    }
+
+    /// Line number for a selection endpoint, walking into the selection when a
+    /// side-by-side endpoint row is empty on `side` (a mouse drag can end
+    /// there). Other rows keep their strict resolution.
+    fn edge_line_for_side(&self, idx: usize, toward: usize, side: LineSide) -> Option<u32> {
+        if !matches!(
+            self.line_annotations.get(idx),
+            Some(AnnotatedLine::SideBySideLine { .. })
+        ) {
+            return self.annotation_line_for_side(idx, side);
+        }
+        let mut i = idx;
+        loop {
+            if let Some(line) = self.annotation_line_for_side(i, side) {
+                return Some(line);
+            }
+            if i == toward {
+                return None;
+            }
+            i = if toward > i { i + 1 } else { i - 1 };
+        }
     }
 
     fn annotation_line_for_side(&self, idx: usize, side: LineSide) -> Option<u32> {

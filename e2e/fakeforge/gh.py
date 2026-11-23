@@ -67,24 +67,27 @@ def handle(f: Fake) -> None:
 
 
 def pr_list(f: Fake) -> None:
-    if not os.environ.get("E2E_LIST_ROWS"):
-        f.serve("pr_list.json")
-    # E2E_LIST_ROWS=N: serve N rows (truncated to --limit); E2E_LIST_FAIL_ABOVE=M: --limit > M fails
-    # (a failing load-more)
+    """`gh pr list`: the fixture rows (or E2E_LIST_ROWS generated ones), narrowed like the real gh by `--head <branch>`
+    (exact head branch name) and truncated to `--limit`."""
+    # E2E_LIST_ROWS=N: serve N rows; E2E_LIST_FAIL_ABOVE=M: --limit > M fails (a failing load-more)
     limit = int(f.flag("--limit") or 30)
     above = os.environ.get("E2E_LIST_FAIL_ABOVE")
     if above and limit > int(above):
         f.fail("simulated network failure")
-    base = f.load_json("pr_list.json")[0]
-    rows = [
-        dict(
-            base,
-            number=i,
-            title=f"Row {i} {'alpha' if i % 2 else 'beta'}",
-            url=f"https://github.com/octo/demo/pull/{i}",
-        )
-        for i in range(1, int(os.environ["E2E_LIST_ROWS"]) + 1)
-    ]
+    rows = f.load_json("pr_list.json")
+    if os.environ.get("E2E_LIST_ROWS"):
+        rows = [
+            dict(
+                rows[0],
+                number=i,
+                title=f"Row {i} {'alpha' if i % 2 else 'beta'}",
+                url=f"https://github.com/octo/demo/pull/{i}",
+            )
+            for i in range(1, int(os.environ["E2E_LIST_ROWS"]) + 1)
+        ]
+    head = f.flag("--head")
+    if head is not None:
+        rows = [r for r in rows if r["headRefName"] == head]
     f.out(json.dumps(rows[:limit]) + "\n")
 
 

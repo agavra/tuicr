@@ -19,8 +19,8 @@ def main(s: Scenario) -> None:
     )
     tui = s.start("-w", cwd=r, keep=True)
     tui.wait_for("Files · 0/1").keys("Escape").settle()
-    tui.keys("]").settle()  # first hunk header
-    tui.keys("]").settle()  # second hunk header, below the viewport before the jump
+    tui.keys("]").wait_for(r"▶.*@@ -47,")  # first hunk header
+    tui.keys("]").wait_for(r"▶.*@@ -347,")  # second hunk header, below the viewport before the jump
     scr = tui.screen()
     header = next(i for i, line in enumerate(scr.split("\n")) if "▶" in line and "@@" in line)
     # Row 0 is the title bar and row 1 the diff pane's top border, so the first

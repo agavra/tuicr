@@ -12,6 +12,6 @@ def main(s: Scenario) -> None:
     tui.wait_gone("delete me").expect("second line")
     tui.keys("}").wait_for(r"\(binary file\)").reject("second line")
     tui.keys("}").wait_for("delete me").reject("binary file")
-    tui.keys("{").keys("{").wait_for("second line")
+    tui.keys("{").keys("{").wait_for("second line").reject("delete me")
     tui.cmd("focus").wait_gone("FOCUS").wait_for("delete me").expect("second line")
     tui.quit()

@@ -43,8 +43,12 @@ class Fake:
             entry: dict[str, Any] = {"tool": self.tool, "argv": self.argv, "stdin": self.stdin}
             if note:
                 entry["note"] = note
-            with open(self.log, "a") as f:
-                f.write(json.dumps(entry) + "\n")
+            # one write on an O_APPEND descriptor: parallel fakes never interleave or split a record
+            fd = os.open(self.log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+            try:
+                os.write(fd, (json.dumps(entry) + "\n").encode())
+            finally:
+                os.close(fd)
 
     # ---- exits ----------------------------------------------------------
     def out(self, body: Any) -> NoReturn:

@@ -30,6 +30,11 @@ Subsystem invariants, loaded on demand from `AGENTS.md`. Cross-cutting rules and
 
 ## Render, coloring, layout
 
+**Generated files** (`src/generated.rs`, `src/app/generated.rs`): files `.gitattributes` marks `linguist-generated` or `gitlab-generated` collapse by default (`[generated] collapse`, `:set generated!`) but stay in the diff.
+- `App::should_collapse_file` is the single collapse predicate for annotations, both renderers and height math. Order: reveal (`revealed_reviewed_file`), then the `Space` override (`collapse_override`, keyed to the file's `content_hash`), then reviewed, then generated.
+- Collapsed bodies emit no annotations, so `collapsed_file_comment_count` puts `· N comments` on the header instead.
+- Detection is memoized per attributes root (`generated_root`) and display path (`generated_probed`); changing roots, including to no matching checkout, clears both caches. Reload also clears them. `-attr` or `attr=false` on either attribute wins. Uses `Repository::open`, not `discover`, so an hg or non-colocated jj root never reads an enclosing repo's attributes. PR mode reads the local checkout's attributes, if any.
+
 - All files become one `Vec<Line>` sliced by `scroll_offset`.
 - Syntax coloring happens at render, not parse: backends leave `highlighted_spans` as `None`; the diff view calls `App::color_visible_hunks` (`src/app/coloring.rs`) for hunks in the viewport ±1 screen (`colored_hunks` records visited hunks; rebuilding annotations clears it). Container grammars (`needs_full_file_highlight`: Vue, Svelte, PHP, ...) are colored from whole-file content at parse time (`enhance_with_full_file_highlight`); if that cannot run (file >1 MB, no content) they stay uncolored.
 - Diff search highlighting patches `theme.search_match_bg` via `ui::text_utils::apply_search_highlight_*`.

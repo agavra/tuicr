@@ -17,8 +17,7 @@ def main(s: Scenario) -> None:
     tui.wait_for("late edit from outside")
     # comment + reviewed, save, quit
     tui.cursor_on("late edit from outside")
-    tui.keys("c").wait_for("COMMENT")
-    tui.keys("persist me").keys("Enter").wait_for("persist me")
+    tui.comment("persist me")
     tui.keys("{").keys("r").wait_for("Files · 1/2")
     tui.save()
     tui.cmd("q!").wait_exit()

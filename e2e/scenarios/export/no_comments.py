@@ -10,6 +10,6 @@ def main(s: Scenario) -> None:
     tui = s.diff()
     tui.cmd("clip")
     tui.wait_for("No comments to export")
-    assert tui.alive(), "tuicr exited after :clip"
+    tui.settle().cursor_on("4 ▌ second line")  # still running: keys still move the cursor (a dead pane fails)
     assert not clipboard.copied, f"clipboard written for an empty review:\n{clipboard.path.read_text()}"
     tui.quit()

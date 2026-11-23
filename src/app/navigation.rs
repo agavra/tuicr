@@ -513,6 +513,15 @@ impl App {
 
     pub fn go_to_source_line(&mut self, target_lineno: u32, side: LineSide) {
         let current_file = self.diff_state.current_file_idx;
+        // A collapsed file has no line rows to land on, so open it first,
+        // the way a summary jump does. Reviewed files stay shut.
+        let reviewed = self
+            .diff_files
+            .get(current_file)
+            .is_some_and(|file| self.session.is_file_reviewed(file.display_path()));
+        if !reviewed && self.reveal_file_if_collapsed(current_file) {
+            self.rebuild_annotations();
+        }
         let mut result = self.find_source_line_in_diff(target_lineno, side);
         let side_label = match side {
             LineSide::New => "",
@@ -649,8 +658,8 @@ impl App {
         }
     }
 
-    /// In SBS, picks Old or New per `side`, falling back to the other pane
-    /// if the requested one is empty. Unified diff rows ignore `side`.
+    /// In SBS, picks Old or New per `side`; `None` when that pane is empty on
+    /// the row. Unified diff rows ignore `side`.
     pub fn content_for_side(&self, ann_idx: usize, side: LineSide) -> Option<&str> {
         self.diff_line_for_side(ann_idx, side)
             .map(|line| line.content.as_str())
@@ -689,8 +698,8 @@ impl App {
                 let add = add_line_idx.and_then(|i| hunk.lines.get(i));
                 let del = del_line_idx.and_then(|i| hunk.lines.get(i));
                 match side {
-                    LineSide::New => add.or(del),
-                    LineSide::Old => del.or(add),
+                    LineSide::New => add,
+                    LineSide::Old => del,
                 }
             }
             AnnotatedLine::ExpandedContext { gap_id, line_idx } => {

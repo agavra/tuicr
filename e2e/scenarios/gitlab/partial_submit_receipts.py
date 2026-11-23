@@ -26,7 +26,7 @@ def main(s: Scenario) -> None:
     tui.keys("c").wait_for("COMMENT").keys("second-note").keys("Enter").wait_for("second-note")
     tui.cmd("submit draft").wait_for("Inline: 2").keys("y")
     # barrier: the 2nd POST failed on the forge AND the UI processed the failure (the 1st comment's receipt is recorded)
-    tui.wait_forge_log('"note": "injected failure"', 15).wait_for("Submit failed", 15).settle()
+    tui.wait_forge_log('"note": "injected failure"', 15, notes=True).wait_for("Submit failed", 15).settle()
     assert posted() == 1, "setup: first comment should have landed once"
     failflag.unlink()
     tui.cmd("submit draft").wait_for("Push pending|Submit review to")
