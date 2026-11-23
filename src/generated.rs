@@ -207,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn returns_empty_set_without_opening_a_repository_for_no_paths() {
+    fn returns_empty_set_for_no_paths() {
         let dir = repo_with_attributes("*.pb.go linguist-generated=true\n");
 
         assert!(detect_generated(dir.path(), &[]).is_empty());

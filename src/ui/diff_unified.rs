@@ -2231,12 +2231,13 @@ mod remote_comments_snapshot_tests {
 
     #[test]
     fn should_wrap_long_line_in_unified_view_when_wrap_enabled() {
-        let long: String = "x".repeat(200);
+        let marker = "TAIL_MARKER_END";
+        let long = format!("{}{}", "x".repeat(180), marker);
         let hunk = DiffHunk {
             header: "@@ -0,0 +1,1 @@".to_string(),
             lines: vec![DiffLine {
                 origin: LineOrigin::Addition,
-                content: long.clone(),
+                content: long,
                 old_lineno: None,
                 new_lineno: Some(1),
                 raw_content: None,
@@ -2260,28 +2261,42 @@ mod remote_comments_snapshot_tests {
             content_hash,
         };
         let mut app = make_revision_app(vec![file]);
-        app.set_diff_wrap(true);
-        app.rebuild_annotations();
 
-        let backend = TestBackend::new(80, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
+        // With wrap disabled, the tail marker past column 80 is clipped off.
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
         terminal
             .draw(|frame| super::render_unified_diff(frame, &mut app, Rect::new(0, 0, 80, 20)))
-            .expect("draw");
-        let body = body_text(terminal.backend().buffer());
-
-        let tail: String = long.chars().rev().take(20).collect::<String>();
-        let tail: String = tail.chars().rev().collect();
+            .expect("draw without wrap");
+        let unwrapped_body = body_text(terminal.backend().buffer());
         assert!(
-            body.contains(&tail),
-            "tail of wrapped long line should appear in body:\n{body}"
+            !unwrapped_body.contains(marker),
+            "tail marker should be clipped when wrap is disabled:\n{unwrapped_body}"
         );
 
+        // With wrap enabled, the long line wraps across multiple rows and the
+        // distinct tail marker becomes visible.
+        app.set_diff_wrap(true);
+        app.rebuild_annotations();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| super::render_unified_diff(frame, &mut app, Rect::new(0, 0, 80, 20)))
+            .expect("draw with wrap");
+        let wrapped_body = body_text(terminal.backend().buffer());
         assert!(
-            app.diff_state.visible_line_count > 0 && app.diff_state.visible_line_count < 20,
-            "expected logical visible_line_count 1..20, got {}",
-            app.diff_state.visible_line_count
+            wrapped_body.contains(marker),
+            "tail marker of wrapped long line should appear in body:\n{wrapped_body}"
         );
+        let content_rows = wrapped_body
+            .lines()
+            .filter(|row| row.contains("xxxx") || row.contains(marker))
+            .count();
+        assert!(
+            content_rows >= 3,
+            "195-char line in 80-col viewport should wrap onto at least 3 rows, got {content_rows}:\n{wrapped_body}"
+        );
+        assert_eq!(app.diff_state.visible_line_count, 4);
     }
 
     /// Comment boxes outside the viewport are replaced with blank placeholder

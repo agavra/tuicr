@@ -741,8 +741,8 @@ mod tests {
         // when
         let result = truncate_str(s, 5);
         // then
-        assert!(result.ends_with("..."));
-        assert!(result.is_char_boundary(result.len()));
+        assert_eq!(result, "éé...");
+        assert!(unicode_width::UnicodeWidthStr::width(result.as_str()) <= 5);
     }
 
     #[test]

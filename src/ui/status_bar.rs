@@ -1075,12 +1075,18 @@ mod header_snapshot_tests {
             fake_pr_commit("b", "second"),
             fake_pr_commit("c", "first"),
         ];
+        app.review_commits = app
+            .pr_commits
+            .iter()
+            .map(crate::app::pr_commit_to_commit_info)
+            .collect();
         app.commit_selection_range = Some((0, 2));
         // when
         let buffer = draw_header(&app);
-        // then — no `N of M commits` subset label since the full range is selected
+        // then — no subset or single-commit label since the full range is selected
         let line = row_text(&buffer, 0);
         assert!(!line.contains(" of 3 commits"), "got: {line:?}");
+        assert!(!line.contains("commit "), "got: {line:?}");
     }
 
     #[test]
@@ -1088,12 +1094,18 @@ mod header_snapshot_tests {
         // given a single-commit PR — the selector is hidden, no label.
         let mut app = build_pr_app(pr_source(false, false));
         app.pr_commits = vec![fake_pr_commit("a", "only commit")];
+        app.review_commits = app
+            .pr_commits
+            .iter()
+            .map(crate::app::pr_commit_to_commit_info)
+            .collect();
         app.commit_selection_range = Some((0, 0));
         // when
         let buffer = draw_header(&app);
         // then
         let line = row_text(&buffer, 0);
         assert!(!line.contains(" of "), "got: {line:?}");
+        assert!(!line.contains("commit "), "got: {line:?}");
     }
 
     #[test]
