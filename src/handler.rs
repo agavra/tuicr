@@ -1,4 +1,6 @@
-use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use std::time::{Duration, Instant};
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 
 use crate::app::{
@@ -201,6 +203,388 @@ enum CommandAfterDispatch {
 enum CompletionDirection {
     Forward,
     Reverse,
+}
+
+/// How long a first Ctrl+C waits for the second one that exits.
+const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Drop a Ctrl+C warning that has timed out.
+/// Returns `true` when one was dropped, so the main loop can schedule a redraw.
+pub fn clear_expired_ctrl_c(app: &mut App) -> bool {
+    let expired = app
+        .pending_ctrl_c
+        .is_some_and(|first_press| first_press.elapsed() >= CTRL_C_EXIT_TIMEOUT);
+    if expired {
+        app.pending_ctrl_c = None;
+        app.message = None;
+    }
+    expired
+}
+
+/// Handle a key release.
+///
+/// Down/Up Release flips the `*_released_since_arm` flag so the
+/// primed two-press file walk in single-file view requires a
+/// deliberate release + press; held-key auto-repeat (Repeat
+/// events) never satisfies the gate. Terminals without kitty
+/// REPORT_EVENT_TYPES support never emit Release, in which case
+/// `supports_keyboard_enhancement` is false and `cursor_down` /
+/// `cursor_up` never walk: j/k stop at the file's edges.
+pub fn handle_key_release(app: &mut App, key: KeyEvent) {
+    if matches!(key.code, KeyCode::Down | KeyCode::Char('j')) {
+        app.down_released_since_arm = true;
+    }
+    if matches!(key.code, KeyCode::Up | KeyCode::Char('k')) {
+        app.up_released_since_arm = true;
+    }
+}
+
+/// Handle one key press or repeat.
+///
+/// Returns `true` when the frame must be drawn before the next queued key is read.
+pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
+    // Handle Ctrl+C twice to exit (works across all input modes)
+    // In Comment mode, first Ctrl+C also cancels the comment
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        // If in comment mode, cancel the comment first
+        if app.input_mode == InputMode::Comment {
+            app.exit_comment_mode();
+        }
+
+        if let Some(first_press) = app.pending_ctrl_c
+            && first_press.elapsed() < CTRL_C_EXIT_TIMEOUT
+        {
+            // Second Ctrl+C within timeout - exit immediately
+            app.should_quit = true;
+            return false;
+        }
+        // First Ctrl+C (or timeout expired) - show warning and start timer
+        app.pending_ctrl_c = Some(Instant::now());
+        app.set_message("Press Ctrl+C again to exit");
+        return false;
+    }
+
+    // Any other key clears the pending Ctrl+C state and message
+    if app.pending_ctrl_c.is_some() {
+        app.pending_ctrl_c = None;
+        app.message = None;
+    }
+
+    // Keys that work the same in every mode (`Ctrl-l` redraw).
+    // Checked before the pending-prefix and vim-editor routing
+    // so they never reach a text buffer.
+    if handle_global_key(app, key) {
+        return false;
+    }
+
+    // Handle pending z command for zz/zt/zb viewport positioning
+    if app.pending_prefix.z {
+        app.pending_prefix.z = false;
+        match key.code {
+            KeyCode::Char('z') => {
+                app.center_cursor();
+                return false;
+            }
+            KeyCode::Char('t') => {
+                app.cursor_to_top();
+                return false;
+            }
+            KeyCode::Char('b') => {
+                app.cursor_to_bottom();
+                return false;
+            }
+            _ => {} // Fall through to normal handling
+        }
+    }
+
+    // Handle pending Z command for ZZ (export+quit) / ZQ (quit)
+    if app.pending_prefix.shift_z {
+        app.pending_prefix.shift_z = false;
+        match key.code {
+            KeyCode::Char('Z') => {
+                // ZZ: save session, export, and quit (same as :wq)
+                handle_write_and_quit(app);
+                return false;
+            }
+            KeyCode::Char('Q') => {
+                // ZQ: quit without exporting (same as q)
+                app.should_quit = true;
+                return false;
+            }
+            _ => {} // Fall through to normal handling
+        }
+    }
+
+    // Handle pending d command for dd delete comment
+    if app.pending_prefix.d {
+        app.pending_prefix.d = false;
+        if key.code == KeyCode::Char('d') && key.modifiers == KeyModifiers::NONE {
+            // In the target selector `dd` deletes the saved
+            // review under the cursor, not a comment.
+            if app.input_mode == InputMode::CommitSelect {
+                handle_commit_select_action(app, Action::SessionsTabDelete);
+                return false;
+            }
+            if app.input_mode == InputMode::Summary {
+                if !app.delete_selected_summary_comment() {
+                    app.set_warning("Selected comment is no longer editable or available");
+                }
+                // Refresh IDs and clamp selection before another queued dd.
+                return true;
+            }
+            if app.cursor_on_locked_comment() {
+                let forge = app.forge_display_name();
+                app.set_message(format!(
+                    "Comment already pushed to {forge} — read only in tuicr"
+                ));
+            } else if !app.delete_comment_at_cursor() {
+                if app.begin_remote_draft_delete() {
+                    // Waiting on the confirmation prompt.
+                } else if app.cursor_on_remote_thread() {
+                    let forge = app.forge_display_name();
+                    app.set_message(format!("{forge} comment — read only in tuicr"));
+                } else {
+                    app.set_message("No comment at cursor");
+                }
+            }
+            return false;
+        }
+        // Otherwise fall through to normal handling
+    }
+
+    // Handle pending leader command for panel focus, file list toggle, and review comments.
+    if app.pending_prefix.leader {
+        app.pending_prefix.leader = false;
+        match key.code {
+            KeyCode::Char('e') => {
+                app.toggle_file_list();
+                return false;
+            }
+            KeyCode::Char('h') => {
+                app.focus_pane_left();
+                return false;
+            }
+            KeyCode::Char('l') => {
+                app.focus_pane_right();
+                return false;
+            }
+            KeyCode::Char('k') => {
+                if app.focused_panel == FocusedPanel::Comments {
+                    app.focused_panel = FocusedPanel::FileList;
+                } else if app.has_inline_commit_selector() {
+                    app.focused_panel = FocusedPanel::CommitSelector;
+                }
+                return false;
+            }
+            KeyCode::Char('j') => {
+                if app.focused_panel == FocusedPanel::FileList && app.has_comment_navigator_items()
+                {
+                    app.focused_panel = FocusedPanel::Comments;
+                } else {
+                    app.focused_panel = FocusedPanel::Diff;
+                }
+                return false;
+            }
+            KeyCode::Char('c') => {
+                app.enter_review_comment_mode();
+                return false;
+            }
+            // `<leader>s` toggles the commit selector pane.
+            KeyCode::Char('s') => {
+                app.toggle_commit_selector();
+                return false;
+            }
+            KeyCode::Char('f') => {
+                app.toggle_single_file_view();
+                return false;
+            }
+            KeyCode::Char('n') => {
+                app.relative_line_numbers = !app.relative_line_numbers;
+                return false;
+            }
+            KeyCode::Char('p') => {
+                app.enter_file_picker_mode();
+                return false;
+            }
+            _ => {}
+        }
+        // Otherwise fall through to normal handling
+    }
+
+    // Vim modal editing: route comment-box keys to the edtui
+    // overlay (app-level keys handled inside).
+    if app.input_mode == InputMode::Comment && app.comment_vim_enabled {
+        app.ensure_comment_vim_editor();
+        if handle_comment_vim_key(app, key) {
+            return false;
+        }
+    }
+
+    // Editing the PR-tab filter is a sub-state of CommitSelect;
+    // route through the filter-specific key map so typed
+    // characters update the filter buffer rather than driving
+    // commit-list navigation.
+    let mut action = map_normal_path_key(app, key);
+
+    // Handle pending command setters (these work in any mode)
+    match action {
+        Action::PendingZCommand => {
+            app.pending_prefix.z = true;
+            app.pending_count = None;
+            return false;
+        }
+        Action::PendingShiftZCommand => {
+            app.pending_prefix.shift_z = true;
+            app.pending_count = None;
+            return false;
+        }
+        Action::PendingDCommand => {
+            app.pending_prefix.d = true;
+            app.pending_count = None;
+            return false;
+        }
+        Action::PendingLeaderCommand => {
+            app.pending_prefix.leader = true;
+            app.pending_count = None;
+            return false;
+        }
+        _ => {}
+    }
+
+    // Vim-style {count}{motion} (Normal mode only): digits accumulate
+    // into `pending_count`, then a following motion either scales its
+    // inner count parameter or is dispatched repeatedly. `{count}G`
+    // jumps to source line `count` (already existing behaviour).
+    if app.input_mode == InputMode::Normal {
+        match action {
+            Action::Digit(d) => {
+                let n = app.pending_count.unwrap_or(0);
+                app.pending_count =
+                    Some((n.saturating_mul(10).saturating_add(d as usize)).min(999_999));
+                return false;
+            }
+            Action::GoToBottom if app.pending_count.is_some() => {
+                let count = app.pending_count.unwrap().max(1);
+                app.pending_count = None;
+                app.go_to_source_line(count as u32, LineSide::New);
+                return false;
+            }
+            _ => {
+                if let Some(count) = app.pending_count.take() {
+                    let count = count.max(1);
+                    match &mut action {
+                        Action::CursorDown(n)
+                        | Action::CursorUp(n)
+                        | Action::ScrollLeft(n)
+                        | Action::ScrollRight(n)
+                        | Action::ScrollViewDown(n)
+                        | Action::ScrollViewUp(n) => {
+                            *n = n.saturating_mul(count);
+                        }
+                        Action::NextFile
+                        | Action::PrevFile
+                        | Action::NextHunk
+                        | Action::PrevHunk => {
+                            // Dispatch `count - 1` extra times; the
+                            // last one runs through normal dispatch
+                            // below.
+                            for _ in 1..count {
+                                dispatch_action(app, action.clone());
+                            }
+                        }
+                        _ => {
+                            // Count silently discarded for non-motion
+                            // actions (mode changes, edits, etc.).
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let previous_mode = app.input_mode;
+    dispatch_action(app, action);
+    if previous_mode != InputMode::Summary && app.input_mode == InputMode::Summary {
+        // Summary identities are populated by rendering before queued input.
+        return true;
+    }
+    false
+}
+
+/// Handle a comment-mode key while vim is active: app-level keys keep their
+/// semantics, everything else feeds the overlay. Always returns `true`.
+fn handle_comment_vim_key(app: &mut App, key: KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // An open `:` command-line captures all input until Enter/Esc.
+    if app.comment_vim_command_active() {
+        match key.code {
+            KeyCode::Enter => app.run_comment_vim_command(),
+            KeyCode::Esc => app.comment_vim_command_cancel(),
+            KeyCode::Backspace => app.comment_vim_command_backspace(),
+            KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
+                app.comment_vim_command_push(c)
+            }
+            _ => {}
+        }
+        return true;
+    }
+
+    // Alt+Enter (Option+Enter) accepts (save) and Alt+Esc discards (cancel)
+    // directly, in any mode — no double-press. Alt is the one modified Enter/Esc
+    // that reaches the app across terminals, including browser/web terminals
+    // like zellij web (where Shift/Cmd+Enter get stripped or grabbed). Plain
+    // Enter still inserts a newline in Insert mode, so Alt+Enter is free here.
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        match key.code {
+            KeyCode::Enter => {
+                app.save_comment();
+                return true;
+            }
+            KeyCode::Esc => {
+                app.exit_comment_mode();
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    let normal = app.comment_vim_in_normal_mode();
+
+    // In Normal mode a first plain Enter/Esc arms a confirm (header shows the
+    // hint); a second consecutive press saves (`:w`) / cancels (`:q`).
+    if normal && key.modifiers.is_empty() {
+        match key.code {
+            KeyCode::Enter => {
+                app.comment_vim_enter_normal();
+                return true;
+            }
+            // `q` behaves exactly like Esc here (arm/confirm cancel).
+            KeyCode::Esc | KeyCode::Char('q') => {
+                app.comment_vim_esc_normal();
+                return true;
+            }
+            _ => {}
+        }
+    }
+    // Any other key breaks a pending double-press sequence.
+    app.comment_vim_reset_pending();
+
+    match key.code {
+        // Save shortcut in any mode (Ctrl-C cancel is handled earlier).
+        KeyCode::Char('s') if ctrl => app.save_comment(),
+        KeyCode::Enter if ctrl => app.save_comment(),
+        // Tab cycles the comment type in Normal mode; in Insert it inserts a
+        // soft tab (`comment_tab_width` spaces).
+        KeyCode::Tab | KeyCode::Char('\t') if normal => app.cycle_comment_type(),
+        KeyCode::Tab | KeyCode::Char('\t') => app.comment_vim_insert_soft_tab(),
+        KeyCode::BackTab if normal => app.cycle_comment_type_reverse(),
+        // `:` opens the command-line in Normal mode (`:w` saves, `:q` cancels).
+        // Esc/Enter in Normal fall through to edtui (Esc is a no-op there).
+        KeyCode::Char(':') if normal => app.start_comment_vim_command(),
+        _ => app.comment_vim_feed_key(key),
+    }
+    true
 }
 
 /// Handle a key that means the same thing in every input mode (see
@@ -1722,6 +2106,12 @@ pub fn handle_normal_action(app: &mut App, action: Action) {
 /// Route a bracketed-paste payload to whichever input is accepting text.
 /// Everything else ignores it, so pasted text never drives normal-mode keys.
 pub fn handle_paste(app: &mut App, text: String) {
+    // Vim comment box: feed the overlay so the buffer stays synced.
+    if app.input_mode == InputMode::Comment && app.comment_vim_enabled {
+        app.ensure_comment_vim_editor();
+        app.comment_vim_feed_paste(text);
+        return;
+    }
     let action = Action::Paste(text);
     match app.input_mode {
         InputMode::Comment => handle_comment_action(app, action),

@@ -637,6 +637,8 @@ impl App {
             comment_input_annotation_offset: None,
             update_info: None,
             pending_count: None,
+            pending_prefix: PendingPrefix::default(),
+            pending_ctrl_c: None,
             pending_start_line: None,
             review_commits: Vec::new(),
             revision_range: None,
