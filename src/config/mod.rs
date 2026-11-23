@@ -3045,7 +3045,7 @@ scope_line = "no"
     fn should_parse_generated_section_overriding_defaults() {
         let outcome = parse_config(
             r#"[generated]
-collapse = true
+collapse = false
 count = false
 "#,
         );
@@ -3054,7 +3054,9 @@ count = false
             .as_ref()
             .and_then(|cfg| cfg.generated.clone())
             .expect("generated section should parse");
-        assert!(generated.collapse());
+        assert_eq!(generated.collapse, Some(false));
+        assert!(!generated.collapse());
+        assert_eq!(generated.count, Some(false));
         assert!(!generated.count());
         assert!(outcome.warnings.is_empty());
     }
@@ -3071,6 +3073,8 @@ collapse = true
             .as_ref()
             .and_then(|cfg| cfg.generated.clone())
             .expect("generated section should parse");
+        assert_eq!(generated.collapse, Some(true));
+        assert!(generated.collapse());
         assert_eq!(generated.count, None);
         assert!(generated.count());
     }
