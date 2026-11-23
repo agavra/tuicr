@@ -356,17 +356,14 @@ fn should_report_a_failure_when_the_worker_panics() {
     });
 
     // Mirrors `spawn_diff_watch_reload`'s worker: build the reporter, then
-    // panic before answering. Silenced so the suite's output stays readable.
+    // panic before answering. Unwinding on the test thread lets libtest
+    // capture the panic output without mutating the process-global hook.
     let reporter = DiffWatchReporter::new(tx, working_tree_request());
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let panicked = std::thread::spawn(move || {
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let _reporter = reporter;
         panic!("worker died mid-fetch");
-    })
-    .join();
-    std::panic::set_hook(previous_hook);
-    assert!(panicked.is_err(), "the worker thread should have panicked");
+    }));
+    assert!(panicked.is_err(), "the worker should have panicked");
 
     app.next_diff_watch_at = Instant::now() + Duration::from_secs(60);
     let redraw = app.poll_diff_watch_changes();
