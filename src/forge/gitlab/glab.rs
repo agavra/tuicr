@@ -974,7 +974,7 @@ fn parse_gitlab_remote(remote_url: &str, lookup: HostLookup) -> Option<ForgeRepo
 
     if let Some((host, path)) = parse_scp_like_remote(trimmed) {
         if is_gitlab_host(host, lookup) {
-            return gitlab_repository_from_path(host, path);
+            return gitlab_repository_from_path(normalize_ssh_transport_host(host), path);
         }
         if lookup == HostLookup::HostnameOnly {
             return None;
@@ -994,7 +994,7 @@ fn parse_gitlab_remote(remote_url: &str, lookup: HostLookup) -> Option<ForgeRepo
         .map(|(_, rest)| rest)
         .unwrap_or(without_scheme);
     let (host, path) = without_user.split_once('/')?;
-    let host = strip_port(host);
+    let host = normalize_ssh_transport_host(strip_port(host));
     if !is_gitlab_host(host, lookup) {
         return None;
     }
@@ -1042,7 +1042,9 @@ fn glab_default_host(runner: &impl GlabCommandRunner) -> Option<String> {
 fn glab_host_for_ssh_host(host: &str, runner: &impl GlabCommandRunner) -> Option<String> {
     // gitlab.com serves its own API, and a host without "gitlab" in its name
     // was only recognized by being the default host.
-    if host.eq_ignore_ascii_case(DEFAULT_GITLAB_HOST) || !host.contains("gitlab") {
+    if host.eq_ignore_ascii_case(DEFAULT_GITLAB_HOST)
+        || !host.to_ascii_lowercase().contains("gitlab")
+    {
         return None;
     }
     let default_host = glab_default_host(runner)?;
@@ -2972,6 +2974,33 @@ mod tests {
         assert_eq!(
             normalize_ssh_transport_host("gitlab.example.com"),
             "gitlab.example.com"
+        );
+    }
+
+    #[test]
+    fn normalizes_altssh_gitlab_remote_urls_on_scp_and_ssh_scheme() {
+        for url in [
+            "git@altssh.gitlab.com:owner/repo.git",
+            "ssh://git@altssh.gitlab.com:443/owner/repo.git",
+        ] {
+            let repo = parse_gitlab_remote_url_by_hostname(url).unwrap();
+            assert_eq!(repo.host, "gitlab.com", "failed for {url}");
+            assert_eq!(repo.owner, "owner");
+            assert_eq!(repo.name, "repo");
+        }
+    }
+
+    #[test]
+    fn maps_mixed_case_glab_ssh_host_back_to_the_default_host() {
+        let runner = RecordingRunner::new_with_responses(vec![
+            "gitlab.example.org
+".to_string(),
+            "gitlabssh.example.org
+".to_string(),
+        ]);
+        assert_eq!(
+            glab_host_for_ssh_host("GitLabSSH.example.org", &runner).as_deref(),
+            Some("gitlab.example.org")
         );
     }
 
