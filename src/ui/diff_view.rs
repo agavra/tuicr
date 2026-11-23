@@ -33,18 +33,40 @@ pub(super) const REVIEWED_BANNER_TEXT: &str = "  Marked reviewed -- r to re-open
 /// `HEADER_RULE`. Callers concatenate `HEADER_RULE` themselves so the rule
 /// can be styled as a separate span (both renderers) or absorbed into a
 /// single width computation (`row_height`).
-pub(super) fn file_header_prefix_text(app: &App, file: &DiffFile) -> String {
+pub(super) fn file_header_prefix_text(app: &App, file_idx: usize, file: &DiffFile) -> String {
     let path = file.display_path();
     let is_reviewed = app.session.is_file_reviewed(path);
     let review_mark = if is_reviewed { "✓ " } else { "" };
-    if file.is_commit_message || app.is_pristine_mode {
-        format!("═══ {}{} ", review_mark, path.display())
+    // Shown whether or not the body is collapsed: once a generated file is
+    // expanded the label is the only thing left saying why it was hidden.
+    let generated_mark = if app.is_generated_file(path) {
+        " [generated]"
     } else {
+        ""
+    };
+    // A collapsed body hides its comments and remote threads, so the header
+    // is the only place left to say they exist.
+    let comment_mark = match app.collapsed_file_comment_count(file_idx) {
+        0 => String::new(),
+        1 => " \u{00b7} 1 comment".to_string(),
+        n => format!(" \u{00b7} {n} comments"),
+    };
+    if file.is_commit_message || app.is_pristine_mode {
         format!(
-            "═══ {}{} [{}] ",
+            "═══ {}{}{}{} ",
             review_mark,
             path.display(),
-            file.status.as_char()
+            generated_mark,
+            comment_mark
+        )
+    } else {
+        format!(
+            "═══ {}{} [{}]{}{} ",
+            review_mark,
+            path.display(),
+            file.status.as_char(),
+            generated_mark,
+            comment_mark
         )
     }
 }
@@ -272,6 +294,35 @@ fn render_diff_view_once(frame: &mut Frame, app: &mut App, area: Rect) {
         DiffViewMode::Unified => render_unified_diff(frame, app, area),
         DiffViewMode::SideBySide => render_side_by_side_diff(frame, app, area),
     }
+    render_empty_review_placeholder(frame, app, area);
+}
+
+/// Draws the dimmed "No staged changes" line centred in an empty staged or
+/// unstaged review, after either renderer has drawn the (empty) pane. The
+/// message bar only holds its copy for a few seconds; this one stays for as
+/// long as the review is empty.
+fn render_empty_review_placeholder(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(text) = app.empty_review_placeholder() else {
+        return;
+    };
+    // Inside the pane's border, on its middle row.
+    if area.width <= 2 || area.height <= 2 {
+        return;
+    }
+    let row = Rect {
+        x: area.x + 1,
+        y: area.y + area.height / 2,
+        width: area.width - 2,
+        height: 1,
+    };
+    frame.render_widget(
+        ratatui::widgets::Paragraph::new(Line::from(Span::styled(
+            text,
+            styles::dim_style(&app.theme),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
+        row,
+    );
 }
 
 /// Build the diff view's left title: ` <path> ` when a file is in view, or
@@ -640,6 +691,14 @@ fn paint_annotation_group(
         .min(paint.inner_right);
 
     let Some(content) = app.content_for_side(ann_idx, side) else {
+        // A side-by-side row can be empty on the selection's side; nothing
+        // there to tint.
+        if matches!(
+            app.line_annotations.get(ann_idx),
+            Some(AnnotatedLine::SideBySideLine { .. })
+        ) {
+            return;
+        }
         // Headers and other non-content rows aren't bound by the pane
         // gutter; tint the full inner width.
         for which_row in 0..group_height {
@@ -1472,7 +1531,7 @@ pub(super) fn append_file_preamble<'a>(
     // characters confuses horizontal scrolling.
     if !app.is_single_file_view {
         let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
-        let header_text = file_header_prefix_text(app, file);
+        let header_text = file_header_prefix_text(app, file_idx, file);
         lines.push(Line::from(vec![
             Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
             Span::styled(header_text, styles::file_header_style(&app.theme)),

@@ -15,7 +15,7 @@ use crate::input::{
 };
 use crate::model::{ClearScope, LineSide};
 use crate::output::{
-    copy_text_to_clipboard, export_to_clipboard, export_to_file, generate_export_content,
+    copy_text_to_clipboard_with, export_to_clipboard_with, export_to_file, generate_export_content,
 };
 use crate::text_edit::{
     delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
@@ -77,6 +77,18 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(
         &["reviewed", "set reviewed!"],
         CommandKind::ToggleShowReviewed,
+    ),
+    CommandSpec::new(&["set minimal"], CommandKind::SetMinimalUi(true)),
+    CommandSpec::new(&["set nominimal"], CommandKind::SetMinimalUi(false)),
+    CommandSpec::new(&["set minimal!"], CommandKind::ToggleMinimalUi),
+    CommandSpec::new(&["set generated"], CommandKind::SetGeneratedCollapsed(true)),
+    CommandSpec::new(
+        &["set nogenerated"],
+        CommandKind::SetGeneratedCollapsed(false),
+    ),
+    CommandSpec::new(
+        &["generated", "set generated!"],
+        CommandKind::ToggleGenerated,
     ),
     CommandSpec::new(&["diff"], CommandKind::Diff),
     CommandSpec::new(&["focus", "f"], CommandKind::Focus),
@@ -165,6 +177,10 @@ enum CommandKind {
     ToggleCommits,
     SetShowReviewed(bool),
     ToggleShowReviewed,
+    SetMinimalUi(bool),
+    ToggleMinimalUi,
+    SetGeneratedCollapsed(bool),
+    ToggleGenerated,
     Diff,
     Focus,
     Stage,
@@ -463,9 +479,12 @@ fn handle_copy_pr_url(app: &mut App) {
     };
     let url = pr.url.clone();
 
-    match copy_text_to_clipboard(&url) {
-        Ok(true) => app.set_message("PR URL copied to clipboard (via terminal)"),
-        Ok(false) => app.set_message("PR URL copied to clipboard"),
+    match copy_text_to_clipboard_with(
+        &url,
+        app.clipboard_override.as_deref(),
+        app.clipboard_command.as_deref(),
+    ) {
+        Ok(copy) => app.set_copy_status(&copy, copy.message("PR URL")),
         Err(e) => app.set_warning(format!("Failed to copy PR URL: {e}")),
     }
 }
@@ -482,6 +501,7 @@ fn handle_export(app: &mut App) {
             &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
+            &app.export_diff(),
         ) {
             Ok(content) => {
                 app.pending_stdout_output = Some(content);
@@ -490,15 +510,18 @@ fn handle_export(app: &mut App) {
             Err(e) => app.set_warning(format!("{e}")),
         }
     } else {
-        match export_to_clipboard(
+        match export_to_clipboard_with(
             &app.session,
             &app.diff_source,
             &app.comment_types,
             &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
+            &app.export_diff(),
+            app.clipboard_override.as_deref(),
+            app.clipboard_command.as_deref(),
         ) {
-            Ok(msg) => app.set_message(msg),
+            Ok(copy) => app.set_copy_status(&copy, copy.message("Review")),
             Err(e) => app.set_warning(format!("{e}")),
         }
     }
@@ -531,6 +554,7 @@ fn handle_export_to_file(app: &mut App, path: &str) {
         &app.forge_review_threads,
         slug.as_deref(),
         &path,
+        &app.export_diff(),
     ) {
         Ok(msg) => app.set_message(msg),
         Err(TuicrError::Io(e)) => {
@@ -557,9 +581,12 @@ fn handle_copy_comment_at_cursor(app: &mut App) {
         }
         return;
     };
-    match copy_text_to_clipboard(&content) {
-        Ok(true) => app.set_message("Comment copied to clipboard (via terminal)"),
-        Ok(false) => app.set_message("Comment copied to clipboard"),
+    match copy_text_to_clipboard_with(
+        &content,
+        app.clipboard_override.as_deref(),
+        app.clipboard_command.as_deref(),
+    ) {
+        Ok(copy) => app.set_copy_status(&copy, copy.message("Comment")),
         Err(e) => app.set_warning(format!("{e}")),
     }
 }
@@ -1101,6 +1128,22 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.toggle_show_reviewed();
             CommandAfterDispatch::ExitCommandMode
         }
+        CommandKind::SetMinimalUi(enabled) => {
+            app.set_minimal_ui(enabled);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleMinimalUi => {
+            app.toggle_minimal_ui();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetGeneratedCollapsed(collapse) => {
+            app.set_collapse_generated(collapse);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleGenerated => {
+            app.toggle_collapse_generated();
+            CommandAfterDispatch::ExitCommandMode
+        }
         CommandKind::Diff => {
             app.toggle_diff_view_mode();
             CommandAfterDispatch::ExitCommandMode
@@ -1177,6 +1220,11 @@ fn reload_review(app: &mut App) {
                 } else {
                     app.set_message(format!("Reloaded {count} files{comment_suffix}"));
                 }
+            }
+            // A staged or unstaged review can empty out under it, for example
+            // after a commit. That is an empty review, not a failed reload.
+            Err(crate::error::TuicrError::NoChanges) if app.reload_can_empty() => {
+                app.show_emptied_review();
             }
             Err(e) => app.set_error(format!("Reload failed: {e}")),
         }
@@ -1382,11 +1430,17 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
 pub fn handle_confirm_action(app: &mut App, action: Action) {
     // Only the quit prompts end the session. A Sessions-tab delete answers
     // in place and returns to the selector.
-    let quits = app.pending_confirm != Some(app::ConfirmAction::DeleteSession);
+    let quits = !matches!(
+        app.pending_confirm,
+        Some(app::ConfirmAction::DeleteSession | app::ConfirmAction::DeleteRemoteDraft)
+    );
     match action {
         Action::ConfirmYes => {
             if let Some(app::ConfirmAction::DeleteSession) = app.pending_confirm {
                 app.sessions_tab_delete_selected();
+            }
+            if let Some(app::ConfirmAction::DeleteRemoteDraft) = app.pending_confirm {
+                app.spawn_remote_draft_delete();
             }
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
                 let slug = app.session_slug();
@@ -1398,20 +1452,25 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
+                        &app.export_diff(),
                     ) {
                         Ok(content) => app.pending_stdout_output = Some(content),
                         Err(e) => app.set_warning(format!("{e}")),
                     }
                 } else {
-                    match export_to_clipboard(
+                    match export_to_clipboard_with(
                         &app.session,
                         &app.diff_source,
                         &app.comment_types,
                         &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
+                        &app.export_diff(),
+                        app.clipboard_override.as_deref(),
+                        app.clipboard_command.as_deref(),
                     ) {
-                        Ok(msg) => app.set_message(msg),
+                        // tuicr quits next, so the status bar would never show it.
+                        Ok(copy) => app.pending_exit_warning = copy.fallback_warning,
                         Err(e) => app.set_warning(format!("{e}")),
                     }
                 }
@@ -1597,7 +1656,10 @@ pub fn handle_commit_selector_action(app: &mut App, action: Action) {
                 app.set_error(format!("Failed to load diff: {e}"));
             }
         }
-        Action::ExitMode => {
+        // Normal mode maps Esc to `ClearSearchHighlight`; in this pane it
+        // also returns focus to the diff.
+        Action::ClearSearchHighlight => {
+            app.clear_search_highlight();
             app.focused_panel = FocusedPanel::Diff;
         }
         _ => handle_shared_normal_action(app, action),
@@ -1607,14 +1669,8 @@ pub fn handle_commit_selector_action(app: &mut App, action: Action) {
 /// Handle actions in VisualSelect mode
 pub fn handle_visual_action(app: &mut App, action: Action) {
     match action {
-        Action::CursorDown(n) => {
-            app.cursor_down(n);
-            app.extend_visual_to_cursor();
-        }
-        Action::CursorUp(n) => {
-            app.cursor_up(n);
-            app.extend_visual_to_cursor();
-        }
+        Action::CursorDown(n) => app.visual_cursor_down(n),
+        Action::CursorUp(n) => app.visual_cursor_up(n),
         Action::AddRangeComment | Action::AddRangeSuggestion => {
             if action == Action::AddRangeSuggestion {
                 app.enter_suggestion_from_visual();
@@ -1627,8 +1683,9 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
         }
         Action::ExportToClipboard => {
             match app.copy_visual_selection() {
-                Ok(0) => app.set_message("Nothing to copy"),
-                Ok(n) => app.set_message(format!("Copied {n} chars")),
+                Ok((0, _)) => app.set_message("Nothing to copy"),
+                Ok((_, Some(warning))) => app.set_warning(warning),
+                Ok((n, None)) => app.set_message(format!("Copied {n} chars")),
                 Err(e) => app.set_warning(format!("{e}")),
             }
             app.exit_visual_mode();
@@ -1899,6 +1956,16 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
                 }
             }
         }
+        // Space already means "expand what's under the cursor" in the file
+        // list and the commit selector; in the diff panel it was unbound, so
+        // it takes on the same meaning here: toggle whether the current
+        // file's diff body is shown, regardless of why it defaulted to
+        // collapsed or expanded.
+        Action::ToggleExpand => {
+            if !app.toggle_file_collapse() {
+                handle_shared_normal_action(app, action);
+            }
+        }
         Action::SelectFileFull => {
             if let Some(hit) = app.get_gap_at_cursor() {
                 match hit {
@@ -2148,6 +2215,22 @@ mod command_tests {
         assert_eq!(
             command_spec_for("set worddiff!").map(|spec| spec.kind),
             Some(CommandKind::ToggleWordDiff)
+        );
+    }
+
+    #[test]
+    fn parses_minimal_ui_commands() {
+        assert_eq!(
+            command_spec_for("set minimal").map(|spec| spec.kind),
+            Some(CommandKind::SetMinimalUi(true))
+        );
+        assert_eq!(
+            command_spec_for("set nominimal").map(|spec| spec.kind),
+            Some(CommandKind::SetMinimalUi(false))
+        );
+        assert_eq!(
+            command_spec_for("set minimal!").map(|spec| spec.kind),
+            Some(CommandKind::ToggleMinimalUi)
         );
     }
 

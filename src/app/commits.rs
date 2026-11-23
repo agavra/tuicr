@@ -53,7 +53,10 @@ impl App {
         self.commit_list_scroll_offset = 0;
         self.visible_commit_count = mapped.len();
         self.has_more_commit = false;
-        self.show_commit_selector = true;
+        self.show_commit_selector = self.show_commits_on_open;
+        if !self.show_commit_selector && self.focused_panel == FocusedPanel::CommitSelector {
+            self.focused_panel = FocusedPanel::Diff;
+        }
 
         let mut range = (0, mapped.len() - 1);
         let mut auto_scoped_since_last_review = false;
@@ -203,13 +206,15 @@ impl App {
         // Check if there might be more commits
         self.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
         self.commit_list = commits;
-        if has_staged_changes {
+        let rows = Self::worktree_row_status(self.vcs_info.vcs_type, change_status);
+        if rows.staged {
             self.commit_list.insert(0, Self::staged_commit_entry());
         }
-        if has_unstaged_changes {
+        if rows.unstaged {
             self.commit_list.insert(0, Self::unstaged_commit_entry());
         }
-        self.commit_list_cursor = 0;
+        self.commit_list_cursor = Self::initial_selector_cursor(&self.commit_list, change_status);
+        self.worktree_status = Some(change_status);
         self.commit_list_scroll_offset = 0;
         self.commit_selection_range = None;
         self.visible_commit_count = self.commit_list.len();
@@ -527,9 +532,9 @@ impl App {
                 self.load_commit_range_selection(ordered_ids, commits)
             }
             SessionDiffSource::WorkingTree => self.load_working_tree_selection(),
-            SessionDiffSource::Unstaged => self.load_unstaged_selection(),
-            SessionDiffSource::Staged => self.load_staged_selection(),
-            SessionDiffSource::StagedAndUnstaged => self.load_staged_and_unstaged_selection(),
+            SessionDiffSource::Unstaged => self.load_unstaged_selection(false),
+            SessionDiffSource::Staged => self.load_staged_selection(false),
+            SessionDiffSource::StagedAndUnstaged => self.load_staged_and_unstaged_selection(false),
             SessionDiffSource::WorkingTreeAndCommits
             | SessionDiffSource::StagedUnstagedAndCommits => {
                 let Some(commits) = self.session_range_commits(&session)? else {
@@ -546,10 +551,12 @@ impl App {
                     highlighter,
                     self.path_filter.as_deref(),
                 )?;
-                if change_status.staged {
+                self.worktree_status = Some(change_status);
+                let rows = Self::worktree_row_status(self.vcs_info.vcs_type, change_status);
+                if rows.staged {
                     commits.push(Self::staged_commit_entry());
                 }
-                if change_status.unstaged {
+                if rows.unstaged {
                     commits.push(Self::unstaged_commit_entry());
                 }
                 self.load_staged_unstaged_and_commits_selection(ordered_ids, commits)
@@ -643,6 +650,18 @@ impl App {
     /// status bar shows the `{n}/{total} commits` count as feedback).
     pub fn has_review_commits(&self) -> bool {
         self.review_commits.len() > 1 && !matches!(&self.diff_source, DiffSource::WorkingTree)
+    }
+
+    /// Apply config `show_commits`: remember it for every review opened later
+    /// and hide the pane of the review already loaded at startup.
+    pub fn apply_show_commits_config(&mut self, show: bool) {
+        self.show_commits_on_open = show;
+        if !show {
+            self.show_commit_selector = false;
+            if self.focused_panel == FocusedPanel::CommitSelector {
+                self.focused_panel = FocusedPanel::Diff;
+            }
+        }
     }
 
     /// Toggle the inline commit selector's visibility. When hiding it while it
@@ -853,6 +872,19 @@ impl App {
         Some(set)
     }
 
+    /// The loaded diff and the commit scope it shows, for
+    /// `[export] code_context`.
+    pub fn export_diff(&self) -> crate::output::ExportDiff<'_> {
+        crate::output::ExportDiff {
+            files: &self.diff_files,
+            subset_loaded: Self::is_strict_commit_selection(
+                self.commit_selection_range,
+                self.review_commits.len(),
+            ),
+            single_commit: self.commit_id_for_new_comment(),
+        }
+    }
+
     /// Whether a comment should be visible given the current commit
     /// selection. A comment with `commit_id == None` (legacy or made
     /// against the full cumulative diff) is always visible. Otherwise it
@@ -1052,15 +1084,15 @@ impl App {
         }
 
         if selected_staged && selected_unstaged {
-            return self.load_staged_and_unstaged_selection().map(|_| ());
+            return self.load_staged_and_unstaged_selection(true).map(|_| ());
         }
 
         if selected_staged {
-            return self.load_staged_selection().map(|_| ());
+            return self.load_staged_selection(true).map(|_| ());
         }
 
         if selected_unstaged {
-            return self.load_unstaged_selection().map(|_| ());
+            return self.load_unstaged_selection(true).map(|_| ());
         }
 
         self.load_commit_range_selection(selected_ids, selected_commits)

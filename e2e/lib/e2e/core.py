@@ -33,6 +33,10 @@ TUICR_BIN = os.environ.get("TUICR_BIN") or sys.exit("set TUICR_BIN to the tuicr 
 COLS = int(os.environ.get("E2E_COLS", "160"))
 ROWS = int(os.environ.get("E2E_ROWS", "45"))
 TIMEOUT = float(os.environ.get("E2E_TIMEOUT", "10"))
+# reject()'s default window: 0.4 s at the default E2E_TIMEOUT of 10 s, scaled with it (a slow machine that needs a
+# longer TIMEOUT also needs longer to show text that should not appear). E2E_REJECT_WINDOW overrides it.
+REJECT_WINDOW = float(os.environ.get("E2E_REJECT_WINDOW") or 0.04 * TIMEOUT)
+SENTINEL = "E2E-RAN"  # scenario() prints `E2E-RAN <name> rc=<rc>` last; run.py fails an rc 0 without it
 SETTLE_QUIET = float(os.environ.get("E2E_SETTLE_QUIET", "0.25"))  # default in e2e/pyproject.toml, set by run.py
 UNEXPECTED_MARK = '"note": "UNEXPECTED'
 
@@ -47,6 +51,10 @@ class Failure(Exception):
 
 class NoPane(Failure):
     """The tmux pane is gone: never mistaken for "text disappeared" or "process exited"."""
+
+
+class DeadPane(Failure):
+    """The pane's process exited while a screen wait expected it to run: a crash is never "the text went away"."""
 
 
 class Skip(Exception):
@@ -72,18 +80,107 @@ def because(message: str) -> Iterator[None]:
 
 
 def must_fail(fn: Callable[[], object], message: str, exc: type[BaseException] = Failure) -> None:
-    """Assert that fn() raises `exc` (a Failure by default; NoPane for the missing-pane checks). For harness self-tests:
-    a call that returns, or fails with something else, fails the scenario with `message`."""
+    """Assert that fn() raises `exc` (a Failure by default; NoPane/DeadPane for the pane checks). For harness
+    self-tests: a call that returns, or fails with something else, fails the scenario with `message`. The default
+    does not accept NoPane or DeadPane: a pane problem is not the failure a self-test means to provoke."""
     try:
         fn()
-    except exc:
+    except exc as e:
+        if exc is Failure and isinstance(e, NoPane | DeadPane):
+            raise AssertionError(f"{message} (raised {type(e).__name__}: {e}, not a plain Failure)") from e
         return
     except Exception as e:  # noqa: BLE001
         raise AssertionError(f"{message} (raised {type(e).__name__}: {e}, not {exc.__name__})") from e
     raise AssertionError(message)
 
 
-def _setup_env() -> tuple[str, str]:
+def _resolve_git() -> str:
+    """The git the run uses: $E2E_GIT, else on macOS the toolchain git `xcrun -f git` names (it skips the /usr/bin
+    shim, which costs a process launch per call), else `git` on PATH."""
+    if os.environ.get("E2E_GIT"):
+        found = shutil.which(os.environ["E2E_GIT"])
+        if not found:
+            sys.exit(f"e2e: E2E_GIT={os.environ['E2E_GIT']} is not an executable")
+        return os.path.abspath(found)
+    if sys.platform == "darwin":
+        with contextlib.suppress(OSError):
+            p = subprocess.run(["xcrun", "-f", "git"], stdin=subprocess.DEVNULL, capture_output=True, text=True)
+            found = p.stdout.strip()
+            if p.returncode == 0 and os.path.isfile(found) and os.access(found, os.X_OK):
+                return found
+    found = shutil.which("git")
+    if not found:
+        sys.exit("e2e: required tool 'git' not found")
+    return found
+
+
+def _git_env(real: str, link: Path) -> dict[str, str]:
+    """GIT_EXEC_PATH (and GIT_TEMPLATE_DIR) for a git that finds its helpers relative to its own location: run through
+    the link it would look beside the link. Empty when the link already finds the same exec path."""
+
+    def exec_path(g: str | Path) -> str:
+        return subprocess.run(
+            [g, "--exec-path"], stdin=subprocess.DEVNULL, capture_output=True, text=True
+        ).stdout.strip()
+
+    found = exec_path(real)
+    if not found or exec_path(link) == found:
+        return {}
+    env = {"GIT_EXEC_PATH": found}
+    templates = Path(found).parent.parent / "share" / "git-core" / "templates"
+    if templates.is_dir():
+        env["GIT_TEMPLATE_DIR"] = str(templates)
+    return env
+
+
+def _git_bindir(root: Path) -> tuple[Path, dict[str, str]]:
+    """<root>/.harness/bin with a `git` link to _resolve_git(), and the variables that git needs (see _git_env);
+    resolved once per run (later scenarios read <root>/.harness/git.json)."""
+    bindir = root / ".harness" / "bin"
+    link, info = bindir / "git", root / ".harness" / "git.json"
+    if not os.environ.get("E2E_GIT") and link.is_symlink() and os.path.exists(link) and info.exists():
+        return bindir, json.loads(info.read_text())
+    bindir.mkdir(parents=True, exist_ok=True)
+    real = _resolve_git()
+    tmp = bindir / f".git.{os.getpid()}"
+    with contextlib.suppress(FileNotFoundError):
+        tmp.unlink()
+    os.symlink(real, tmp)
+    os.replace(tmp, link)
+    env = _git_env(real, link)
+    tmp = info.with_name(f".git.json.{os.getpid()}")
+    tmp.write_text(json.dumps(env))
+    os.replace(tmp, info)
+    return bindir, env
+
+
+def _fake_bin(root: Path) -> str:
+    """The fake forge CLIs the child runs: copies of e2e/bin/* under <root>/.harness/fakebin whose shebang names this
+    interpreter and that run fakeforge/main.py in-process, so a call costs one process launch (bin/*, through
+    `env python3` and an exec of main.py, costs several). Falls back to e2e/bin when the interpreter's path cannot be
+    a shebang."""
+    exe = sys.executable
+    if not exe or any(c.isspace() for c in exe) or len(exe) > 120:
+        return f"{E2E_DIR}/bin"
+    main = E2E_DIR / "fakeforge" / "main.py"
+    d = root / ".harness" / "fakebin"
+    d.mkdir(parents=True, exist_ok=True)
+    for src in sorted((E2E_DIR / "bin").iterdir()):
+        text = (
+            f"#!{exe}\n# Fake `{src.name}`, generated by the e2e harness from e2e/bin/{src.name}.\n"
+            f"import runpy, sys\nsys.argv = [{str(main)!r}, {src.name!r}, *sys.argv[1:]]\n"
+            f"runpy.run_path({str(main)!r}, run_name='__main__')\n"
+        )
+        f = d / src.name
+        if not f.exists() or f.read_text() != text:
+            tmp = d / f".{src.name}.{os.getpid()}"
+            tmp.write_text(text)
+            tmp.chmod(0o755)
+            os.replace(tmp, f)
+    return str(d)
+
+
+def _setup_env() -> tuple[str, str, dict[str, str]]:
     """Harness-side isolation, exported to this process (fixture git/hg/jj commands inherit it)."""
     root = os.environ.get("E2E_ROOT") or tempfile.mkdtemp(prefix="tuicr-e2e.", dir=os.environ.get("TMPDIR", "/tmp"))
     os.environ.update(
@@ -107,6 +204,9 @@ def _setup_env() -> tuple[str, str]:
     )
     # UTF-8 locale for tuicr and tmux: en_US.UTF-8 where installed, else C.UTF-8 (CI images).
     loc = os.environ.get("E2E_LOCALE")
+    cached = Path(root) / ".harness" / "locale"  # `locale -a` once per run
+    if not loc and cached.exists():
+        loc = cached.read_text().strip()
     if not loc:
         have = (
             subprocess.run(["locale", "-a"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
@@ -114,21 +214,35 @@ def _setup_env() -> tuple[str, str]:
             .split()
         )
         loc = "en_US.UTF-8" if {"en_us.utf-8", "en_us.utf8"} & set(have) else "C.UTF-8"
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(loc)
     os.environ.update(LANG=loc, LC_ALL=loc)
-    # PATH of the child: fake forge CLIs first, then system dirs, then the dirs of the tools the harness needs.
+    # PATH of the child: fake forge CLIs first, then the run's git, system dirs, then the dirs of the harness's tools.
+    # Those dirs come from PATH without the private git dir: the dir of the git on PATH often holds other tools too
+    # (Homebrew's bin has hg), which the child must keep finding.
+    private = str(Path(root) / ".harness" / "bin")
+    outer = os.pathsep.join(d for d in os.environ.get("PATH", "").split(os.pathsep) if d != private)
     tool_path = ["/usr/bin", "/bin"]
     for tool in ("git", "python3"):
-        p = shutil.which(tool)
+        p = shutil.which(tool, path=outer)
         if not p:
             sys.exit(f"e2e: required tool '{tool}' not found")
         tool_path.append(os.path.dirname(p))
+    # One git for the whole run: a private bin dir holding only a `git` link to it goes first on the harness's PATH
+    # (fixture commands) and on the child's.
+    bindir, git_env = _git_bindir(Path(root))
+    os.environ.update(git_env)
+    os.environ["PATH"] = f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"
+    tool_path.insert(0, str(bindir))
     if os.environ.get("E2E_EXTRA_PATH"):
         tool_path.append(os.environ["E2E_EXTRA_PATH"])
-    return loc, ":".join(tool_path)
+    return loc, ":".join(tool_path), git_env
 
 
-LOCALE, TOOL_PATH = _setup_env()
+LOCALE, TOOL_PATH, GIT_ENV = _setup_env()
 ROOT = Path(os.environ["E2E_ROOT"])
+FAKE_BIN = _fake_bin(ROOT)  # the fake gh/glab/tea/bkt, first on the child's PATH
+GIT = str(ROOT / ".harness" / "bin" / "git")  # the run's git (see _resolve_git), for fixture commands
 OUT = Path(os.environ["E2E_OUT"])
 SOCKET = os.environ["E2E_SOCKET"]
 
@@ -146,6 +260,7 @@ def child_env(d: Path, path: str, extra: dict[str, str] | None = None) -> dict[s
         LC_ALL=LOCALE,
         E2E_FORGE_LOG=f"{d}/forge.log",
         E2E_DATA=f"{E2E_DIR}/data",
+        **GIT_ENV,
     )
     env.update(extra or {})
     return env
@@ -174,7 +289,8 @@ class Scenario:
         self.cols, self.rows = COLS, ROWS  # size of the next pane
         self.forge_logs: list[Path] = []
         self.forge_unexpected: list[str] = []  # UNEXPECTED calls from logs a restart truncated
-        self.allow_unexpected = False
+        self.allowed_unexpected: list[tuple[str, int, str]] = []  # (regex, expected count, why)
+        self.deaths: list[str] = []  # TUIs whose process exited with no wait_exit accepting it (checked at teardown)
         self.gerrit_proc = None
         self._cleanups: list[tuple[Callable[..., object], tuple[object, ...]]] = []
 
@@ -190,9 +306,28 @@ class Scenario:
     def skip(self, reason: str) -> None:
         raise Skip(reason)
 
-    def allow_unexpected_forge_calls(self, why: str = "") -> None:
-        """A scenario that provokes calls the fakes have no fixture for, on purpose, declares it (say why)."""
-        self.allow_unexpected = True
+    def allow_unexpected_forge_calls(self, pattern: str, count: int, why: str) -> None:
+        """A scenario that provokes calls the fakes have no fixture for, on purpose, declares them: exactly `count`
+        UNEXPECTED notes whose log line matches the regex `pattern`, for the reason `why`. Any other UNEXPECTED note,
+        or a different number of matching ones, still fails the scenario at exit."""
+        if count < 1 or not why:
+            raise Failure("allow_unexpected_forge_calls needs a count >= 1 and a reason")
+        self.allowed_unexpected.append((pattern, count, why))
+
+    def _unreported_unexpected(self) -> list[str]:
+        """UNEXPECTED notes no allow_unexpected_forge_calls covers, and each allowance whose count was not met."""
+        bad = self._unexpected_calls()
+        problems: list[str] = []
+        for pattern, count, why in self.allowed_unexpected:
+            rx = re.compile(pattern)
+            hits = [ln for ln in bad if rx.search(ln)]
+            bad = [ln for ln in bad if not rx.search(ln)]
+            if len(hits) != count:
+                problems.append(
+                    f"allowed {count} unexpected call(s) matching /{pattern}/ ({why}), saw {len(hits)}"
+                    + "".join("\n  " + ln for ln in hits)
+                )
+        return problems + bad
 
     def _unexpected_calls(self) -> list[str]:
         bad = list(self.forge_unexpected)
@@ -257,7 +392,7 @@ class Scenario:
         for sub in ("home", "config", "data", "state", "tmp"):
             (d / sub).mkdir(parents=True, exist_ok=True)
         self.forge_logs.append(d / "forge.log")  # the central UNEXPECTED check covers CLI runs too
-        return child_env(d, path or f"{E2E_DIR}/bin:{TOOL_PATH}", {**self.env, **(env or {})})
+        return child_env(d, path or ":".join([*self.pre_path, FAKE_BIN, TOOL_PATH]), {**self.env, **(env or {})})
 
     def cli(
         self,
@@ -332,9 +467,30 @@ class Scenario:
             raise Failure(f"expected exactly one saved session, found {len(files)}", "\n".join(map(str, files)))
         return json.loads(files[0].read_text())
 
-    def session_has(self, pattern: str, name: str | None = None) -> bool:
-        """A saved session mentions the pattern (a regex, matched line by line)."""
+    def session_has(self, pattern: str, name: str | None = None, allow_missing: bool = False) -> bool:
+        """A saved session mentions the pattern (a regex, matched line by line). No saved session at all fails (a
+        negative check would otherwise pass without checking anything) unless allow_missing=True. Prefer the parsed
+        accessors (session(), session_comments(), session_reviewed())."""
+        if not allow_missing and not self.session_files(name):
+            raise Failure(f"session_has(/{pattern}/): no saved session exists (allow_missing=True if that is fine)")
         return grep(pattern, self.session_json(name))
+
+    def session_comments(self, name: str | None = None) -> list[str]:
+        """The text of every comment in the one saved session: review-level, file-level and line comments."""
+        sess = self.session(name)
+        out = [c["content"] for c in sess.get("review_comments") or []]
+        for f in (sess.get("files") or {}).values():
+            out += [c["content"] for c in f.get("file_comments") or []]
+            for cs in (f.get("line_comments") or {}).values():
+                out += [c["content"] for c in cs]
+        return out
+
+    def session_reviewed(self, path: str, name: str | None = None) -> bool:
+        """The file-level `reviewed` flag of `path` in the one saved session (a path it lacks fails)."""
+        files = self.session(name).get("files") or {}
+        if path not in files:
+            raise Failure(f"saved session has no file {path}", "\n".join(files))
+        return bool(files[path].get("reviewed"))
 
     # ---- fixtures and flows (thin forwarding, so a scenario reads `s.diff()`) ------------------------------------
     def open(self, *args: str, **kw: Any) -> Tui:
@@ -361,6 +517,11 @@ class Scenario:
         from . import forge
 
         return forge.gerrit_open(self, kind, **kw)
+
+    def gerrit_serve(self, kind: str, **kw: Any) -> tuple[Path, str]:
+        from . import forge
+
+        return forge.gerrit_serve(self, kind, **kw)
 
     def gerrit_stop(self) -> None:
         from . import forge
@@ -427,24 +588,35 @@ def scenario(fn: Callable[[Scenario], None]) -> None:
         rc = e.code if isinstance(e.code, int) else 1
         if isinstance(e.code, str):
             sys.stderr.write(e.code + "\n")
+        if rc == 0:  # a body that exits 0 early has not shown it checked anything
+            sys.stderr.write("e2e: the scenario body called sys.exit(0); return from it instead\n")
+            rc = 1
     except BaseException as e:  # noqa: BLE001 - every other outcome is a scenario failure, reported with its location
         _report(e)
         rc = 1
     finally:
         for tui in s.tuis:
             tui.stop()
+        if rc == 0 and s.deaths:  # a TUI that died unobserved: its crash must not read as a pass
+            sys.stderr.write(
+                "e2e: a TUI exited without a wait_exit accepting its status:\n"
+                f"  at {_rel(str(s.script))}:{fn.__code__.co_firstlineno}: "  # ty: ignore[unresolved-attribute]
+                f"{getattr(fn, '__name__', fn)}()\n" + "\n".join(s.deaths) + "\n"
+            )
+            rc = 1
         for cleanup, args in reversed(s._cleanups):
             try:
                 cleanup(*args)
             except Exception as e:  # noqa: BLE001 - cleanup must not mask the result
                 sys.stderr.write(f"e2e: cleanup {getattr(cleanup, '__name__', cleanup)} failed: {e}\n")
         # No scenario may pass while a fake forge saw a call its fixtures do not cover.
-        bad = s._unexpected_calls()
-        if rc == 0 and bad and not s.allow_unexpected:
+        bad = s._unreported_unexpected()
+        if rc == 0 and bad:
             sys.stderr.write(
                 "e2e: fake forge saw an unexpected call:\n"
                 f"  at {_rel(str(s.script))}:{fn.__code__.co_firstlineno}: "  # ty: ignore[unresolved-attribute]
                 f"{getattr(fn, '__name__', fn)}() finished with it unreported\n" + "\n".join(bad) + "\n"
             )
             rc = 1
+    print(f"{SENTINEL} {s.name} rc={rc}", flush=True)
     sys.exit(rc)

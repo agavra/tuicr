@@ -4,9 +4,11 @@ tuicr can review **Gerrit changes** the same way it reviews GitHub PRs and GitLa
 change, read its diff, leave inline comments, and push the review back. A Gerrit change takes the
 place of a pull request, and its change number is the "PR number" everywhere in the UI.
 
-Gerrit ships no companion CLI (the other backends wrap `gh`, `glab`, `bkt`, and `az`), so tuicr
-talks to the [Gerrit REST API](https://gerrit-review.googlesource.com/Documentation/rest-api.html)
-directly over HTTPS.
+Gerrit ships no companion CLI (the other backends wrap `gh`, `glab`, `tea`, and `bkt`, and
+Azure DevOps uses a PAT or `az`), so tuicr talks to the
+[Gerrit REST API](https://gerrit-review.googlesource.com/Documentation/rest-api.html)
+directly over HTTPS. TLS is verified against the operating system's trust store, so a server
+signed by a corporate CA installed there works without extra configuration.
 
 ## Setup
 
@@ -126,9 +128,10 @@ Gerrit's magic paths (`/COMMIT_MSG`, `/MERGE_LIST`, `/PATCHSET_LEVEL`) have no l
 diff and are not rendered.
 
 With credentials set, your own unpublished drafts are fetched too, so a Draft submit's comments
-stay on screen afterwards. They render like other remote comments, read-only, with a `draft`
+stay on screen afterwards. They render like other remote comments, with a `draft`
 marker in the header (`[gerrit @you draft]`); a draft reply to a published comment joins that
-thread. A draft left on an earlier patch set is outdated, so like other outdated threads it shows
+thread. Your own drafts are the one exception to read-only: `dd` on one asks for confirmation and
+then deletes it from Gerrit. Comments by others stay read-only. A draft left on an earlier patch set is outdated, so like other outdated threads it shows
 only under `:comments all`; a status message says when there are any. Your review-level draft on
 `/PATCHSET_LEVEL` shows at the top of the diff as a `pending` review.
 
@@ -156,7 +159,8 @@ This is the first Gerrit slice. Not yet supported:
   commit selector shows exactly one entry.
 - **The `Code-Review` label is assumed.** Installs that rename it, or that need a different label
   (`Verified`, a custom gate), cannot vote from tuicr yet.
-- **Replying to a thread.** Existing comments are read-only in tuicr, as on every other forge.
+- **Replying to a thread.** Existing comments are read-only in tuicr, as on every other forge —
+  except your own Gerrit drafts, which `dd` deletes from the server after a Y/N prompt.
 - **SSH transport.** Only the REST API is used; `ssh -p 29418 host gerrit review` is not called.
 - **Gerrit 3.3+ for the `r` toggle.** The attention set was introduced in Gerrit 3.3; an older
   server rejects `attention:self` outright. The rest of the backend has no such floor.
@@ -179,8 +183,9 @@ will not post the inline comments twice. A second review *message* can still app
   *Settings → HTTP Credentials*, not your account password.
 - **"refusing to send GERRIT_USERNAME/GERRIT_PASSWORD over plaintext HTTP…"** — `GERRIT_URL` is an
   `http://` URL. Point it at HTTPS, or unset the two credential variables to browse anonymously.
-- **The Pull Requests tab says there is no supported remote** — your Gerrit host shows none of the
-  three signals above. Set `GERRIT_URL` to the server root.
+- **The Pull Requests tab treats the repository as GitHub and `gh` errors appear** — your Gerrit
+  host shows none of the three signals above, so GitHub's parser, which accepts any host, claims
+  it. Set `GERRIT_URL` to the server root.
 - **Requests go to the wrong host** — the error names the server actually contacted. If that is
   your SSH gateway rather than the web host, set `GERRIT_URL`; if it is a *different* Gerrit than
   the one you meant, you have a stale `GERRIT_URL` exported in that shell.

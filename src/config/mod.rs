@@ -91,15 +91,21 @@ pub struct ForgeConfig {
     /// reader can see the comment classification at a glance. Defaults to
     /// `true`; set to `false` to send the raw comment body.
     pub comment_type_prefix: bool,
+    /// Template for that prefix. `{label}` is the type's label as configured,
+    /// `{LABEL}` the same uppercased.
+    pub comment_type_format: String,
     /// GitHub search query for the Pull Requests review scope. `None` keeps
     /// `review-requested:@me`. Other forges ignore it.
     pub pr_search: Option<String>,
 }
 
+pub const DEFAULT_COMMENT_TYPE_FORMAT: &str = "[{LABEL}] ";
+
 impl Default for ForgeConfig {
     fn default() -> Self {
         Self {
             comment_type_prefix: true,
+            comment_type_format: DEFAULT_COMMENT_TYPE_FORMAT.to_string(),
             pr_search: None,
         }
     }
@@ -135,6 +141,9 @@ pub struct ExportConfig {
     pub legend: Option<bool>,
     /// Whether to emit the `## Session: <slug>` header.
     pub session_header: Option<bool>,
+    /// Whether to put the commented lines, plus a little surrounding diff,
+    /// in a fenced block under each line and range comment.
+    pub code_context: Option<bool>,
 }
 
 impl ExportConfig {
@@ -169,6 +178,41 @@ impl ExportConfig {
     pub fn session_header(&self) -> bool {
         self.session_header.unwrap_or(true)
     }
+
+    pub fn code_context(&self) -> bool {
+        self.code_context.unwrap_or(false)
+    }
+}
+
+/// `[generated]` section settings for files that `.gitattributes` marks as
+/// code-generated (`linguist-generated` or `gitlab-generated`).
+///
+/// Both fields are optional so the shipped defaults stay distinguishable from
+/// an explicit setting, matching `[export]`. An absent section keeps generated
+/// files collapsed by default (`collapse = true`) while still counting them
+/// toward review progress (`count = true`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct GeneratedConfig {
+    /// Whether to hide the diff body of generated files, leaving the header.
+    /// Defaults to true. `Space` still expands an individual file.
+    pub collapse: Option<bool>,
+    /// Whether generated files count toward the reviewed/total progress
+    /// indicator. Defaults to true; `false` drops them from both halves.
+    /// Deliberately independent of `collapse`: with `count = false`, expanding
+    /// a generated file to peek at it must not add it to the denominator, or
+    /// review progress would regress as a side effect of looking.
+    pub count: Option<bool>,
+}
+
+impl GeneratedConfig {
+    pub fn collapse(&self) -> bool {
+        self.collapse.unwrap_or(true)
+    }
+
+    pub fn count(&self) -> bool {
+        self.count.unwrap_or(true)
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -181,6 +225,9 @@ pub struct AppConfig {
     pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
+    /// Hide the brand header, idle status footer, and diff frame, and open
+    /// on the first file. Defaults to false, which keeps the current UI.
+    pub minimal_ui: Option<bool>,
     /// Which side of the diff the file list sits on: `"left"` (the default)
     /// or `"right"`.
     pub file_list_position: Option<String>,
@@ -216,6 +263,7 @@ pub struct AppConfig {
     /// `ignore_whitespace = "auto"`. Keys are stored already normalized
     /// (ASCII lowercase, no leading dot).
     pub ignore_whitespace_overrides: BTreeMap<String, bool>,
+    pub include_untracked: Option<bool>,
     pub wrap: Option<bool>,
     /// Where wrapped unified diff rows continue: `"flow"` (the default) or
     /// `"gutter"`.
@@ -244,6 +292,9 @@ pub struct AppConfig {
     pub editor: Option<String>,
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
+    /// Where `]`/`[` hunk jumps and `}`/`{` file jumps leave their target:
+    /// `"visible"` (the default, minimal scroll), `"top"`, or `"center"`.
+    pub hunk_jump_align: Option<String>,
     pub review_watch_interval_ms: Option<usize>,
     /// Disabled by default, and `0` disables it too. Ignored for
     /// pull-request reviews and `--all-files` mode.
@@ -257,12 +308,25 @@ pub struct AppConfig {
     /// used as the "viewer" identity for per-author coloring in the comment
     /// pane. Defaults to `"user"` when unset.
     pub username: Option<String>,
+    /// Ordered list of clipboard mechanisms to try for `:clip` / visual yank,
+    /// e.g. `["arboard", "osc52"]`. Overrides the automatic per-environment
+    /// detection. Allowed values: `"arboard"`, `"pbcopy"`, `"subprocess"`
+    /// (xclip / wl-copy), `"osc52"`. Omit the key (the default) to keep
+    /// automatic detection; an invalid or empty list also falls back to it.
+    pub clipboard: Option<Vec<String>>,
+    /// Shell command that receives copied text on stdin, tried before
+    /// `clipboard`. A command that fails or runs past 5 seconds is killed and
+    /// tuicr falls back to the normal order with a status-bar warning.
+    pub clipboard_command: Option<String>,
     /// `[forge]` section settings. Always present; `None` means "no override"
     /// and downstream code should treat it as `ForgeConfig::default()`.
     pub forge: Option<ForgeConfig>,
     /// `[export]` section settings. `None` means "no override"; downstream
     /// code should treat it as `ExportConfig::default()`.
     pub export: Option<ExportConfig>,
+    /// `[generated]` section settings. `None` means "no override"; downstream
+    /// code should treat it as `GeneratedConfig::default()`.
+    pub generated: Option<GeneratedConfig>,
 }
 
 impl AppConfig {
@@ -290,6 +354,7 @@ const KNOWN_KEYS: &[&str] = &[
     "backend",
     "comment_types",
     "show_file_list",
+    "minimal_ui",
     "file_list_position",
     "compact_folders",
     "show_pr_checks",
@@ -302,6 +367,7 @@ const KNOWN_KEYS: &[&str] = &[
     "initial_commit_selection",
     "ignore_whitespace",
     "ignore_whitespace_overrides",
+    "include_untracked",
     "wrap",
     "wrap_style",
     "relative_line_numbers",
@@ -318,16 +384,20 @@ const KNOWN_KEYS: &[&str] = &[
     "editor",
     "transparent_background",
     "scroll_offset",
+    "hunk_jump_align",
     "review_watch_interval_ms",
     "diff_watch_interval_ms",
     "no_update_check",
     "single_file_view",
     "username",
+    "clipboard",
+    "clipboard_command",
     "forge",
     "export",
+    "generated",
 ];
 
-const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix", "pr_search"];
+const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix", "comment_type_format", "pr_search"];
 
 const EXPORT_KNOWN_KEYS: &[&str] = &[
     "intro",
@@ -337,7 +407,10 @@ const EXPORT_KNOWN_KEYS: &[&str] = &[
     "remote_comments_header",
     "legend",
     "session_header",
+    "code_context",
 ];
+
+const GENERATED_KNOWN_KEYS: &[&str] = &["collapse", "count"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigLoadOutcome {
@@ -605,6 +678,48 @@ fn normalize_override_extension(raw_key: &str, warnings: &mut Vec<String>) -> Op
     Some(key.to_ascii_lowercase())
 }
 
+/// Read an ordered list of string values, each constrained to a set of allowed
+/// values. Order is preserved. Unknown elements are dropped with a warning; a
+/// non-array value is rejected with a warning. Returns `None` when the key is
+/// absent, is not an array, or yields no valid element — so the caller keeps
+/// its default behavior.
+fn read_enum_list(
+    table: &toml::Table,
+    key: &str,
+    allowed: &[&str],
+    warnings: &mut Vec<String>,
+) -> Option<Vec<String>> {
+    let val = table.get(key)?;
+    let Some(items) = val.as_array() else {
+        warnings.push(format!(
+            "Warning: Config key '{key}' must be an array of strings; ignoring value"
+        ));
+        return None;
+    };
+    let choices = allowed
+        .iter()
+        .map(|s| format!("\"{s}\""))
+        .collect::<Vec<_>>()
+        .join(" or ");
+    let mut result = Vec::new();
+    for item in items {
+        match item.as_str() {
+            Some(s) if allowed.contains(&s) => result.push(s.to_string()),
+            Some(s) => warnings.push(format!(
+                "Warning: Config key '{key}' entries must be {choices}; got \"{s}\", ignoring"
+            )),
+            None => warnings.push(format!(
+                "Warning: Config key '{key}' entries must be strings; ignoring value"
+            )),
+        }
+    }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
+}
+
 fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -641,6 +756,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .get("comment_types")
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
+        minimal_ui: read_bool(table, "minimal_ui", &mut warnings),
         file_list_position: read_enum(
             table,
             "file_list_position",
@@ -680,6 +796,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         ),
         ignore_whitespace,
         ignore_whitespace_overrides,
+        include_untracked: read_bool(table, "include_untracked", &mut warnings),
         wrap: read_bool(table, "wrap", &mut warnings),
         wrap_style: read_enum(table, "wrap_style", &["flow", "gutter"], &mut warnings),
         export_legend: read_bool(table, "export_legend", &mut warnings),
@@ -694,17 +811,33 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         editor: read_string(table, "editor", &mut warnings),
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
+        hunk_jump_align: read_enum(
+            table,
+            "hunk_jump_align",
+            &["visible", "top", "center"],
+            &mut warnings,
+        ),
         review_watch_interval_ms: read_usize(table, "review_watch_interval_ms", &mut warnings),
         diff_watch_interval_ms: read_usize(table, "diff_watch_interval_ms", &mut warnings),
         no_update_check: read_bool(table, "no_update_check", &mut warnings),
         single_file_view: read_bool(table, "single_file_view", &mut warnings),
         username: read_string(table, "username", &mut warnings),
+        clipboard_command: read_string(table, "clipboard_command", &mut warnings),
+        clipboard: read_enum_list(
+            table,
+            "clipboard",
+            crate::output::markdown::CLIPBOARD_MECHANISMS,
+            &mut warnings,
+        ),
         forge: table
             .get("forge")
             .and_then(|v| parse_forge(v, &mut warnings)),
         export: table
             .get("export")
             .and_then(|v| parse_export(v, &mut warnings)),
+        generated: table
+            .get("generated")
+            .and_then(|v| parse_generated(v, &mut warnings)),
     };
 
     for key in table.keys() {
@@ -753,6 +886,18 @@ fn parse_forge(value: &Value, warnings: &mut Vec<String>) -> Option<ForgeConfig>
         }
     }
 
+    if let Some(v) = read_section_string(table, "forge", "comment_type_format", warnings) {
+        if v.contains("{label}") || v.contains("{LABEL}") {
+            cfg.comment_type_format = v;
+            any_override = true;
+        } else {
+            warnings.push(
+                "Warning: Config key 'forge.comment_type_format' must contain {label} or {LABEL}; ignoring value"
+                    .to_string(),
+            );
+        }
+    }
+
     if any_override { Some(cfg) } else { None }
 }
 
@@ -786,9 +931,41 @@ fn parse_export(value: &Value, warnings: &mut Vec<String>) -> Option<ExportConfi
         ),
         legend: read_section_bool(table, "export", "legend", warnings),
         session_header: read_section_bool(table, "export", "session_header", warnings),
+        code_context: read_section_bool(table, "export", "code_context", warnings),
     };
 
     if cfg == ExportConfig::default() {
+        None
+    } else {
+        Some(cfg)
+    }
+}
+
+/// Parse the `[generated]` section. Returns `Some` only when at least one
+/// recognized key is set. An absent or empty section keeps the defaults:
+/// collapse generated files (`collapse = true`) and count them toward review
+/// progress (`count = true`).
+fn parse_generated(value: &Value, warnings: &mut Vec<String>) -> Option<GeneratedConfig> {
+    let Some(table) = value.as_table() else {
+        warnings
+            .push("Warning: Config key 'generated' must be a table; ignoring value".to_string());
+        return None;
+    };
+
+    for key in table.keys() {
+        if !GENERATED_KNOWN_KEYS.contains(&key.as_str()) {
+            warnings.push(format!(
+                "Warning: Unknown config key 'generated.{key}', ignoring"
+            ));
+        }
+    }
+
+    let cfg = GeneratedConfig {
+        collapse: read_section_bool(table, "generated", "collapse", warnings),
+        count: read_section_bool(table, "generated", "count", warnings),
+    };
+
+    if cfg == GeneratedConfig::default() {
         None
     } else {
         Some(cfg)
@@ -1071,6 +1248,100 @@ mod tests {
         );
     }
 
+    // clipboard
+
+    #[test]
+    fn should_parse_clipboard_ordered_list() {
+        let outcome = parse_config("clipboard = [\"arboard\", \"osc52\"]\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.clipboard.clone()),
+            Some(vec!["arboard".to_string(), "osc52".to_string()])
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_default_clipboard_to_none_when_absent() {
+        let outcome = parse_config("");
+        assert_eq!(outcome.config, Some(AppConfig::default()));
+        assert!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.clipboard.clone())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn should_drop_invalid_clipboard_elements_with_warning() {
+        let outcome = parse_config("clipboard = [\"arboard\", \"nope\"]\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.clipboard.clone()),
+            Some(vec!["arboard".to_string()])
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(
+            outcome.warnings[0].contains("clipboard") && outcome.warnings[0].contains("arboard"),
+            "warning should name the key and allowed values: {}",
+            outcome.warnings[0]
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_clipboard_with_wrong_type() {
+        let outcome = parse_config("clipboard = true\n");
+        assert_eq!(outcome.config, Some(AppConfig::default()));
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'clipboard' must be an array of strings; ignoring value"
+        );
+    }
+
+    #[test]
+    fn should_ignore_bare_string_clipboard_value() {
+        let outcome = parse_config("clipboard = \"arboard\"\n");
+        assert_eq!(outcome.config, Some(AppConfig::default()));
+        assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    #[test]
+    fn should_treat_empty_clipboard_list_as_auto() {
+        let outcome = parse_config("clipboard = []\n");
+        assert_eq!(outcome.config, Some(AppConfig::default()));
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_treat_all_invalid_clipboard_list_as_auto() {
+        let outcome = parse_config("clipboard = [\"nope\", \"nada\"]\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.clipboard.clone()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 2);
+    }
+
+    #[test]
+    fn should_parse_clipboard_command() {
+        let outcome = parse_config("clipboard_command = \"tmux load-buffer -\"\n");
+        assert_eq!(
+            outcome.config.and_then(|cfg| cfg.clipboard_command),
+            Some("tmux load-buffer -".to_string())
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
     #[test]
     fn should_parse_empty_config_as_defaults() {
         let outcome = parse_config("");
@@ -1166,6 +1437,26 @@ mod tests {
             None
         );
         assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    #[test]
+    fn should_parse_minimal_ui() {
+        let absent = parse_config("mouse = true\n");
+        assert_eq!(absent.config.unwrap().minimal_ui, None);
+        assert!(absent.warnings.is_empty());
+
+        for value in [true, false] {
+            let outcome = parse_config(&format!("minimal_ui = {value}\n"));
+            assert_eq!(outcome.config.unwrap().minimal_ui, Some(value));
+            assert!(outcome.warnings.is_empty());
+        }
+
+        let outcome = parse_config("minimal_ui = \"yes\"\n");
+        assert_eq!(outcome.config.unwrap().minimal_ui, None);
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Config key 'minimal_ui' must be a boolean; ignoring value"]
+        );
     }
 
     // file_list_position
@@ -1707,6 +1998,51 @@ mod tests {
         );
     }
 
+    // include_untracked
+
+    #[test]
+    fn should_parse_include_untracked_true() {
+        let outcome = parse_config("include_untracked = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.include_untracked),
+            Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_include_untracked_false() {
+        let outcome = parse_config("include_untracked = false\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.include_untracked),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_include_untracked_with_invalid_type() {
+        let outcome = parse_config("include_untracked = \"yes\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.include_untracked),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'include_untracked' must be a boolean; ignoring value"
+        );
+    }
+
     // wrap
 
     #[test]
@@ -2048,6 +2384,49 @@ mod tests {
         assert_eq!(outcome.warnings.len(), 1);
     }
 
+    // hunk_jump_align
+
+    #[test]
+    fn should_parse_hunk_jump_align() {
+        for value in ["visible", "top", "center"] {
+            let outcome = parse_config(&format!("hunk_jump_align = \"{value}\"\n"));
+            assert_eq!(
+                outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.hunk_jump_align.as_deref()),
+                Some(value)
+            );
+            assert!(outcome.warnings.is_empty());
+        }
+    }
+
+    #[test]
+    fn should_warn_and_ignore_hunk_jump_align_with_invalid_value() {
+        let outcome = parse_config("hunk_jump_align = \"middle\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.hunk_jump_align.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    #[test]
+    fn should_warn_and_ignore_hunk_jump_align_with_invalid_type() {
+        let outcome = parse_config("hunk_jump_align = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.hunk_jump_align.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+    }
+
     // mouse_scroll_lines
 
     #[test]
@@ -2217,6 +2596,35 @@ comment_type_prefix = false
             .expect("forge section should parse");
         assert!(!forge.comment_type_prefix);
         assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_forge_comment_type_format() {
+        let outcome = parse_config("[forge]\ncomment_type_format = \"**{label}:** \"\n");
+        let forge = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.forge.clone())
+            .expect("forge section should parse");
+        assert_eq!(forge.comment_type_format, "**{label}:** ");
+        assert!(forge.comment_type_prefix);
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_comment_type_format_without_placeholder() {
+        let outcome = parse_config("[forge]\ncomment_type_format = \"note: \"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.forge.clone()),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec![
+                "Warning: Config key 'forge.comment_type_format' must contain {label} or {LABEL}; ignoring value"
+                    .to_string()
+            ]
+        );
     }
 
     #[test]
@@ -2400,6 +2808,7 @@ pr_search = 1
         assert_eq!(cfg.comments_header(), "## Local tuicr Comments");
         assert_eq!(cfg.remote_comments_header(), "## Existing GitHub Comments");
         assert!(cfg.legend());
+        assert!(!cfg.code_context());
     }
 
     #[test]
@@ -2434,6 +2843,7 @@ comments_header = "## Comments"
 remote_comments_header = "## Upstream"
 legend = false
 session_header = false
+code_context = true
 "###,
         );
         let export = outcome
@@ -2448,6 +2858,7 @@ session_header = false
         assert_eq!(export.remote_comments_header(), "## Upstream");
         assert!(!export.legend());
         assert!(!export.session_header());
+        assert!(export.code_context());
         assert!(outcome.warnings.is_empty());
     }
 
@@ -2556,6 +2967,136 @@ scope_line = "no"
         assert_eq!(
             outcome.warnings,
             vec!["Warning: Config key 'export' must be a table; ignoring value".to_string()]
+        );
+    }
+
+    // generated
+
+    #[test]
+    fn generated_accessors_default_to_collapsing_and_counting() {
+        // An absent `[generated]` section collapses generated files and
+        // still counts them toward review progress.
+        let cfg = GeneratedConfig::default();
+        assert!(cfg.collapse());
+        assert!(cfg.count());
+    }
+
+    #[test]
+    fn should_default_generated_to_none_when_section_missing() {
+        let outcome = parse_config("");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.generated.clone()),
+            None
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_default_generated_to_none_when_section_is_empty_table() {
+        let outcome = parse_config("[generated]\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.generated.clone()),
+            None
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_generated_section_overriding_defaults() {
+        let outcome = parse_config(
+            r#"[generated]
+collapse = true
+count = false
+"#,
+        );
+        let generated = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.generated.clone())
+            .expect("generated section should parse");
+        assert!(generated.collapse());
+        assert!(!generated.count());
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_leave_unset_generated_keys_as_none() {
+        let outcome = parse_config(
+            r#"[generated]
+collapse = true
+"#,
+        );
+        let generated = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.generated.clone())
+            .expect("generated section should parse");
+        assert_eq!(generated.count, None);
+        assert!(generated.count());
+    }
+
+    #[test]
+    fn should_warn_on_unknown_generated_keys() {
+        let outcome = parse_config(
+            r#"[generated]
+collapse = true
+patterns = ["*.pb.go"]
+"#,
+        );
+        let generated = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.generated.clone())
+            .expect("generated section should parse");
+        assert!(generated.collapse());
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Unknown config key 'generated.patterns', ignoring".to_string()]
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_generated_bool_with_invalid_type() {
+        let outcome = parse_config(
+            r#"[generated]
+collapse = "yes"
+"#,
+        );
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.generated.clone()),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec![
+                "Warning: Config key 'generated.collapse' must be a boolean; ignoring value"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn should_warn_when_generated_is_not_a_table() {
+        let outcome = parse_config("generated = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.generated.clone()),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Config key 'generated' must be a table; ignoring value".to_string()]
         );
     }
 

@@ -747,6 +747,26 @@ fn should_preserve_persisted_commit_range_over_since_last_review_default() {
 }
 
 #[test]
+fn should_keep_the_pr_commit_pane_hidden_when_show_commits_is_false() {
+    // given `show_commits = false`
+    let mut app = build_app();
+    app.apply_show_commits_config(false);
+    let commits = vec![
+        sample_pr_commit("c3", "third"),
+        sample_pr_commit("c2", "second"),
+        sample_pr_commit("c1", "first"),
+    ];
+
+    // when a multi-commit PR installs its selector
+    app.apply_pr_commit_selector(commits, PullRequestReviewMetadata::default());
+
+    // then the pane stays hidden but the commits are still cyclable
+    assert!(!app.show_commit_selector);
+    assert_eq!(app.review_commits.len(), 3);
+    assert_eq!(app.commit_selection_range, Some((0, 2)));
+}
+
+#[test]
 fn should_mark_pr_commits_covered_by_viewers_last_review() {
     let mut app = build_app();
     app.diff_source = DiffSource::PullRequest(Box::new(PullRequestDiffSource::from_details(
@@ -4495,7 +4515,7 @@ fn should_list_local_commits_after_entering_pr_mode() {
 
     // then the checkout's commits are listed
     assert_eq!(app.input_mode, InputMode::CommitSelect);
-    assert_eq!(app.commit_list.len(), 2);
+    assert_eq!(app.commit_list.len(), 4);
     // and the PR stays active behind the selector
     assert!(
         app.vcs_info
@@ -4534,7 +4554,7 @@ fn should_keep_the_pr_backend_when_a_local_load_finds_nothing() {
     );
     // and the checkout is still reachable afterwards
     app.enter_target_selector(TargetTab::Local).unwrap();
-    assert_eq!(app.commit_list.len(), 2);
+    assert_eq!(app.commit_list.len(), 4);
     drop(dir);
 }
 
@@ -4622,7 +4642,7 @@ fn should_page_local_history_after_entering_pr_mode() {
     // given a PR opened from a checkout with 25 commits
     let (mut app, _dir, _reviews) = app_in_pr_mode_with_commits(25);
     app.enter_target_selector(TargetTab::Local).unwrap();
-    assert_eq!(app.commit_list.len(), VISIBLE_COMMIT_COUNT);
+    assert_eq!(app.commit_list.len(), VISIBLE_COMMIT_COUNT + 2);
     assert!(app.has_more_commit);
 
     // when the list is expanded past the first page
@@ -4631,7 +4651,7 @@ fn should_page_local_history_after_entering_pr_mode() {
 
     // then older commits were fetched and the PR backend is back in place
     assert!(app.commit_list.len() > VISIBLE_COMMIT_COUNT);
-    assert_eq!(app.commit_list[VISIBLE_COMMIT_COUNT].id, "c10");
+    assert_eq!(app.commit_list[VISIBLE_COMMIT_COUNT + 2].id, "c10");
     assert!(
         app.vcs_info
             .root_path
@@ -4688,6 +4708,7 @@ fn should_record_the_startup_vcs_options_for_cli_pr_startup() {
     )
     .unwrap();
     let configured = VcsOpenOptions {
+        include_untracked: false,
         git_backend_preference: GitBackendPreference::Cli,
         diff_whitespace_mode: DiffWhitespaceMode::IgnoreAll,
     };

@@ -7,7 +7,7 @@ use chrono::Utc;
 use ratatui::style::Color;
 
 use crate::comment_vim::CommentVimEditor;
-use crate::config::{CommentTypeConfig, ExportConfig};
+use crate::config::{CommentTypeConfig, ExportConfig, GeneratedConfig};
 use crate::editor::{EditorLaunch, EditorTarget};
 use crate::error::{Result, TuicrError};
 use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextProvider};
@@ -729,13 +729,15 @@ pub enum ConfirmAction {
     /// Delete the session under the cursor on the Sessions tab. Unlike
     /// `CopyAndQuit` this returns to the selector instead of quitting.
     DeleteSession,
+    /// Delete the remote draft comment under the cursor on the forge.
+    DeleteRemoteDraft,
 }
 
 impl ConfirmAction {
     /// Mode to return to once the prompt is answered either way.
     pub fn return_mode(self) -> InputMode {
         match self {
-            ConfirmAction::CopyAndQuit => InputMode::Normal,
+            ConfirmAction::CopyAndQuit | ConfirmAction::DeleteRemoteDraft => InputMode::Normal,
             ConfirmAction::DeleteSession => InputMode::CommitSelect,
         }
     }
@@ -745,6 +747,7 @@ impl ConfirmAction {
         match self {
             ConfirmAction::CopyAndQuit => "Copy review to clipboard?",
             ConfirmAction::DeleteSession => "Delete this saved review?",
+            ConfirmAction::DeleteRemoteDraft => "Delete this draft comment?",
         }
     }
 }
@@ -1041,6 +1044,19 @@ pub enum PrThreadsEvent {
     },
 }
 
+/// Result delivered from the remote draft deletion background thread.
+#[derive(Debug)]
+pub enum PrDraftDeleteEvent {
+    Done {
+        /// Forge identity for the request; a result for a PR the user has
+        /// since left is dropped.
+        repository: crate::forge::traits::ForgeRepository,
+        pr_number: u64,
+        head_sha: String,
+        result: std::result::Result<(), String>,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffViewMode {
     Unified,
@@ -1064,6 +1080,20 @@ pub enum WrapStyle {
     #[default]
     Flow,
     Gutter,
+}
+
+/// Where `]`/`[` hunk jumps and `}`/`{` file jumps put their target in the
+/// viewport (config `hunk_jump_align`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HunkJumpAlign {
+    /// Scroll only as far as needed to bring the target into view.
+    #[default]
+    Visible,
+    /// Put the target at the top, leaving `scroll_offset` rows above it when
+    /// the diff has them.
+    Top,
+    /// Center the target in the viewport.
+    Center,
 }
 
 /// Display order for the inline commit selector. The stored `review_commits`
@@ -1149,6 +1179,17 @@ pub enum CommentVimPending {
 /// One entry per line of a hunk; see `word_diff::hunk_changed_ranges`.
 pub(crate) type HunkChangedRanges = Arc<[Option<ChangedRanges>]>;
 
+/// A file's `Space` collapse state, pinned to the content it was set on.
+///
+/// The hash is what retires the override: once a reload or a different
+/// commit selection changes the file's diff, the override stops applying, so
+/// new changes are never left hidden behind an old manual collapse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollapseOverride {
+    pub collapsed: bool,
+    pub content_hash: u64,
+}
+
 pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
@@ -1215,6 +1256,11 @@ pub struct App {
     /// new/right). Drives the `▶` caret placement and the side a new line
     /// comment attaches to. Ignored in unified view. Defaults to `New`.
     pub cursor_side: LineSide,
+    /// Ordered clipboard-mechanism override from the `clipboard` config key
+    /// (`None` = automatic detection). Set by [`App::apply_clipboard_config`].
+    pub(crate) clipboard_override: Option<Vec<crate::output::markdown::CopyMethod>>,
+    /// `clipboard_command` config key, tried before any other method.
+    pub clipboard_command: Option<String>,
 
     pub file_list_state: FileListState,
     pub comment_navigator_state: CommentNavigatorState,
@@ -1350,6 +1396,12 @@ pub struct App {
     /// Background-thread channel that delivers remote-thread fetch results.
     /// `Receiver` is only present while a fetch is in flight.
     pub pr_threads_rx: Option<std::sync::mpsc::Receiver<PrThreadsEvent>>,
+    /// Id of the remote draft comment `dd` asked to delete, while the
+    /// confirmation prompt is open.
+    pub pending_draft_delete: Option<String>,
+    /// Background-thread channel that delivers the result of a remote draft
+    /// deletion. `Receiver` is only present while one is in flight.
+    pub pr_draft_delete_rx: Option<std::sync::mpsc::Receiver<PrDraftDeleteEvent>>,
 
     /// `[forge]` section settings resolved at startup. Drives the body/footer
     /// formatting on submit. Defaults to `ForgeConfig::default()` when the
@@ -1401,6 +1453,15 @@ pub struct App {
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,
+    /// Opt-in diff-focused presentation. Hides the brand header, the idle
+    /// status/key-hint footer contents, and the diff panel frame, and opens
+    /// on the first file. File-list visibility stays on `show_file_list`.
+    pub minimal_ui: bool,
+    /// Minimal mode's first-file landing, waiting for a render to measure
+    /// the diff viewport. Row heights (a wrapped PR description, review
+    /// comments) depend on its width, so the landing offset is only right
+    /// once it is known.
+    pub pending_minimal_ui_start: bool,
     pub file_list_position: FileListPosition,
     pub compact_folders: bool,
     /// `true` when the session was opened via `--all-files`. Drives the
@@ -1411,9 +1472,10 @@ pub struct App {
     /// focused file in the diff panel instead of the continuous-scroll
     /// concatenation. Toggled via `:focus` or `<leader>f`.
     pub is_single_file_view: bool,
-    /// A reviewed file whose body is temporarily expanded after opening a
-    /// comment from the summary view. The persisted reviewed marker is left
-    /// untouched; this is only a presentation override for continuous view.
+    /// A collapsed file (reviewed, generated, or collapsed with `Space`) whose
+    /// body is temporarily expanded after opening a comment from the summary
+    /// view. The persisted reviewed marker is left untouched; this is only a
+    /// presentation override for continuous view.
     pub revealed_reviewed_file: Option<PathBuf>,
     /// A reviewed hunk whose body is temporarily expanded after opening a
     /// comment from the summary view. The persisted reviewed marker is left
@@ -1444,6 +1506,9 @@ pub struct App {
     pub cursor_line_highlight: bool,
     pub leader_key: char,
     pub scroll_offset: usize,
+    /// Where `]`/`[` and `}`/`{` leave their target in the viewport (config
+    /// `hunk_jump_align`, default `Visible`).
+    pub hunk_jump_align: HunkJumpAlign,
     /// Lines scrolled per vertical mouse wheel tick (config
     /// `mouse_scroll_lines`, default 3).
     pub mouse_scroll_lines: usize,
@@ -1487,6 +1552,8 @@ pub struct App {
     pub output_to_stdout: bool,
     /// Pending output to print to stdout after TUI exits
     pub pending_stdout_output: Option<String>,
+    /// Warning raised as the TUI quits, printed to stderr after teardown.
+    pub pending_exit_warning: Option<String>,
     /// Calculated screen position for comment input cursor (col, row) for IME positioning.
     /// Set during render when in Comment mode, None otherwise.
     pub comment_cursor_screen_pos: Option<(u16, u16)>,
@@ -1526,6 +1593,10 @@ pub struct App {
     pub pr_range_reload_rx: Option<std::sync::mpsc::Receiver<PrRangeReloadEvent>>,
     /// Whether the inline commit selector panel is visible
     pub show_commit_selector: bool,
+    /// Config `show_commits`: whether a newly opened multi-commit review
+    /// shows the commit pane. `show_commit_selector` is the current review's
+    /// visibility, which `<leader>s` / `:set commits!` toggle.
+    pub show_commits_on_open: bool,
     /// Display order for the inline commit selector (presentation only).
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
@@ -1533,6 +1604,11 @@ pub struct App {
     /// Configured `pr_comments_visibility` default for fresh PR sessions;
     /// a persisted session restores its own value.
     pub initial_comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
+    /// The tree's real staged/unstaged status as of the last time the
+    /// working-tree rows were built or refreshed. Git shows both rows even
+    /// when a side is empty, and this is how the row renderer knows to dim an
+    /// empty one. `None` when no status was read.
+    pub worktree_status: Option<VcsChangeStatus>,
     /// Cached individual/subrange diffs keyed by (start_idx, end_idx) into review_commits
     pub commit_diff_cache: HashMap<(usize, usize), Vec<DiffFile>>,
     /// Full-range (every commit) diff cache, used to restore the widened view
@@ -1543,6 +1619,38 @@ pub struct App {
     pub path_filter: Option<String>,
     /// Resolved `[export]` settings shaping the generated review markdown.
     pub export: ExportConfig,
+    /// Whether files `.gitattributes` marks as code-generated have their diff
+    /// body hidden. Seeded from `[generated] collapse`, flipped at runtime by
+    /// `:set generated!`. On by default.
+    pub collapse_generated: bool,
+    /// Whether generated files count toward review progress. Seeded from
+    /// `[generated] count`, which defaults to true. Independent of
+    /// `collapse_generated`: expanding a generated file to peek at it must
+    /// not add it to the denominator.
+    pub count_generated: bool,
+    /// Diff files that `.gitattributes` marks as code-generated, keyed by
+    /// display path.
+    ///
+    /// Path-keyed rather than index-keyed because reloads, watch ticks, and
+    /// commit-selection changes all replace `diff_files` wholesale and shift
+    /// every index. Empty whenever detection is disabled, which is what lets
+    /// the render path short-circuit for free.
+    pub generated_files: HashSet<PathBuf>,
+    /// Per-file collapse override set with `Space`, taking precedence over
+    /// the reviewed/generated defaults `should_collapse_file` would otherwise
+    /// derive. Keyed by path rather than index so it survives the reloads
+    /// and commit-selection changes that replace `diff_files` wholesale.
+    pub collapse_override: HashMap<PathBuf, CollapseOverride>,
+    /// Display paths already looked up in `.gitattributes`.
+    ///
+    /// Doubles as the staleness test for detection: a diff file set with no
+    /// unprobed path needs no work, which is how `rebuild_annotations` can
+    /// keep detection current without every `diff_files` assignment having to
+    /// remember to trigger it. Cleared on explicit reload so an edited
+    /// `.gitattributes` takes effect.
+    pub generated_probed: HashSet<PathBuf>,
+    /// Attributes source for the cached paths, including no matching checkout.
+    pub generated_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1569,6 +1677,24 @@ pub fn resolve_comment_type_label(
     {
         Some(definition) => definition.label.to_ascii_uppercase(),
         None => comment_type.as_str(),
+    }
+}
+
+/// The configured label as written, else the id. Empty for
+/// [`CommentType::None`]. Feeds `{label}` in `forge.comment_type_format`.
+pub fn resolve_comment_type_raw_label(
+    comment_type: &crate::model::CommentType,
+    comment_types: &[CommentTypeDefinition],
+) -> String {
+    if comment_type.is_none() {
+        return String::new();
+    }
+    match comment_types
+        .iter()
+        .find(|definition| definition.id == comment_type.id())
+    {
+        Some(definition) => definition.label.clone(),
+        None => comment_type.id().to_string(),
     }
 }
 
@@ -1982,6 +2108,16 @@ pub struct SummaryState {
 struct VcsOpenOptions {
     git_backend_preference: GitBackendPreference,
     diff_whitespace_mode: DiffWhitespaceMode,
+    include_untracked: bool,
+}
+
+impl VcsOpenOptions {
+    fn diff_options(&self) -> crate::vcs::VcsDiffOptions {
+        crate::vcs::VcsDiffOptions {
+            whitespace_mode: self.diff_whitespace_mode.clone(),
+            include_untracked: self.include_untracked,
+        }
+    }
 }
 
 impl Default for VcsOpenOptions {
@@ -1991,6 +2127,7 @@ impl Default for VcsOpenOptions {
         Self {
             git_backend_preference: GitBackendPreference::Libgit2,
             diff_whitespace_mode: DiffWhitespaceMode::default(),
+            include_untracked: true,
         }
     }
 }
@@ -2011,6 +2148,8 @@ pub struct AppStartupOptions<'a> {
     pub pr_comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
     pub git_backend_preference: GitBackendPreference,
     pub diff_whitespace_mode: DiffWhitespaceMode,
+    /// Whether untracked files are included in working-tree / unstaged diffs.
+    pub include_untracked: bool,
     /// Which commits are selected when a multi-commit review first opens.
     pub commit_selection: CommitSelectionStart,
     /// Direct PR target (`tuicr pr <target>`). Mutually exclusive with the
@@ -2032,6 +2171,7 @@ impl AppStartupOptions<'_> {
         VcsOpenOptions {
             git_backend_preference: self.git_backend_preference,
             diff_whitespace_mode: self.diff_whitespace_mode.clone(),
+            include_untracked: self.include_untracked,
         }
     }
 }
@@ -2046,6 +2186,7 @@ mod editor_target;
 mod file_filter;
 mod file_picker;
 mod gaps;
+mod generated;
 mod init;
 mod modes;
 mod navigation;

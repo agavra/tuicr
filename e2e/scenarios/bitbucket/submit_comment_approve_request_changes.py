@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Bitbucket Cloud happy paths: a submit is a series of plain comments (summary, then each inline one with its `inline`
 # anchor,
-# never `pending`); approve is `bkt pr approve`, request-changes the `/request-changes` endpoint.
+# never `pending`); approve is only `bkt pr approve` for octo/demo, request-changes only a POST to `/request-changes`
+# (the locked comments are not posted again).
 from e2e import Scenario, pr_comment, scenario
 
 
@@ -21,8 +22,15 @@ def main(s: Scenario) -> None:
         "inline": {"path": "src/greet.rs", "to": 1},
     }
     assert calls[1]["payload"] == inline, calls[1]
+    # the comments are now locked (submitted): each vote is exactly one state-changing call, nothing is re-posted
+    mark = tui.forge_mark()
     tui.cmd("submit approve").wait_for("Submit review to Bitbucket").expect("Event: Approve").keys("y")
-    tui.wait_forge_log('"pr", "approve", "1"')
+    tui.wait_forge_log('"pr", "approve", "1"', since=mark)
+    approve = [c["argv"] for c in tui.mutations("bkt", since=mark)]
+    assert approve == [["pr", "approve", "1", "--workspace", "octo", "--repo", "demo"]], approve
+    mark = tui.forge_mark()
     tui.cmd("submit request-changes").wait_for("Submit review to Bitbucket").expect("Event: Request changes").keys("y")
-    tui.wait_forge_log("pullrequests/1/request-changes")
+    tui.wait_forge_log("pullrequests/1/request-changes", since=mark)
+    rc = [c["argv"] for c in tui.mutations("bkt", since=mark)]
+    assert rc == [["api", "/2.0/repositories/octo/demo/pullrequests/1/request-changes", "--method", "POST"]], rc
     tui.quit()

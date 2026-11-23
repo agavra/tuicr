@@ -354,6 +354,9 @@ impl App {
         };
 
         self.revealed_reviewed_file = None;
+        // Marking a file reviewed (or unreviewed) restates how it should look,
+        // so a `Space` override from before must not keep it open or shut.
+        self.collapse_override.remove(&path);
         if let Some(review) = self.session.get_file_mut(&path) {
             review.reviewed = !review.reviewed;
             self.dirty = true;
@@ -462,9 +465,21 @@ impl App {
         self.session.is_hunk_reviewed(&path, &key)
     }
 
-    /// Whether a reviewed file should currently hide its body. Summary jumps
-    /// may temporarily reveal one reviewed file in the continuous diff without
-    /// changing the persisted reviewed marker.
+    /// Whether a file should currently hide its body, leaving only its header
+    /// row.
+    ///
+    /// Checked in override order. `Space` sets an explicit per-file entry in
+    /// `collapse_override` that always wins, because it is what lets a
+    /// reviewed or generated file be peeked at (or re-hidden) without
+    /// touching either status. Failing that, reviewed files collapse so a
+    /// long review stream shrinks as it is worked through. Failing that,
+    /// files `.gitattributes` marks as code-generated collapse when collapse
+    /// is on. A summary jump reveals its target file ahead of all of these,
+    /// without changing any persisted marker.
+    ///
+    /// The checks are ordered so a session with no overrides and no generated
+    /// files costs what it did before: `collapse_override` is empty unless the
+    /// user has pressed `Space`, and `collapse_generated` is a bare bool.
     pub fn should_collapse_file(&self, file_idx: usize) -> bool {
         if self.is_single_file_view {
             return false;
@@ -474,7 +489,119 @@ impl App {
             return false;
         };
         let path = file.display_path();
-        self.session.is_file_reviewed(path) && self.revealed_reviewed_file.as_ref() != Some(path)
+        // A summary jump has to land on a drawn row, so its target beats
+        // every other reason to collapse, including a `Space` override.
+        if self.revealed_reviewed_file.as_ref() == Some(path) {
+            return false;
+        }
+        if let Some(entry) = self.collapse_override.get(path)
+            && entry.content_hash == file.content_hash
+        {
+            return entry.collapsed;
+        }
+        self.session.is_file_reviewed(path)
+            || (self.collapse_generated && self.generated_files.contains(path))
+    }
+
+    /// Toggle whether the file under the cursor shows its diff body,
+    /// independent of its reviewed or generated status — those only decide
+    /// the default before `Space` is pressed.
+    ///
+    /// Keyed by path rather than index so the override survives the reloads
+    /// and commit-selection changes that replace `diff_files` wholesale.
+    pub fn toggle_file_collapse(&mut self) -> bool {
+        // Single-file view never collapses, so an override would report a
+        // change that never reaches the screen.
+        if self.is_single_file_view {
+            return false;
+        }
+        // Above the first file (PR description, review or issue comments)
+        // `current_file_idx` still reads 0, but no file is under the cursor.
+        if self.is_cursor_in_overview() {
+            return false;
+        }
+        let file_idx = self.diff_state.current_file_idx;
+        let Some((path, content_hash)) = self
+            .diff_files
+            .get(file_idx)
+            .map(|file| (file.display_path().clone(), file.content_hash))
+        else {
+            return false;
+        };
+        let currently_collapsed = self.should_collapse_file(file_idx);
+        // An explicit `Space` replaces a summary or comment reveal, which
+        // would otherwise outrank the override and swallow the keypress.
+        if self.revealed_reviewed_file.as_ref() == Some(&path) {
+            self.revealed_reviewed_file = None;
+        }
+        self.collapse_override.insert(
+            path,
+            CollapseOverride {
+                collapsed: !currently_collapsed,
+                content_hash,
+            },
+        );
+        self.rebuild_annotations();
+        self.diff_state.cursor_line = self.calculate_file_scroll_offset(file_idx);
+        self.ensure_cursor_visible();
+        self.set_message(if currently_collapsed {
+            "File expanded"
+        } else {
+            "File collapsed"
+        });
+        true
+    }
+
+    /// Local comments plus visible remote threads on a file whose body is
+    /// collapsed, for the count on its header. Zero for an expanded file,
+    /// whose comments render inline.
+    pub fn collapsed_file_comment_count(&self, file_idx: usize) -> usize {
+        if !self.should_collapse_file(file_idx) {
+            return 0;
+        }
+        let Some(file) = self.diff_files.get(file_idx) else {
+            return 0;
+        };
+        let path = file.display_path();
+        let mut count = 0;
+        if let Some(review) = self.session.files.get(path)
+            && (!review.file_comments.is_empty() || !review.line_comments.is_empty())
+        {
+            let commit_set = self.selected_commit_set();
+            count += review
+                .file_comments
+                .iter()
+                .chain(review.line_comments.values().flatten())
+                .filter(|comment| Self::comment_visible_with(comment, commit_set.as_ref()))
+                .count();
+        }
+        let visibility = self.session.remote_comments_visibility;
+        if !self.forge_review_threads.is_empty()
+            && !matches!(
+                visibility,
+                crate::forge::remote_comments::PrCommentsVisibility::Hide
+            )
+        {
+            let path = path.to_string_lossy();
+            count += self
+                .forge_review_threads
+                .iter()
+                .filter(|thread| thread.path == *path)
+                .filter(|thread| visibility.render_decision(thread).is_some())
+                .count();
+        }
+        count
+    }
+
+    /// Show the body of a collapsed file without touching its reviewed mark
+    /// or `Space` override, so a jump or a new comment lands on drawn rows.
+    /// Returns whether anything changed; the caller rebuilds annotations.
+    pub(in crate::app) fn reveal_file_if_collapsed(&mut self, file_idx: usize) -> bool {
+        if !self.should_collapse_file(file_idx) {
+            return false;
+        }
+        self.reveal_reviewed_file(file_idx);
+        true
     }
 
     pub(in crate::app) fn reveal_reviewed_file(&mut self, file_idx: usize) {
@@ -599,7 +726,97 @@ impl App {
     }
 
     /// Returns true when the cursor is in the review comments area above all files.
+    ///
+    /// Minimal mode opens on the first file via [`Self::apply_minimal_ui_start`],
+    /// so this is false at startup even when review-level rows still sit above it.
     pub fn is_cursor_in_overview(&self) -> bool {
         self.diff_state.cursor_line < self.review_comments_render_height()
+    }
+
+    /// Drop the diff panel's outer border and title.
+    ///
+    /// A sole diff pane already does this. Minimal mode does it even when the
+    /// file list or commit selector is open, so those panes keep their own chrome.
+    pub(crate) fn hide_diff_frame(&self) -> bool {
+        self.minimal_ui || self.is_diff_sole_pane()
+    }
+
+    /// Whether the bottom status row should draw its contents.
+    ///
+    /// The row itself is always reserved, so the diff never shifts when a
+    /// message comes or goes. Minimal mode leaves it blank while review
+    /// input is idle. Commands, search, comment entry, confirmation, help,
+    /// and every other non-review mode still draw it, as do in-flight forge
+    /// work, a dirty session, and transient messages.
+    pub(crate) fn shows_status_bar(&self) -> bool {
+        if !self.minimal_ui {
+            return true;
+        }
+        if self.message.is_some()
+            || self.dirty
+            || self.pending_count.is_some()
+            || self.forge_review_threads_loading
+            || self.pr_submit_state.is_some()
+            || self.pr_reload_state.is_some()
+            || self.pr_range_reload_state.is_some()
+            || self.file_tree_prompt_editing()
+        {
+            return true;
+        }
+        !matches!(self.input_mode, InputMode::Normal)
+    }
+
+    /// Open on the first file instead of the overview landing.
+    ///
+    /// Review-level and inline comment rows stay in the document. The cursor
+    /// and scroll begin at the first file so an empty landing is not what
+    /// the review opens on.
+    ///
+    /// Before a render has measured the diff viewport, row heights such as a
+    /// wrapped PR description are not yet known, so the landing is deferred
+    /// to [`Self::apply_pending_minimal_ui_start`].
+    pub fn apply_minimal_ui_start(&mut self) {
+        self.pending_minimal_ui_start = false;
+        if !self.minimal_ui || self.diff_files.is_empty() {
+            return;
+        }
+        if self.diff_state.viewport_width == 0 {
+            self.pending_minimal_ui_start = true;
+            return;
+        }
+        let Some(file_idx) = self
+            .diff_files
+            .iter()
+            .position(|file| self.file_passes_filter(file))
+        else {
+            return;
+        };
+        let start = self.calculate_file_scroll_offset(file_idx);
+        self.diff_state.current_file_idx = file_idx;
+        self.diff_state.cursor_line = start;
+        self.diff_state.scroll_offset = start;
+    }
+
+    /// Land a deferred minimal-mode start once a render has measured the
+    /// diff viewport. Returns true when it moved the cursor.
+    pub fn apply_pending_minimal_ui_start(&mut self) -> bool {
+        if !self.pending_minimal_ui_start || self.diff_state.viewport_width == 0 {
+            return false;
+        }
+        self.apply_minimal_ui_start();
+        true
+    }
+
+    /// Switch minimal mode mid-review (`:set minimal` / `:set nominimal` /
+    /// `:set minimal!`). Only the chrome changes; the cursor stays put.
+    pub fn set_minimal_ui(&mut self, enabled: bool) {
+        self.minimal_ui = enabled;
+        if !enabled {
+            self.pending_minimal_ui_start = false;
+        }
+    }
+
+    pub fn toggle_minimal_ui(&mut self) {
+        self.set_minimal_ui(!self.minimal_ui);
     }
 }

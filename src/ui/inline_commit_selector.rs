@@ -38,6 +38,7 @@ pub(super) fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, ar
                 is_cursor: i == app.commit_list_cursor,
                 is_selected: app.is_commit_selected(i),
                 is_reviewed: app.is_commit_reviewed_by_viewer(i),
+                is_empty: app.is_empty_worktree_row(commit),
                 theme,
             })
         })

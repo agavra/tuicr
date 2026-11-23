@@ -35,7 +35,8 @@ use super::{
 // content is not parsed: they are likely logs, dumps, or build artefacts.
 const MAX_UNTRACKED_FILE_SIZE: u64 = 10 * 1_024 * 1_024;
 
-const COMMIT_FORMAT: &str = "--format=%H%x00%h%x00%an%x00%ct%x00%B%x1e";
+// `%H` id, `%h` short id, `%aN` author name (respects `.mailmap`), `%ct` timestamp, `%B` body.
+const COMMIT_FORMAT: &str = "--format=%H%x00%h%x00%aN%x00%ct%x00%B%x1e";
 
 #[derive(Debug)]
 pub struct GitCliBackend {
@@ -45,6 +46,7 @@ pub struct GitCliBackend {
     untracked_cache: bool,
     fsmonitor: bool,
     whitespace_mode: DiffWhitespaceMode,
+    include_untracked: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -56,7 +58,11 @@ enum GitContentSource<'a> {
 }
 
 impl GitCliBackend {
-    pub(super) fn discover_from(cwd: &Path, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
+    pub(super) fn discover_from(
+        cwd: &Path,
+        whitespace_mode: DiffWhitespaceMode,
+        include_untracked: bool,
+    ) -> Result<Self> {
         let root_path =
             PathBuf::from(run_git_command(cwd, &["rev-parse", "--show-toplevel"])?.trim());
         let repo_mode = GitRepoMode::detect(&root_path)?;
@@ -84,6 +90,7 @@ impl GitCliBackend {
             untracked_cache,
             fsmonitor,
             whitespace_mode,
+            include_untracked,
         })
     }
 
@@ -247,7 +254,7 @@ impl VcsBackend for GitCliBackend {
                 base,
                 "--".into(),
             ],
-            true,
+            self.include_untracked,
             old_source,
             GitContentSource::Workdir,
             highlighter,
@@ -273,7 +280,7 @@ impl VcsBackend for GitCliBackend {
     fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         self.get_cli_diff(
             strings(["diff", "--no-ext-diff", "--binary", "--"]),
-            true,
+            self.include_untracked,
             GitContentSource::Index,
             GitContentSource::Workdir,
             highlighter,
@@ -282,20 +289,21 @@ impl VcsBackend for GitCliBackend {
 
     fn get_change_status(&self) -> Result<VcsChangeStatus> {
         if self.repo_mode == GitRepoMode::Standard {
-            return get_cli_change_status(&self.root_path);
+            return get_cli_change_status(&self.root_path, self.include_untracked);
         }
 
         // Keep sparse probes pathspec-scoped. Plain `git status` reports
         // out-of-cone untracked files and would show an empty Unstaged row.
         let staged = has_diff_changes(&self.root_path, &["diff", "--quiet", "--cached", "--"])?;
         let tracked_unstaged = has_diff_changes(&self.root_path, &["diff", "--quiet", "--"])?;
-        let untracked_pathspecs = if tracked_unstaged {
+        let untracked_pathspecs = if tracked_unstaged || !self.include_untracked {
             Vec::new()
         } else {
             sparse_checkout_untracked_pathspecs(&self.root_path)?
         };
-        let unstaged =
-            tracked_unstaged || has_untracked_changes(&self.root_path, &untracked_pathspecs)?;
+        let unstaged = tracked_unstaged
+            || (self.include_untracked
+                && has_untracked_changes(&self.root_path, &untracked_pathspecs)?);
 
         Ok(VcsChangeStatus { staged, unstaged })
     }
@@ -309,8 +317,10 @@ impl VcsBackend for GitCliBackend {
             ChangeKind::Unstaged => {
                 let mut paths =
                     list_diff_paths(&self.root_path, &["diff", "--name-only", "-z", "--"])?;
-                let untracked_pathspecs = sparse_checkout_untracked_pathspecs(&self.root_path)?;
-                paths.extend(list_untracked_paths(&self.root_path, &untracked_pathspecs)?);
+                if self.include_untracked {
+                    let untracked_pathspecs = sparse_checkout_untracked_pathspecs(&self.root_path)?;
+                    paths.extend(list_untracked_paths(&self.root_path, &untracked_pathspecs)?);
+                }
                 Ok(paths)
             }
         }
@@ -441,7 +451,7 @@ impl VcsBackend for GitCliBackend {
                 base_rev.clone(),
                 "--".into(),
             ],
-            true,
+            self.include_untracked,
             GitContentSource::Revision(&base_rev),
             GitContentSource::Workdir,
             highlighter,
@@ -510,10 +520,15 @@ fn parse_git_runtime_flags(output: &str) -> (bool, bool) {
     (untracked_cache.unwrap_or(many_files), fsmonitor)
 }
 
-fn get_cli_change_status(workdir: &Path) -> Result<VcsChangeStatus> {
+fn get_cli_change_status(workdir: &Path, include_untracked: bool) -> Result<VcsChangeStatus> {
     let output = Command::new("git")
         .current_dir(workdir)
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=normal"])
+        .args(["status", "--porcelain=v1", "-z"])
+        .arg(if include_untracked {
+            "--untracked-files=normal"
+        } else {
+            "--untracked-files=no"
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -1057,16 +1072,40 @@ pub(crate) fn read_git_objects<K: Eq + std::hash::Hash>(
     workdir: &Path,
     requests: Vec<(K, String)>,
 ) -> Result<HashMap<K, String>> {
+    read_git_objects_with_lazy_fetch(workdir, requests, true)
+}
+
+/// Like [`read_git_objects`], but a missing object is reported as missing
+/// instead of triggering a promisor fetch. Forge reads use this so a PR whose
+/// commits are absent from a `blob:none` clone falls back to the API instead
+/// of fetching the missing history with `noop` negotiation.
+pub(crate) fn read_git_objects_without_lazy_fetch<K: Eq + std::hash::Hash>(
+    workdir: &Path,
+    requests: Vec<(K, String)>,
+) -> Result<HashMap<K, String>> {
+    read_git_objects_with_lazy_fetch(workdir, requests, false)
+}
+
+fn read_git_objects_with_lazy_fetch<K: Eq + std::hash::Hash>(
+    workdir: &Path,
+    requests: Vec<(K, String)>,
+    allow_lazy_fetch: bool,
+) -> Result<HashMap<K, String>> {
     if requests.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .current_dir(workdir)
         .args(["cat-file", "--batch"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    if !allow_lazy_fetch {
+        command.env("GIT_NO_LAZY_FETCH", "1");
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
 
@@ -1376,6 +1415,66 @@ mod tests {
     }
 
     #[test]
+    fn git_log_format_respects_mailmap() {
+        // given a commit authored as "Raw Author <raw@example.test>" and a
+        // worktree `.mailmap` rewriting that identity to "Mapped <mapped@example.invalid>"
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+
+        git(root, &["init", "--quiet"]);
+        fs::write(root.join("a.txt"), "a\n").expect("failed to write file");
+        git(root, &["add", "a.txt"]);
+        git(
+            root,
+            &[
+                "-c",
+                "user.name=Raw Author",
+                "-c",
+                "user.email=raw@example.test",
+                "commit",
+                "--quiet",
+                "-m",
+                "first",
+            ],
+        );
+        fs::write(
+            root.join(".mailmap"),
+            "Mapped <mapped@example.invalid> Raw Author <raw@example.test>\n",
+        )
+        .expect("failed to write mailmap");
+
+        // when running git log with the same format tuicr uses (%aN respects .mailmap)
+        let output = run_git_command_args(root, ["log", "--max-count=1", COMMIT_FORMAT])
+            .expect("failed to run git log");
+
+        let commits = parse_commit_records(&output, &HashMap::new());
+
+        // then the mapped author name is used, not the raw one
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].author, "Mapped");
+        assert_ne!(commits[0].author, "Raw Author");
+    }
+
+    #[test]
+    fn should_not_lazy_fetch_missing_objects_in_a_partial_clone_batch() {
+        use crate::forge::local_git::test_support::{clone_without_blobs, init_repo_with_commit};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let origin = dir.path().join("origin");
+        fs::create_dir(&origin).expect("origin dir");
+        let sha = init_repo_with_commit(&origin, &["add file"]);
+        let clone = dir.path().join("clone");
+        clone_without_blobs(&origin, &clone);
+
+        // `git cat-file --batch` would otherwise fetch the missing blob from
+        // the promisor remote and return it.
+        let objects =
+            read_git_objects_without_lazy_fetch(&clone, vec![(0usize, format!("{sha}:file.txt"))])
+                .expect("batch read");
+        assert!(objects.is_empty(), "missing blob was read: {objects:?}");
+    }
+
+    #[test]
     fn parses_porcelain_status_sides() {
         assert_eq!(
             parse_porcelain_status(b"M  staged\0 M unstaged\0?? untracked\0"),
@@ -1443,7 +1542,7 @@ mod tests {
         git(workdir, &["sparse-checkout", "reapply", "--sparse-index"]);
         git(workdir, &["config", "advice.sparseIndexExpanded", "false"]);
 
-        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal, true)
             .expect("failed to discover backend");
         (temp_dir, backend, vec![first_id, second_id])
     }
@@ -1485,7 +1584,7 @@ mod tests {
         git(workdir, &["add", "staged.txt"]);
         write_file(workdir, "untracked.txt", "untracked\n");
 
-        let cli_backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+        let cli_backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal, true)
             .expect("failed to discover cli backend");
         let repo = git2::Repository::open(workdir).expect("failed to open git2 repo");
         (temp_dir, cli_backend, repo, vec![first_id, second_id])
@@ -1533,7 +1632,7 @@ mod tests {
             .trim()
             .to_string();
 
-        let cli_backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+        let cli_backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal, true)
             .expect("failed to discover cli backend");
         let repo = git2::Repository::open(workdir).expect("failed to open git2 repo");
         (temp_dir, cli_backend, repo, left_id, right_id)
@@ -1670,7 +1769,7 @@ mod tests {
         );
         fs::write(&binary_path, [0, 1, 9, 3]).unwrap();
 
-        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal, true)
             .expect("failed to discover CLI backend");
         let files = backend
             .get_working_tree_diff(&SyntaxHighlighter::default())
@@ -1743,7 +1842,7 @@ mod tests {
         git(workdir, &["init"]);
         git(workdir, &["config", "status.showUntrackedFiles", "no"]);
         write_file(workdir, "untracked.txt", "untracked\n");
-        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal, true)
             .expect("failed to discover cli backend");
 
         let status = backend
@@ -1773,7 +1872,7 @@ mod tests {
 
     #[test]
     fn detects_untracked_files_inside_sparse_cone_in_change_status() {
-        let (temp_dir, backend, _ids) = setup_sparse_index_repo();
+        let (temp_dir, mut backend, _ids) = setup_sparse_index_repo();
         write_file(temp_dir.path(), "keep/new.txt", "inside cone\n");
 
         let status = backend
@@ -1787,6 +1886,21 @@ mod tests {
                 unstaged: true,
             }
         );
+        backend.include_untracked = false;
+        assert_eq!(
+            backend.get_change_status().unwrap(),
+            VcsChangeStatus::default()
+        );
+        assert!(
+            backend
+                .list_changed_paths(ChangeKind::Unstaged)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            backend.get_unstaged_diff(&SyntaxHighlighter::plain()),
+            Err(TuicrError::NoChanges)
+        ));
     }
 
     #[test]
@@ -1797,7 +1911,7 @@ mod tests {
         assert_eq!(
             summarize_files(cli_backend.get_working_tree_diff(&highlighter).unwrap()),
             summarize_files(
-                diff::get_working_tree_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter)
+                diff::get_working_tree_diff(&repo, &DiffWhitespaceMode::Normal, true, &highlighter)
                     .unwrap()
             )
         );
@@ -1810,7 +1924,8 @@ mod tests {
         assert_eq!(
             summarize_files(cli_backend.get_unstaged_diff(&highlighter).unwrap()),
             summarize_files(
-                diff::get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter).unwrap()
+                diff::get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, true, &highlighter)
+                    .unwrap()
             )
         );
         assert_eq!(
@@ -1849,7 +1964,8 @@ mod tests {
                     &repo,
                     &[ids[1].clone()],
                     &DiffWhitespaceMode::Normal,
-                    &highlighter,
+                    true,
+                    &highlighter
                 )
                 .unwrap()
             )
@@ -1959,7 +2075,7 @@ mod tests {
         git(workdir, &["add", "."]);
         git(workdir, &["commit", "-m", "initial"]);
 
-        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::IgnoreAll)
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::IgnoreAll, true)
             .expect("failed to discover cli backend");
 
         write_file(workdir, "file.txt", " alpha \n beta\n");
@@ -1993,7 +2109,7 @@ mod tests {
         write_file(workdir, "whitespace.txt", " alpha \n beta\n");
         write_file(workdir, substantive_path, "after\n");
 
-        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::IgnoreAll)
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::IgnoreAll, true)
             .expect("failed to discover cli backend");
         let files = backend
             .get_working_tree_diff(&SyntaxHighlighter::default())
@@ -2013,7 +2129,7 @@ mod tests {
     }
 
     fn cli(workdir: &Path) -> GitCliBackend {
-        GitCliBackend::discover_from(workdir, DiffWhitespaceMode::default()).unwrap()
+        GitCliBackend::discover_from(workdir, DiffWhitespaceMode::default(), true).unwrap()
     }
 
     #[test]

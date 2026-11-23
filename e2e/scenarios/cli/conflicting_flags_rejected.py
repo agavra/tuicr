@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # option conflicts are checked on the merged root/tui/pr flags, and `pr` rejects local-review flags. Each invocation
-# must exit with a conflict error instead of opening the TUI.
+# must exit with a conflict error instead of opening the TUI. `-r` before `tui -w` is still allowed and keeps both:
+# the range plus the working tree.
 from e2e import Scenario, grep, repos, scenario
 
 
@@ -20,6 +21,7 @@ def main(s: Scenario) -> None:
         assert r.rc != 0, f"'tuicr {args}' exited 0 instead of rejecting the flags. Output: {r.out}"
         assert grep("cannot be|conflict", r.out), f"'tuicr {args}' not rejected with a conflict error. Output: {r.out}"
         print(f"ok: tuicr {args} rejected")
-    # still allowed: -r with -w (split across levels)
+    # still allowed: -r with -w (split across levels); a dropped -w shows only the 8 files of the range
     tui = s.start("-r", "HEAD~2..HEAD", "tui", "-w", cwd=repo)
-    tui.wait_for("Files ·").quit()
+    tui.wait_for(r"staged \+ unstaged \+ 2 commits").wait_for("Files · 0/10").wait_for("5 ▌ unstaged line")
+    tui.quit()

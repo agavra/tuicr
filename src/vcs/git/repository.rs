@@ -1,5 +1,5 @@
 use chrono::{DateTime, TimeZone, Utc};
-use git2::{BranchType, Oid, Repository};
+use git2::{BranchType, Mailmap, Oid, Repository};
 use std::collections::HashMap;
 
 use crate::error::{Result, TuicrError};
@@ -27,6 +27,21 @@ pub(super) fn summary_and_body(message: &str) -> (String, Option<String>) {
     }
     let (subject, body) = split_commit_message(message);
     (subject.to_string(), body)
+}
+
+/// Resolve a commit's author name, applying the repository's `.mailmap` if
+/// one exists (e.g. `git mailmap` name/email rewrites). Falls back to the raw
+/// author name when the mailmap cannot be read or applied.
+fn commit_author_name(commit: &git2::Commit, mailmap: Option<&Mailmap>) -> String {
+    if let Some(mailmap) = mailmap {
+        commit
+            .author_with_mailmap(mailmap)
+            .ok()
+            .and_then(|sig| sig.name().map(|n| n.to_string()))
+            .unwrap_or_else(|| commit.author().name().unwrap_or("Unknown").to_string())
+    } else {
+        commit.author().name().unwrap_or("Unknown").to_string()
+    }
 }
 
 fn get_branch_tip_names(repo: &Repository) -> HashMap<Oid, Vec<String>> {
@@ -77,6 +92,7 @@ pub fn get_recent_commits(
     revwalk.push_head()?;
     let branch_tip_names = get_branch_tip_names(repo);
 
+    let mailmap = repo.mailmap().ok();
     let mut commits = Vec::new();
     for oid in revwalk.skip(offset).take(limit) {
         let oid = oid?;
@@ -86,7 +102,7 @@ pub fn get_recent_commits(
         let short_id = id[..7.min(id.len())].to_string();
         let full_message = commit.message().unwrap_or("(no message)");
         let (summary, body) = summary_and_body(full_message);
-        let author = commit.author().name().unwrap_or("Unknown").to_string();
+        let author = commit_author_name(&commit, mailmap.as_ref());
         let branch_name = branch_tip_names
             .get(&oid)
             .and_then(|names| names.first().cloned());
@@ -113,6 +129,7 @@ pub fn get_recent_commits(
 /// Returns CommitInfo in the same order as the input IDs.
 pub fn get_commits_info(repo: &Repository, ids: &[String]) -> Result<Vec<CommitInfo>> {
     let branch_tip_names = get_branch_tip_names(repo);
+    let mailmap = repo.mailmap().ok();
     let mut commits = Vec::new();
 
     for id_str in ids {
@@ -126,7 +143,7 @@ pub fn get_commits_info(repo: &Repository, ids: &[String]) -> Result<Vec<CommitI
         let short_id = id[..7.min(id.len())].to_string();
         let full_message = commit.message().unwrap_or("(no message)");
         let (summary, body) = summary_and_body(full_message);
-        let author = commit.author().name().unwrap_or("Unknown").to_string();
+        let author = commit_author_name(&commit, mailmap.as_ref());
         let branch_name = branch_tip_names
             .get(&oid)
             .and_then(|names| names.first().cloned());
@@ -238,6 +255,11 @@ fn revwalk_range(repo: &Repository, base: &str, head: &str) -> Result<Vec<String
 mod tests {
     use super::*;
 
+    use std::fs;
+    use std::path::Path;
+
+    use git2::Signature;
+
     #[test]
     fn should_use_the_placeholder_only_when_there_is_no_first_line() {
         // given / when / then
@@ -262,5 +284,75 @@ mod tests {
         // then unborn HEAD is treated as zero commits, not an error
         let commits = result.expect("unborn HEAD should yield an empty list");
         assert!(commits.is_empty(), "unborn HEAD has no commits to walk");
+    }
+
+    #[test]
+    fn commit_author_name_applies_mailmap() {
+        // given a commit authored as "Raw Author <raw@example.test>" and a
+        // worktree `.mailmap` rewriting that identity to "Mapped <mapped@example.invalid>"
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+        let signature =
+            Signature::now("Raw Author", "raw@example.test").expect("failed to build signature");
+
+        let mut index = repo.index().expect("failed to open index");
+        let tree_id = index.write_tree().expect("failed to write tree");
+        let tree = repo.find_tree(tree_id).expect("failed to find tree");
+        repo.commit(Some("HEAD"), &signature, &signature, "fixture", &tree, &[])
+            .expect("failed to commit");
+        fs::write(
+            temp_dir.path().join(".mailmap"),
+            "Mapped <mapped@example.invalid> Raw Author <raw@example.test>\n",
+        )
+        .expect("failed to write mailmap");
+
+        let commit = repo
+            .head()
+            .expect("HEAD exists")
+            .peel_to_commit()
+            .expect("HEAD is a commit");
+        let mailmap = repo.mailmap().expect("failed to read mailmap");
+
+        // when the mailmap is applied
+        let mapped = commit_author_name(&commit, Some(&mailmap));
+
+        // then the mapped display name wins over the raw author name
+        assert_eq!(mapped, "Mapped");
+
+        // and without a mailmap the raw name is kept
+        assert_eq!(commit_author_name(&commit, None), "Raw Author");
+    }
+
+    #[test]
+    fn get_recent_commits_applies_mailmap() {
+        // given a commit authored as "Raw Author <raw@example.test>" and a
+        // worktree `.mailmap` rewriting that identity
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+        let signature =
+            Signature::now("Raw Author", "raw@example.test").expect("failed to build signature");
+
+        let mut index = repo.index().expect("failed to open index");
+        fs::write(temp_dir.path().join("a.txt"), "a\n").expect("failed to write file");
+        index
+            .add_path(Path::new("a.txt"))
+            .expect("failed to stage file");
+        let tree_id = index.write_tree().expect("failed to write tree");
+        let tree = repo.find_tree(tree_id).expect("failed to find tree");
+        repo.commit(Some("HEAD"), &signature, &signature, "first", &tree, &[])
+            .expect("failed to commit");
+
+        fs::write(
+            temp_dir.path().join(".mailmap"),
+            "Mapped <mapped@example.invalid> Raw Author <raw@example.test>\n",
+        )
+        .expect("failed to write mailmap");
+
+        // when listing recent commits
+        let commits = get_recent_commits(&repo, 0, 50).expect("failed to list commits");
+
+        // then the mapped author name is used
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].author, "Mapped");
     }
 }

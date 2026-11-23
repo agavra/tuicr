@@ -19,5 +19,5 @@ def main(s: Scenario) -> None:
     tui.reject("unstaged line")  # working-tree edit
     tui.reject(r"staged\.txt")
     tui.reject("fix: greeting")  # a later commit
-    tui.reject(r"src/main\.rs")  # only touched by the later commit
+    tui.reject(r"main\.rs")  # only touched by the later commit (the tree shows it as `main.rs` under `src/`)
     tui.quit()

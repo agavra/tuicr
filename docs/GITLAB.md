@@ -36,8 +36,10 @@ Nested groups and subgroups work in the `owner/repo` slot, for example
 hosts.
 
 tuicr detects the forge from the repository's remotes. A remote routes to GitLab
-when its host contains `gitlab` or matches a self-hosted host configured in
-`glab`. Everything else falls back to GitHub.
+when its host contains `gitlab` or matches `glab`'s default host
+(`glab config get host`); other hosts you logged into with `glab` are not
+checked. Everything else falls back to GitHub. A full
+`/-/merge_requests/<iid>` URL is read as GitLab on any host.
 
 ## Submit a review
 
@@ -62,16 +64,24 @@ not add you as a reviewer on your behalf.
 review: your inline and review-level comments are stored but not published. Publish
 them yourself from GitLab's own "Submit review" control on the merge request.
 
+A review is posted as several requests (one note per comment, then the approval
+or reviewer state). If one fails midway, the comments already posted are locked
+so a retry does not post them twice, and tuicr reports the partial submit rather
+than a clean failure.
+
 ## Self-hosted GitLab
 
-Authenticate against your instance once:
+Authenticate against your instance once, and make it `glab`'s default host
+unless its name contains `gitlab`:
 
 ```bash
 glab auth login --hostname git.example.com
+glab config set host git.example.com
 ```
 
-After that, tuicr recognizes remotes on `git.example.com` as GitLab because the
-host is configured in `glab`. Pass the full URL or a `host/owner/repo#iid`
+After that, tuicr recognizes remotes on `git.example.com` as GitLab because it
+is `glab`'s default host. Only the default host is compared, so a remote on a
+second neutral-named instance is not recognized; use a full MR URL for it. Pass the full URL or a `host/owner/repo#iid`
 target, and tuicr builds the `https://git.example.com/owner/repo` repository
 argument for `glab` on its own.
 
@@ -85,7 +95,8 @@ glab config set subfolder gitlab --host git.example.com
 ```
 
 Nested paths work too (`apps/gitlab`), and surrounding slashes are ignored.
-`GITLAB_SUBFOLDER` overrides the setting for every host.
+`GITLAB_SUBFOLDER` overrides the setting for every self-hosted host (never for
+`gitlab.com`).
 
 `glab` prepends that subfolder to every API URL it builds, and tuicr reads the
 setting so it does not repeat the subfolder inside the project id. Without it,
@@ -102,9 +113,16 @@ endpoint works. tuicr maps `altssh.gitlab.com` back to `gitlab.com` when it
 reads your remote, so the MR resolves against the real host. `HostName` aliases
 in `~/.ssh/config` are resolved the same way.
 
+For a self-hosted instance whose SSH endpoint has its own hostname, set it as
+the default host's `ssh_host` in `glab`. tuicr maps a remote on that host back
+to the default host (for example `gitlabssh.example.org` to
+`gitlab.example.org`), provided the SSH hostname contains `gitlab`.
+
 ## Limitations and troubleshooting
 
 - Merge requests with more than 10,000 commits fail to open with an explicit error rather than showing a partial commit list.
+- Merge requests with more than 10,000 changed files fail to open with an error.
+- Discussions, draft notes and diff versions are read up to 10,000 entries each; anything beyond that is silently left out.
 
 Reviewing a commit range within an MR requires a local checkout of the branch.
 A remote-only commit-range diff returns a "not yet supported" error.

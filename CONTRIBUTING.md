@@ -21,7 +21,8 @@ cargo fmt
 ## Testing
 
 `cargo test` runs the unit and integration tests. User-visible bug fixes and behaviour changes also need an
-end-to-end scenario under `e2e/scenarios/<area>/<behaviour>.py` that fails without the change:
+end-to-end scenario under `e2e/scenarios/<area>/<behaviour>.py`. Write it first and watch it fail on the
+unchanged code, then make the change and watch it pass; put both results in the PR's test plan:
 
 ```bash
 cargo build --release

@@ -15,7 +15,9 @@ use ureq::Agent;
 
 use self::archive::extract_binary;
 use self::executable_swap::swap_executable;
-use self::installation::{detect_install_method, manager_command};
+use self::installation::{
+    detect_external_manager, detect_install_method, manager_command, state_home,
+};
 use self::source::{release_api_url, release_asset_name, release_asset_url};
 use super::check::{USER_AGENT, is_newer_version};
 
@@ -74,6 +76,11 @@ pub enum UpdateError {
     Integrity(String),
     #[error("failed to extract '{asset}': {detail}")]
     Archive { asset: String, detail: String },
+    #[error("{method} manages this tuicr installation; update it with {hint}")]
+    ExternallyManaged {
+        method: InstallMethod,
+        hint: &'static str,
+    },
     #[error("{0} cannot install a specific tuicr version; use that manager's pinning workflow")]
     VersionPinUnsupported(InstallMethod),
     #[error("{method} could not update tuicr: {detail}")]
@@ -119,7 +126,18 @@ impl UpdateContext {
     ) -> Result<Self, UpdateError> {
         let executable = canonical_executable(executable)?;
         let cargo_root = canonical_cargo_root(home, cargo_home);
-        let method = detect_install_method(&executable, None, cargo_root.as_deref());
+        let user = std::env::var("USER").ok().or_else(|| {
+            home.and_then(Path::file_name)
+                .map(|name| name.to_string_lossy().into_owned())
+        });
+        let state_home = state_home(std::env::var_os("XDG_STATE_HOME").as_deref(), home);
+        let method = detect_external_manager(
+            &executable,
+            state_home.as_deref(),
+            user.as_deref(),
+            Path::new("/"),
+        )
+        .unwrap_or_else(|| detect_install_method(&executable, None, cargo_root.as_deref()));
 
         Ok(Self {
             executable,
@@ -160,6 +178,7 @@ trait UpdateRuntime {
         args: &[&str],
     ) -> Result<(), UpdateError>;
     fn replace_executable(&self, path: &Path, contents: &[u8]) -> Result<(), UpdateError>;
+    fn warn(&self, message: &str);
 }
 
 struct SystemRuntime;
@@ -205,6 +224,10 @@ impl UpdateRuntime for SystemRuntime {
     fn replace_executable(&self, path: &Path, contents: &[u8]) -> Result<(), UpdateError> {
         swap_executable(path, contents)
     }
+
+    fn warn(&self, message: &str) {
+        eprintln!("{message}");
+    }
 }
 
 fn update_with_runtime(
@@ -228,6 +251,9 @@ fn update_with_optional_version(
     version: Option<&Version>,
 ) -> Result<UpdateOutcome, UpdateError> {
     let method = context.method;
+    if let Some(hint) = method.external_update_hint() {
+        return Err(UpdateError::ExternallyManaged { method, hint });
+    }
     if let Some(version) = version {
         return match method {
             InstallMethod::Cargo => {
@@ -243,8 +269,12 @@ fn update_with_optional_version(
             _ => Err(UpdateError::VersionPinUnsupported(method)),
         };
     }
-    if let Some(command) = manager_command(method) {
-        runtime.run_command(method, command.program, command.args)?;
+    if let Some(command) = manager_command(method, &context.executable) {
+        if let Some(warning) = command.warning {
+            runtime.warn(warning);
+        }
+        let args: Vec<&str> = command.args.iter().map(String::as_str).collect();
+        runtime.run_command(method, command.program, &args)?;
         return Ok(UpdateOutcome::ManagerCompleted(method));
     }
     update_direct(runtime, &context, method, None)

@@ -2,7 +2,7 @@
 name = "tuicr"
 version = "0.29.0"
 edition = "2024"
-description = "Review AI-generated diffs like a GitHub pull request, right from your terminal."
+description = "A code review TUI with vim keybindings: review any diff like a GitHub pull request, right from your terminal."
 license = "MIT"
 repository = "https://github.com/agavra/tuicr"
 homepage = "https://github.com/agavra/tuicr"
@@ -40,7 +40,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Utilities
 directories = "6.0"
-ureq = { version = "3", features = ["json"] }
+ureq = { version = "3", features = ["json", "platform-verifier"] }
 unicode-width = "0.2"
 # Measure text one grapheme cluster at a time, the way ratatui draws it.
 unicode-segmentation = "1"

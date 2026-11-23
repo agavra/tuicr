@@ -6,6 +6,9 @@
 A filter is a substring of `<area>/<behaviour>` (e.g. `pr/submit`, `tree/`, `theme/picker_preview_revert_keep`);
 no filter runs everything. Results: PASS, FAIL (includes timeouts), SKIP (scenario exit 77, e.g. no Mercurial),
 and QPASS/QFAIL for quarantined scenarios (a module-level `QUARANTINE = "<reason>"`: run and reported, never gating).
+A quarantine only covers a failing body: a quarantined scenario that skips is a SKIP and one that times out a FAIL.
+A scenario proves it ran by printing the `E2E-RAN` line scenario() ends with; exit 0 without it is a FAIL (a script
+that never reached @scenario, or exited early).
 Exit 0 only if at least one scenario ran, none FAILed, and (with E2E_REQUIRE_SKIPS_ZERO=1) none was skipped.
 
 Environment: TUICR_BIN (required); E2E_ROOT (scratch, default a fresh temp dir), E2E_OUT (logs, screenshots,
@@ -16,7 +19,8 @@ Defaults for the timeout, the tmux socket prefix and the settle quiet period liv
 
 Each scenario runs in its own session/process group. On timeout, or when the runner is interrupted, the whole
 process tree is killed (the scenario's backgrounded fake servers included); after a normal exit leftovers are reaped
-too. Scenario exit status: 0 pass, 77 skip, 124 timeout, 130 interrupted, 128+N killed by signal N.
+too. A timeout sends SIGTERM first (the scenario's teardown keeps its screenshots and logs) and SIGKILL after
+TERM_GRACE seconds. Scenario exit status: 0 pass, 77 skip, 124 timeout, 130 interrupted, 128+N killed by signal N.
 """
 
 from __future__ import annotations
@@ -36,6 +40,8 @@ from pathlib import Path
 from typing import Any
 
 HERE = Path(__file__).resolve().parent
+SENTINEL = "E2E-RAN"  # printed by e2e.core.scenario() as its last line
+TERM_GRACE = 3.0
 
 
 def config() -> dict[str, Any]:
@@ -65,6 +71,13 @@ def discover(scen_dir: Path, filters: list[str]) -> list[str]:
     return [n for n in names if not filters or any(f in n for f in filters)]
 
 
+def undocumented_areas(scen_dir: Path) -> list[str]:
+    """Scenario directories with no `| `<area>` |` row in COVERAGE.md."""
+    table = (HERE / "COVERAGE.md").read_text()
+    areas = sorted(p.name for p in scen_dir.iterdir() if p.is_dir() and any(p.glob("*.py")))
+    return [a for a in areas if f"| `{a}` |" not in table]
+
+
 def run_scenario(script: Path, timeout: float, log: Path) -> int:
     with open(log, "wb") as out:
         proc = subprocess.Popen(
@@ -75,9 +88,9 @@ def run_scenario(script: Path, timeout: float, log: Path) -> int:
             env=dict(os.environ, E2E_SCENARIO=str(script)),
         )
 
-        def kill_group() -> None:
+        def kill_group(sig: int = signal.SIGKILL) -> None:
             with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(proc.pid, signal.SIGKILL)
+                os.killpg(proc.pid, sig)
 
         try:
             rc = proc.wait(timeout)
@@ -85,6 +98,10 @@ def run_scenario(script: Path, timeout: float, log: Path) -> int:
                 rc = 128 - rc
         except subprocess.TimeoutExpired:
             out.write(f"e2e: scenario exceeded {timeout:g}s and was killed (process tree included)\n".encode())
+            out.flush()
+            kill_group(signal.SIGTERM)  # let scenario() tear down (screenshots, forge logs) before the hard kill
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(TERM_GRACE)
             kill_group()
             proc.wait()
             rc = 124
@@ -107,6 +124,9 @@ def main(argv: list[str]) -> int:
     if list_only:
         print("\n".join(selected))
         return 0
+    if scen_dir == (HERE / "scenarios").resolve() and (missing := undocumented_areas(scen_dir)):
+        print(f"e2e: add a row to e2e/COVERAGE.md for scenario area(s): {', '.join(missing)}", file=sys.stderr)
+        return 2
 
     tuicr_bin = os.environ.get("TUICR_BIN")
     if not tuicr_bin:
@@ -149,6 +169,7 @@ def main(argv: list[str]) -> int:
         (out_dir / "results.json").write_text(json.dumps(results, indent=2) + "\n")
 
     write_results()
+    sys.stdout.reconfigure(line_buffering=True)  # ty: ignore[unresolved-attribute]
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
         for name in selected:
@@ -159,19 +180,26 @@ def main(argv: list[str]) -> int:
             rc = run_scenario(script, timeout, log)
             secs = int(time.monotonic() - start)
             quarantine = metadata(script, "QUARANTINE")
-            if quarantine is not None:
+            text = log.read_text(errors="replace")
+            ran = any(ln.startswith(SENTINEL + " ") for ln in text.splitlines())
+            if rc == 0 and not ran:
+                with open(log, "a") as f:
+                    f.write(f"e2e: exit 0 without the {SENTINEL} line: the scenario never ran through @scenario\n")
+                rc = 1
+            q = f"  quarantined: {quarantine}" if quarantine is not None else ""
+            if rc == 77:  # a quarantine never hides a skip: E2E_REQUIRE_SKIPS_ZERO must see it
+                res = "SKIP"
+                reason = next((ln for ln in text.splitlines() if ln.startswith("SKIP")), "")
+                print(f"SKIP {name}  {reason}{q}")
+            elif quarantine is not None and rc != 124:
                 res = "QPASS" if rc == 0 else "QFAIL"
-                print(f"{res} {name} ({secs}s)  quarantined: {quarantine}")
+                print(f"{res} {name} ({secs}s){q}")
             elif rc == 0:
                 res = "PASS"
                 print(f"PASS {name} ({secs}s)")
-            elif rc == 77:
-                res = "SKIP"
-                reason = next((ln for ln in log.read_text(errors="replace").splitlines() if ln.startswith("SKIP")), "")
-                print(f"SKIP {name}  {reason}")
-            else:
+            else:  # a quarantined scenario that times out fails too: a hang is not the failure it was quarantined for
                 res = "FAIL"
-                print(f"FAIL {name} ({secs}s, rc={rc})  log: {log}")
+                print(f"FAIL {name} ({secs}s, rc={rc})  log: {log}{q}")
             counts[res] += 1
             results.append({"name": name, "result": res, "seconds": secs, "log": str(log)})
             write_results()

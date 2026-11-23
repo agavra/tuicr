@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-# jj journey end to end: open the working-copy change, comment on a line, export with --stdout. The markdown carries
-# the jj
-# jj scope (the working-copy change) and the comment anchored at its file:line. Needs real jj (SKIP without it, FAIL
-# with
-# E2E_REQUIRE_JJ=1).
+# jj journey end to end: open the working-copy change, comment on a line, export with --stdout. The markdown anchors
+# the comment at its file:line and the jj change it was made on (`(commit <id>)`). Needs real jj (SKIP without it,
+# FAIL with E2E_REQUIRE_JJ=1).
 import re
 
 from e2e import TUICR_BIN, Scenario, grep, repos, scenario
@@ -27,8 +25,7 @@ def main(s: Scenario) -> None:
     )
     tui.wait_for("wip").keys("Enter")
     tui.wait_for("Files · 0/3").keys("Escape").cursor_on("3 ▌ a wip")
-    tui.keys("c").wait_for("COMMENT")
-    tui.keys("jj exported note").keys("Enter").wait_for("jj exported note")
+    tui.comment("jj exported note")
     tui.cmd("clip").wait_exit()
     text, errtext = out.read_bytes().decode(), err.read_bytes().decode()
     assert grep(r"^I reviewed your code", text), f"export lacks the intro\n{text}"

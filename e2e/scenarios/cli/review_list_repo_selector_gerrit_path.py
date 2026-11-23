@@ -19,12 +19,15 @@ def main(s: Scenario) -> None:
     all_sessions = s.cli("review", "list", "--all")
     print("--- all sessions")
     print(all_sessions)
-    slug = json.loads(all_sessions)[0]["slug"]
+    sessions = json.loads(all_sessions)
+    assert len(sessions) == 1, f"expected the one saved Gerrit PR session, got {sessions}"
+    slug = sessions[0]["slug"]
     print(f"slug={slug}")
-    r = s.cli_result("review", "list", "--repo", f"forge:{host}/platform/build/tools")
-    print(f"--- forge:{host}/platform/build/tools\n{r.out}")
-    assert r.rc == 0, f"review list --repo forge:{host}/platform/build/tools exited {r.rc}"
-    assert slug in r.out, f"forge:{host}/platform/build/tools did not select the saved Gerrit PR session"
+    selected = json.loads(s.cli("review", "list", "--repo", f"forge:{host}/platform/build/tools"))
+    print(f"--- forge:{host}/platform/build/tools\n{selected}")
+    assert [x["slug"] for x in selected] == [slug], (
+        f"forge:{host}/platform/build/tools did not select exactly the saved Gerrit PR session"
+    )
     bad = s.cli_result(
         "review", "list", "--repo", f"forge:{host}/platform/build/.git"
     )  # may be an error: only "no session selected" matters

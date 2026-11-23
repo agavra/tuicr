@@ -432,7 +432,7 @@ mod tests {
             let backend = crate::vcs::GitBackend::discover_from(
                 dir.path(),
                 preference,
-                crate::vcs::DiffWhitespaceMode::Normal,
+                crate::vcs::VcsDiffOptions::default(),
             )
             .expect("open repo");
             let files = backend

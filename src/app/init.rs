@@ -149,7 +149,10 @@ impl App {
         let vcs = crate::profile::time("startup.detect_vcs", || {
             detect_vcs(
                 options.git_backend_preference,
-                options.diff_whitespace_mode.clone(),
+                crate::vcs::VcsDiffOptions {
+                    whitespace_mode: options.diff_whitespace_mode.clone(),
+                    include_untracked: options.include_untracked,
+                },
             )
         })?;
         let vcs_info = vcs.info().clone();
@@ -229,18 +232,19 @@ impl App {
                 .into_iter()
                 .rev()
                 .collect();
-                // Prepend staged/unstaged entries only when the backend supports them
-                let change_status = Self::get_change_status_with_ignore(
+                // Prepend the staged/unstaged entries `worktree_row_status` calls for
+                let worktree_status = Self::get_change_status_with_ignore(
                     vcs.as_ref(),
                     &vcs_info.root_path,
                     highlighter,
                     options.path_filter,
                 )?;
+                let rows = Self::worktree_row_status(vcs_info.vcs_type, worktree_status);
                 let mut all_commits = Vec::new();
-                if change_status.staged {
+                if rows.staged {
                     all_commits.push(Self::staged_commit_entry());
                 }
-                if change_status.unstaged {
+                if rows.unstaged {
                     all_commits.push(Self::unstaged_commit_entry());
                 }
                 all_commits.extend(review_commits);
@@ -261,6 +265,7 @@ impl App {
                 )?
                 .with_vcs_open_options(options.vcs_open_options());
 
+                app.worktree_status = Some(worktree_status);
                 app.install_review_commits(all_commits, options.commit_selection)?;
 
                 return Ok(app);
@@ -343,7 +348,7 @@ impl App {
             let has_unstaged_changes = change_status.unstaged;
 
             // No eager working-tree-diff fetch — the selector only needs to
-            // know whether to render the Staged/Unstaged rows. The actual
+            // know which side has changes. The actual
             // diff loads when the user picks one (load_staged_selection /
             // load_unstaged_selection / load_staged_and_unstaged_selection).
 
@@ -356,11 +361,15 @@ impl App {
                 return Err(TuicrError::NoChanges);
             }
 
+            // Rows come from `worktree_row_status`, which keeps both for Git
+            // even when a side is empty. The default source below still
+            // follows the real status.
+            let rows = Self::worktree_row_status(vcs_info.vcs_type, change_status);
             let mut commit_list = commits.clone();
-            if has_staged_changes {
+            if rows.staged {
                 commit_list.insert(0, Self::staged_commit_entry());
             }
-            if has_unstaged_changes {
+            if rows.unstaged {
                 commit_list.insert(0, Self::unstaged_commit_entry());
             }
 
@@ -404,6 +413,8 @@ impl App {
 
             app.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
             app.visible_commit_count = app.commit_list.len();
+            app.commit_list_cursor = Self::initial_selector_cursor(&app.commit_list, change_status);
+            app.worktree_status = Some(change_status);
             Ok(app)
         }
     }
@@ -494,6 +505,8 @@ impl App {
             word_diff: true,
             wrap_style: WrapStyle::default(),
             cursor_side: LineSide::New,
+            clipboard_override: None,
+            clipboard_command: None,
             file_list_state: FileListState::default(),
             comment_navigator_state: CommentNavigatorState::default(),
             diff_state: DiffState::default(),
@@ -561,6 +574,8 @@ impl App {
             forge_review_summaries: Vec::new(),
             forge_review_threads_loading: false,
             pr_threads_rx: None,
+            pending_draft_delete: None,
+            pr_draft_delete_rx: None,
             forge_config: crate::config::ForgeConfig::default(),
             username: crate::model::comment::DEFAULT_AUTHOR.to_string(),
             submit_state: None,
@@ -580,6 +595,8 @@ impl App {
             pending_confirm: None,
             supports_keyboard_enhancement: false,
             show_file_list: true,
+            minimal_ui: false,
+            pending_minimal_ui_start: false,
             file_list_position: FileListPosition::default(),
             compact_folders: false,
             is_pristine_mode: false,
@@ -593,6 +610,7 @@ impl App {
             cursor_line_highlight: true,
             leader_key: crate::config::DEFAULT_LEADER_KEY,
             scroll_offset: 0,
+            hunk_jump_align: HunkJumpAlign::Visible,
             mouse_scroll_lines: crate::config::DEFAULT_MOUSE_SCROLL_LINES,
             file_list_area: None,
             comment_navigator_area: None,
@@ -611,6 +629,7 @@ impl App {
             word_diff_ranges: HashMap::new(),
             output_to_stdout,
             pending_stdout_output: None,
+            pending_exit_warning: None,
             comment_cursor_screen_pos: None,
             comment_input_annotation_offset: None,
             update_info: None,
@@ -623,14 +642,22 @@ impl App {
             pr_range_reload_state: None,
             pr_range_reload_rx: None,
             show_commit_selector: false,
+            show_commits_on_open: true,
             commit_order: CommitOrder::default(),
             commit_selection_start: CommitSelectionStart::default(),
             initial_comments_visibility: None,
+            worktree_status: None,
             commit_diff_cache: HashMap::new(),
             range_diff_files: None,
             saved_inline_selection: None,
             path_filter: path_filter.map(|s| s.to_string()),
             export: ExportConfig::default(),
+            collapse_generated: true,
+            count_generated: true,
+            generated_files: HashSet::new(),
+            collapse_override: HashMap::new(),
+            generated_probed: HashSet::new(),
+            generated_root: None,
         };
         // Auto-hide file list when path filter matches exactly one file
         if app.path_filter.is_some() && app.diff_files.len() == 1 {
@@ -1029,14 +1056,10 @@ fn current_branch_for_launch_dir(
     dir: &std::path::Path,
     options: &VcsOpenOptions,
 ) -> Option<String> {
-    crate::vcs::detect_vcs_in(
-        dir,
-        options.git_backend_preference,
-        options.diff_whitespace_mode.clone(),
-    )
-    .ok()
-    .and_then(|vcs| vcs.info().branch_name.clone())
-    .filter(|branch| !branch.is_empty())
+    crate::vcs::detect_vcs_in(dir, options.git_backend_preference, options.diff_options())
+        .ok()
+        .and_then(|vcs| vcs.info().branch_name.clone())
+        .filter(|branch| !branch.is_empty())
 }
 
 /// The checkout root a `tuicr pr` launch directory belongs to, or `None`
@@ -1047,11 +1070,7 @@ pub(in crate::app) fn checkout_root_for_launch_dir(
     dir: &std::path::Path,
     options: &VcsOpenOptions,
 ) -> Option<PathBuf> {
-    crate::vcs::detect_vcs_in(
-        dir,
-        options.git_backend_preference,
-        options.diff_whitespace_mode.clone(),
-    )
-    .ok()
-    .map(|vcs| vcs.info().root_path.clone())
+    crate::vcs::detect_vcs_in(dir, options.git_backend_preference, options.diff_options())
+        .ok()
+        .map(|vcs| vcs.info().root_path.clone())
 }

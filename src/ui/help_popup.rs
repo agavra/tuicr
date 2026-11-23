@@ -154,7 +154,21 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  Ctrl-f/b  ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Full page down/up"),
+            Span::raw("Full page down/up (also PageDown/PageUp)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  zz/zt/zb  ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Center cursor / scroll it to top / bottom of screen"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  {N}motion ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Count prefix: repeat j/k/h/l/{/}/[/] N times"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -162,6 +176,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Redraw the whole screen (works in every mode)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Ctrl-c x2 ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Quit from any mode (second press within 2 seconds)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -296,17 +317,6 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             ),
             Span::raw("Scroll diff left/right (or ←/→)"),
         ]),
-        Line::from(vec![
-            Span::styled("  h/← at 0 ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("Reveal + focus file list"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  l/→ in list",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Hide list + focus diff"),
-        ]),
         Line::from(""),
         Line::from(Span::styled(
             format!("Single-file view (`:focus`, `:f`, {leader}f)"),
@@ -402,7 +412,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  /         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Local filter for current tab"),
+            Span::raw("Filter loaded PR rows (Pull Requests tab)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -458,6 +468,54 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Cancel"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Submit Resolver and Confirm (PR mode)",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  j/k       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Resolver: move between comments that cannot post inline"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Enter/Spc ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Resolver: toggle Move to summary / Omit"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  s         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Resolver: continue to the submit"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  y/Enter   ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Confirm: submit"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  r         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Confirm: reload the PR when its head moved"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  n/Esc     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Cancel the submit"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
@@ -576,6 +634,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  Space     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Expand / collapse the current file"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  c         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -601,6 +666,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Edit comment at cursor"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  A         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Edit comment at cursor, text cursor at end (vim mode only)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -666,6 +738,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  y         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Copy selected source lines to clipboard"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  Esc/v/V   ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -678,18 +757,21 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         )),
         Line::from(""),
         comment_mode_row("Tab/S-Tab", "Cycle comment type next/previous"),
-        comment_mode_row("Enter", "Save comment"),
+        comment_mode_row("Enter/Ctrl-Enter", "Save comment"),
         comment_mode_row("Ctrl-S", "Save comment"),
         comment_mode_row("Shift-Enter/Alt-Enter/Ctrl-J", "Insert newline"),
+        comment_mode_row("Ctrl-K", "Insert newline"),
         comment_mode_row("Up/Down", "Previous/next displayed row (default editor)"),
-        comment_mode_row("Ctrl-A/E", "Line start/end"),
-        comment_mode_row("Ctrl/Alt-Left/Right", "Word left/right"),
+        comment_mode_row("Ctrl-A/E, Home/End", "Line start/end"),
+        comment_mode_row("Ctrl/Alt-Left/Right, Alt-B/F", "Word left/right"),
         comment_mode_row("Cmd-Left/Right", "Line start/end (macOS)"),
+        comment_mode_row("Ctrl-W/Alt-Bksp/Cmd-Bksp", "Delete word"),
+        comment_mode_row("Ctrl-U", "Clear the whole comment"),
         comment_mode_row("Esc/Ctrl-C", "Cancel"),
         comment_mode_row(
             "comment_vim",
             if app.comment_vim_enabled {
-                "Vim ON (i/a:insert Esc:normal hjkl dd/ciw/x u; S-Enter:save S-Esc:discard :w/:q)"
+                "Vim ON (i/a:insert Esc:normal hjkl dd/ciw/x u; A-Enter:save A-Esc:discard :w/:q)"
             } else {
                 "Set comment_vim=true (or :vim) for vim modal editing"
             },
@@ -770,7 +852,21 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :wrap     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle line wrap in diff view"),
+            Span::raw("Toggle line wrap in diff view (also `:set wrap!`)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set wrap ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Enable line wrap in diff view"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :vim      ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle vim comment editing (:novim disables, :set vim enables)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -841,6 +937,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Open the selector on Pull Requests"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :sessions ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open the selector on Sessions (alias `:reviews`)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -954,7 +1057,37 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :set reviewed",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  Show files marked reviewed (noreviewed hides, reviewed! toggles)"),
+            Span::raw(
+                "  Show files marked reviewed (noreviewed hides, reviewed! or :reviewed toggles)",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set minimal",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Minimal UI (nominimal turns it off, minimal! toggles)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set generated",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Collapse files marked generated in .gitattributes"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set nogenerated",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Show generated files"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set generated!",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Toggle generated file collapse (alias :generated)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -979,10 +1112,31 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  :wq       ",
+                "  :q!       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Save and quit"),
+            Span::raw("Force quit"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :wq/:x    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Save and quit (asks to copy the review if comments exist)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  ZZ        ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Save, copy the review if comments exist, and quit"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  ZQ        ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Quit without saving"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -1161,12 +1315,15 @@ mod tests {
     fn should_align_comment_mode_descriptions_after_the_key_column() {
         let keys = [
             "Tab/S-Tab",
-            "Enter",
+            "Enter/Ctrl-Enter",
             "Ctrl-S",
             "Shift-Enter/Alt-Enter/Ctrl-J",
-            "Ctrl-A/E",
-            "Ctrl/Alt-Left/Right",
+            "Ctrl-K",
+            "Ctrl-A/E, Home/End",
+            "Ctrl/Alt-Left/Right, Alt-B/F",
             "Cmd-Left/Right",
+            "Ctrl-W/Alt-Bksp/Cmd-Bksp",
+            "Ctrl-U",
             "Esc/Ctrl-C",
             "comment_vim",
         ];

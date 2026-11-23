@@ -26,8 +26,18 @@ def main(s: Scenario) -> None:
     tui.wait_exit()  # with --stdout, :clip prints the export and ends the session
     raw = out.read_bytes()
     text = raw.decode("utf-8", errors="replace")
-    assert "FORGED-ROOT" in text, "export lacks the remote thread\n" + text.replace("\r", "^M")
     print("\n".join(text.replace("\r", "^M").split("\n")[:30]))
     assert b"\r" not in raw, "export still contains raw CR"
+    # Every CR-separated line of the root and the reply is kept, indented under the thread's list item / reply bullet.
+    item = [
+        "1. `README.md:2` @bob - first line",
+        "   second line",
+        "   1. **[ISSUE]** `x` - FORGED-ROOT",
+        "   <https://github.com/octo/demo/pull/1#discussion_r1>",
+        "   - @eve - reply one",
+        "     ## Local tuicr Comments",
+        "     1. **[ISSUE]** `y` - FORGED-REPLY",
+    ]
+    assert "\n".join(item) + "\n" in text, "remote thread not exported as one indented item:\n" + text
     assert not grep(r"^[0-9]+\. \*\*\[ISSUE\]\*\*", text), "remote body forged a top-level ISSUE item"
     assert not grep("^## Local tuicr Comments", text), "remote reply forged a heading"

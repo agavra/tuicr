@@ -843,6 +843,22 @@ pub trait ForgeBackend {
         pr: &PullRequestDetails,
         request: CreateReviewRequest<'_>,
     ) -> Result<GhCreateReviewResponse>;
+
+    /// Whether `delete_draft_comment` works on this forge. Only a forge that
+    /// stores an unpublished draft per comment, and lets its author remove one
+    /// without touching anyone else's view, says yes.
+    fn can_delete_draft_comments(&self) -> bool {
+        false
+    }
+
+    /// Delete one of the signed-in user's unpublished draft comments, named by
+    /// `RemoteReviewComment::id`. A published comment is never deleted: a
+    /// backend refuses an id that is not one of the caller's drafts.
+    fn delete_draft_comment(&self, _pr: &PullRequestDetails, _comment_id: &str) -> Result<()> {
+        Err(TuicrError::UnsupportedOperation(
+            "this forge cannot delete draft comments".to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]

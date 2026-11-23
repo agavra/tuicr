@@ -26,7 +26,6 @@ def main(s: Scenario) -> None:
         return "README.md" in cached()
 
     wait_cmd(10, readme_staged)
-    tui.settle()
     names = cached()
     print(f"cached: {names}")
     assert "README.md" in names, f"README.md was not staged\n{tui.screen()}"

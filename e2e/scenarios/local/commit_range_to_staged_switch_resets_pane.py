@@ -16,16 +16,10 @@ def main(s: Scenario) -> None:
     tui.wait_for(r"staged\.txt").settle(0.4)
     tui.reject("┌ Commits")  # stale commit pane kept after switching to a local target
     tui.quit()
-    txt = s.session_json()
-    dec = json.JSONDecoder()
-    i = saved = 0
-    while i < len(txt):
-        while i < len(txt) and txt[i].isspace():
-            i += 1
-        if i >= len(txt):
-            break
-        o, i = dec.raw_decode(txt, i)
-        if o.get("diff_source") == "commit_range" and any(f.get("reviewed") for f in o["files"].values()):
+    saved = 0
+    for f in s.session_files():
+        o = json.loads(f.read_text())
+        if o.get("diff_source") == "commit_range" and any(fr.get("reviewed") for fr in o["files"].values()):
             saved += 1
     print(f"range sessions with a reviewed file on disk: {saved}")
     assert saved >= 1, "outgoing range session (reviewed mark) was not saved on the target switch"

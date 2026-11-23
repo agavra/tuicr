@@ -28,6 +28,25 @@ impl App {
         Ok(())
     }
 
+    /// Resolve the configured copy order and return platform-support warnings.
+    /// Absent, empty or invalid lists retain automatic detection.
+    pub fn apply_clipboard_config(&mut self, names: Option<&[String]>) -> Vec<String> {
+        self.clipboard_override = crate::output::markdown::resolve_clipboard_override(names);
+        let is_macos = cfg!(target_os = "macos");
+        self.clipboard_override
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .filter(|method| crate::output::markdown::mechanism_unsupported(**method, is_macos))
+            .map(|method| {
+                format!(
+                    "Warning: clipboard mechanism \"{}\" is not available on this platform; falling back to another method",
+                    method.config_name()
+                )
+            })
+            .collect()
+    }
+
     pub(in crate::app) fn reset_persisted_session_tracking(&mut self) -> Result<()> {
         // The session now tracked is the one on disk; the previous one's
         // unsaved state must not make this one look dirty.
@@ -291,6 +310,7 @@ impl App {
             || self.pr_range_reload_rx.is_some()
             || self.pr_threads_rx.is_some()
             || self.pr_submit_rx.is_some()
+            || self.pr_draft_delete_rx.is_some()
     }
 
     /// Merge external edits to the persisted session. Returns how many

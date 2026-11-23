@@ -12,6 +12,8 @@ def main(s: Scenario) -> None:
     tui = s.diff()
     repo = s.dir / "repo"
     tui.keys("r").wait_for("Files · 1/8").save().quit()  # a session with one reviewed file
+    marked = [path for path, f in s.session()["files"].items() if f.get("reviewed")]
+    assert len(marked) == 1, f"expected one reviewed file, got {marked}"
     sessions = json.loads(s.cli("review", "list", "--repo", repo))
     assert len(sessions) == 1, sessions
     slug = sessions[0]["slug"]
@@ -39,7 +41,7 @@ def main(s: Scenario) -> None:
     comment_id = json.loads(sess("add", "--target-file", "src/lib.rs", "--username", "alice", "flag file note"))["id"]
 
     c = json.loads(sess("comments"))
-    c = c if isinstance(c, list) else c.get("comments", c)
+    assert isinstance(c, list), f"`review comments` is not a JSON list: {c}"
     by = {x["content"]: x for x in c}
     assert set(by) == {
         "from stdin json",
@@ -59,8 +61,7 @@ def main(s: Scenario) -> None:
         "suggestion",
     ), x
     x = by["flag file note"]
-    assert x["path"] == "src/lib.rs" and "start_line" not in x or x["start_line"] is None, x
-    assert by["flag file note"]["author"] == "alice", by["flag file note"]
+    assert (x["path"], x["start_line"], x["location"], x["author"]) == ("src/lib.rs", None, "src/lib.rs", "alice"), x
 
     assert comment_id in sess("delete", "--comment-id", comment_id), "delete did not echo the id"
     assert not listed("flag file note"), "deleted comment still listed"
@@ -69,6 +70,6 @@ def main(s: Scenario) -> None:
     )
     sess("clearc")
     assert not listed("from stdin json"), "clearc left comments"
-    assert s.session_json(), "clearc removed a session that still has a reviewed file"
+    assert s.session_reviewed(marked[0]), f"clearc dropped the review mark of {marked[0]}"
     sess("clear")
     assert not s.session_json(), f"clear left an empty session behind: {s.session_json()}"

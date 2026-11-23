@@ -1243,7 +1243,7 @@ mod tests {
 
         // A single commit resolves to itself.
         let single = backend
-            .resolve_revision_range(&format!("{second}"))
+            .resolve_revision_range(second)
             .expect("failed to resolve single revision");
         assert_eq!(single.commit_ids, vec![second.clone()]);
     }

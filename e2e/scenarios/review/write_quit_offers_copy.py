@@ -13,12 +13,13 @@ def main(s: Scenario) -> None:
         tui = s.start("-r", "HEAD~2..HEAD", cwd=repo, name=name)
         tui.wait_for("Files · 0/8").keys("Escape")
         tui.cursor_on("4 ▌ second line")
-        tui.keys("c").wait_for("COMMENT")
-        tui.keys(f"note for {answer}").keys("Enter").wait_for(f"note for {answer}")
+        tui.comment(f"note for {answer}")  # autosaved
+        tui.keys("r").wait_for("Files · 1/8")  # the unsaved part :wq has to write
         tui.cmd("wq")
         tui.wait_for(r"Copy review to clipboard\?")
         assert tui.alive(), ":wq quit before the prompt was answered"
-        assert s.session_has(f"note for {answer}", name), "session was not saved by :wq"
+        assert s.session_reviewed("README.md", name), "session was not saved by :wq"
+        assert s.session_comments(name) == [f"note for {answer}"], s.session_comments(name)
         tui.keys(answer)
         tui.wait_exit()
         if answer == "y":
