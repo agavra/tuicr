@@ -2068,3 +2068,72 @@ fn should_not_add_working_tree_rows_to_a_commit_range_pane() {
 
     assert_eq!(pane_summaries(&app), ["commit c2", "commit c1"]);
 }
+
+#[test]
+fn show_emptied_review_preserves_wrap_lines() {
+    let mut app = build_app(vec![make_diff_file("a.rs", 1)], DiffSource::Staged);
+    app.diff_state.wrap_lines = true;
+
+    app.show_emptied_review();
+
+    assert!(app.diff_files.is_empty());
+    assert!(
+        app.diff_state.wrap_lines,
+        "show_emptied_review must preserve wrap_lines"
+    );
+}
+
+#[test]
+fn reload_after_editor_empties_review_on_no_changes() {
+    struct NoChangesVcs(VcsInfo);
+    impl VcsBackend for NoChangesVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.0
+        }
+        fn get_working_tree_diff(
+            &self,
+            _hl: &crate::syntax::SyntaxHighlighter,
+        ) -> crate::error::Result<Vec<DiffFile>> {
+            Err(crate::error::TuicrError::NoChanges)
+        }
+        fn get_unstaged_diff(
+            &self,
+            _hl: &crate::syntax::SyntaxHighlighter,
+        ) -> crate::error::Result<Vec<DiffFile>> {
+            Err(crate::error::TuicrError::NoChanges)
+        }
+        fn fetch_context_lines(
+            &self,
+            _path: &std::path::Path,
+            _status: FileStatus,
+            _ref_commit: Option<&str>,
+            _start: u32,
+            _end: u32,
+        ) -> crate::error::Result<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+        fn file_line_count(
+            &self,
+            _path: &std::path::Path,
+            _status: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> crate::error::Result<u32> {
+            Ok(0)
+        }
+    }
+
+    let mut app = build_app(vec![make_diff_file("a.rs", 1)], DiffSource::Unstaged);
+    app.vcs = Box::new(NoChangesVcs(app.vcs_info.clone()));
+    app.reload_after_editor("a.rs");
+
+    assert!(
+        app.diff_files.is_empty(),
+        "reverting all changes in $EDITOR should empty the review"
+    );
+    assert_eq!(
+        app.message.as_ref().map(|m| &m.message_type),
+        Some(&MessageType::Info),
+        "should show empty-review info message instead of an error: {:?}",
+        app.message
+    );
+}
