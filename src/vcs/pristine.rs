@@ -46,16 +46,13 @@ pub fn collect_tracked_paths(repo_root: &Path) -> Result<Vec<PathBuf>> {
         return Err(TuicrError::NotARepository);
     }
 
-    let mut paths: Vec<PathBuf> = output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            repo_root.join(std::path::Path::new(
-                std::str::from_utf8(part).unwrap_or(""),
-            ))
+    let mut paths: Vec<PathBuf> = decode_nul_tracked_paths(repo_root, &output.stdout)
+        .into_iter()
+        .filter(|path| {
+            std::fs::symlink_metadata(path)
+                .map(|metadata| metadata.file_type().is_file())
+                .unwrap_or(false)
         })
-        .filter(|path| path.is_file())
         .collect();
 
     paths.sort();
@@ -65,6 +62,14 @@ pub fn collect_tracked_paths(repo_root: &Path) -> Result<Vec<PathBuf>> {
     }
 
     Ok(paths)
+}
+
+fn decode_nul_tracked_paths(repo_root: &Path, stdout: &[u8]) -> Vec<PathBuf> {
+    stdout
+        .split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| repo_root.join(crate::vcs::git::raw::path_buf_from_bytes(part)))
+        .collect()
 }
 
 /// Return the short SHA of HEAD for the git repo at `repo_root`, or the
@@ -201,5 +206,53 @@ mod tests {
 
         assert!(names.contains(&"kept.txt".to_string()));
         assert!(!names.contains(&"removed.txt".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skips_tracked_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        fs::write(&secret, "TOP_SECRET
+").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        init_git_repo(dir.path());
+        fs::write(dir.path().join("kept.txt"), "ok
+").unwrap();
+        symlink(&secret, dir.path().join("link.txt")).unwrap();
+        git_add_commit(dir.path());
+
+        let paths = collect_tracked_paths(dir.path()).unwrap();
+        let names: Vec<String> = paths
+            .iter()
+            .filter_map(|p| p.file_name()?.to_str().map(str::to_string))
+            .collect();
+
+        assert!(names.contains(&"kept.txt".to_string()));
+        assert!(
+            !names.contains(&"link.txt".to_string()),
+            "tracked symlinks must be excluded from pristine file collection"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preserves_non_utf8_tracked_paths() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let root = Path::new("/tmp/repo");
+        let stdout = b"ok.txt\0dir/bad-\xff-name.txt\0";
+        let paths = decode_nul_tracked_paths(root, stdout);
+
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], root.join("ok.txt"));
+        assert_eq!(
+            paths[1],
+            root.join(Path::new(OsStr::from_bytes(b"dir/bad-\xff-name.txt")))
+        );
     }
 }

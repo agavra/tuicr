@@ -134,14 +134,16 @@ impl FileBackend {
     pub fn new_pristine(paths: Vec<PathBuf>, root: PathBuf) -> Result<Self> {
         let mut files: Vec<(PathBuf, u64)> = Vec::with_capacity(paths.len());
         for path in paths {
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if !metadata.file_type().is_file() {
+                continue;
+            }
             if is_probably_binary(&path) {
                 continue;
             }
-            let size = match std::fs::metadata(&path) {
-                Ok(meta) => meta.len(),
-                Err(_) => continue,
-            };
-            files.push((path, size));
+            files.push((path, metadata.len()));
         }
 
         if files.is_empty() {
@@ -291,6 +293,24 @@ impl FileBackend {
     }
 }
 
+impl FileBackend {
+    /// Resolve `file_path` under `root_path` without following symlinks and
+    /// ensuring the canonical target remains inside `root_path`.
+    fn resolve_confined_file(&self, file_path: &Path) -> Option<PathBuf> {
+        let joined = self.info.root_path.join(file_path);
+        if !std::fs::symlink_metadata(&joined).ok()?.file_type().is_file() {
+            return None;
+        }
+        let canonical = std::fs::canonicalize(&joined).ok()?;
+        let canonical_root = std::fs::canonicalize(&self.info.root_path)
+            .unwrap_or_else(|_| self.info.root_path.clone());
+        if !canonical.starts_with(&canonical_root) {
+            return None;
+        }
+        Some(canonical)
+    }
+}
+
 impl VcsBackend for FileBackend {
     fn info(&self) -> &VcsInfo {
         &self.info
@@ -322,22 +342,9 @@ impl VcsBackend for FileBackend {
             return Ok(Vec::new());
         }
 
-        // Canonicalize the joined path and confine it to root_path.
-        // Without this guard a malformed session pointing at `../../etc/passwd`
-        // (or a renamed repo where a stored path now escapes the new root)
-        // could read arbitrary files. Pristine mode is multi-file, so the
-        // attack surface is genuinely larger here than in single-file mode.
-        let joined = self.info.root_path.join(file_path);
-        let canonical = match std::fs::canonicalize(&joined) {
-            Ok(p) => p,
-            Err(_) => return Ok(Vec::new()),
+        let Some(canonical) = self.resolve_confined_file(file_path) else {
+            return Ok(Vec::new());
         };
-        if !canonical.starts_with(&self.info.root_path) {
-            return Ok(Vec::new());
-        }
-        if !canonical.is_file() {
-            return Ok(Vec::new());
-        }
 
         let content = std::fs::read_to_string(&canonical)?;
         Ok(slice_context_lines(&content, start_line, end_line))
@@ -349,8 +356,13 @@ impl VcsBackend for FileBackend {
         _file_status: FileStatus,
         _ref_commit: Option<&str>,
     ) -> Result<u32> {
-        let abs_path = self.info.root_path.join(file_path);
-        let content = std::fs::read_to_string(&abs_path)?;
+        let Some(canonical) = self.resolve_confined_file(file_path) else {
+            return Err(TuicrError::VcsCommand(format!(
+                "failed to read {} from the working tree",
+                file_path.to_string_lossy()
+            )));
+        };
+        let content = std::fs::read_to_string(&canonical)?;
         Ok(content.lines().count() as u32)
     }
 }
@@ -711,6 +723,51 @@ mod tests {
         assert!(
             lines.is_empty(),
             "fetch_context_lines must not read files outside the configured root"
+        );
+        assert!(
+            backend
+                .file_line_count(Path::new("../secret.txt"), FileStatus::Modified, None)
+                .is_err(),
+            "file_line_count must not read files outside the configured root"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pristine_rejects_symlinks_in_context_and_line_count() {
+        use crate::model::FileStatus;
+        use std::os::unix::fs::symlink;
+
+        let outer = tempfile::tempdir().unwrap();
+        let outer_canon = outer.path().canonicalize().unwrap();
+        let secret = outer_canon.join("secret.txt");
+        fs::write(&secret, "TOP_SECRET
+line 2
+").unwrap();
+
+        let repo = outer_canon.join("repo");
+        fs::create_dir(&repo).unwrap();
+        let kept = repo.join("kept.txt");
+        fs::write(&kept, "ok
+").unwrap();
+        let internal_link = repo.join("link_inside.txt");
+        symlink(&kept, &internal_link).unwrap();
+        let external_link = repo.join("link_outside.txt");
+        symlink(&secret, &external_link).unwrap();
+
+        let backend = FileBackend::new_pristine(vec![kept], repo).unwrap();
+        assert!(
+            backend
+                .fetch_context_lines(Path::new("link_inside.txt"), FileStatus::Modified, None, 1, 1)
+                .unwrap()
+                .is_empty(),
+            "fetch_context_lines must not follow symlinks"
+        );
+        assert!(
+            backend
+                .file_line_count(Path::new("link_outside.txt"), FileStatus::Modified, None)
+                .is_err(),
+            "file_line_count must not follow symlinks"
         );
     }
 

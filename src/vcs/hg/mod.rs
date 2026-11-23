@@ -326,7 +326,12 @@ impl VcsBackend for HgBackend {
         } else if file_status == FileStatus::Deleted {
             run_hg_command(&self.info.root_path, ["cat", "-r", ".", &pattern])?
         } else {
-            std::fs::read_to_string(self.info.root_path.join(file_path))?
+            crate::vcs::read_workdir_file(&self.info.root_path, file_path).ok_or_else(|| {
+                TuicrError::VcsCommand(format!(
+                    "failed to read {} from the working tree",
+                    file_path.to_string_lossy()
+                ))
+            })?
         };
 
         Ok(slice_context_lines(&content, start_line, end_line))
@@ -344,7 +349,12 @@ impl VcsBackend for HgBackend {
         } else if file_status == FileStatus::Deleted {
             run_hg_command(&self.info.root_path, ["cat", "-r", ".", &pattern])?
         } else {
-            std::fs::read_to_string(self.info.root_path.join(file_path))?
+            crate::vcs::read_workdir_file(&self.info.root_path, file_path).ok_or_else(|| {
+                TuicrError::VcsCommand(format!(
+                    "failed to read {} from the working tree",
+                    file_path.to_string_lossy()
+                ))
+            })?
         };
         Ok(content.lines().count() as u32)
     }
@@ -1715,5 +1725,39 @@ mod tests {
         // Verify we can get display_path without panic (the bug we fixed)
         // Don't assert exact path/status as hg implementations differ (Sapling vs standard hg)
         let _path = file.display_path();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_hg_context_and_line_count_do_not_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let Some(temp) = setup_test_repo() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        fs::write(&secret, "TOP_SECRET
+line 2
+").unwrap();
+        symlink(&secret, temp.path().join("link.txt")).unwrap();
+
+        let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create hg backend");
+
+        assert!(
+            backend
+                .file_line_count(Path::new("link.txt"), FileStatus::Added, None)
+                .is_err(),
+            "file_line_count must not follow symlinks"
+        );
+        assert!(
+            backend
+                .fetch_context_lines(Path::new("link.txt"), FileStatus::Added, None, 1, 2)
+                .is_err(),
+            "fetch_context_lines must not follow symlinks"
+        );
     }
 }

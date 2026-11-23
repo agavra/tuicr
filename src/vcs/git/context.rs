@@ -48,7 +48,12 @@ fn read_file_content(
         fetch_blob_content(repo, file_path)
     } else {
         let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
-        Ok(std::fs::read_to_string(workdir.join(file_path))?)
+        crate::vcs::read_workdir_file(workdir, file_path).ok_or_else(|| {
+            TuicrError::VcsCommand(format!(
+                "failed to read {} from the working tree",
+                file_path.to_string_lossy()
+            ))
+        })
     }
 }
 
@@ -154,5 +159,31 @@ mod tests {
 
         // then
         assert_eq!(gap, 0); // saturating_sub prevents underflow
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_follow_symlinks_in_context_or_line_count() {
+        use std::os::unix::fs::symlink;
+
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "TOP_SECRET
+line 2
+").unwrap();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        symlink(&secret, repo_dir.path().join("link.txt")).unwrap();
+
+        assert!(
+            file_line_count(&repo, Path::new("link.txt"), FileStatus::Added, None).is_err(),
+            "file_line_count must not follow symlinks"
+        );
+        assert!(
+            fetch_context_lines(&repo, Path::new("link.txt"), FileStatus::Added, None, 1, 2)
+                .is_err(),
+            "fetch_context_lines must not follow symlinks"
+        );
     }
 }
