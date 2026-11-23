@@ -1188,9 +1188,11 @@ fn malformed_target<T>(input: &str) -> Result<T> {
 /// `host/path` passes through untouched.
 fn strip_scheme_and_userinfo(value: &str) -> &str {
     let without_scheme = strip_scheme(value).unwrap_or(value);
-    without_scheme
-        .rsplit_once('@')
-        .map_or(without_scheme, |(_, rest)| rest)
+    let authority_end = without_scheme.find('/').unwrap_or(without_scheme.len());
+    match without_scheme[..authority_end].rfind('@') {
+        Some(at) => &without_scheme[at + 1..],
+        None => without_scheme,
+    }
 }
 
 /// Split an authority into its host and its port, if it carries a numeric one.
@@ -1277,6 +1279,27 @@ mod tests {
                 "{url} should parse"
             );
         }
+    }
+
+    #[test]
+    fn should_preserve_at_sign_in_gerrit_project_paths() {
+        let expected = ForgeRepository::gerrit("gerrit.example.com", "team@org/repo");
+        for url in [
+            "https://gerrit.example.com/team@org/repo",
+            "https://jdoe@gerrit.example.com/a/team@org/repo.git",
+        ] {
+            assert_eq!(
+                parse_gerrit_remote_url(url),
+                Some(expected.clone()),
+                "{url} should parse"
+            );
+        }
+
+        let target =
+            parse_pull_request_target_gerrit("https://gerrit.example.com/c/team@org/repo/+/42")
+                .unwrap();
+        assert_eq!(target.number, 42);
+        assert_eq!(target.repository, Some(expected));
     }
 
     #[test]

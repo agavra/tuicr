@@ -1056,12 +1056,8 @@ fn parse_azure_remote_url_with(
     }
 
     let without_scheme = strip_scheme(trimmed).unwrap_or(trimmed);
-    let without_user = without_scheme
-        .rsplit_once('@')
-        .map(|(_, rest)| rest)
-        .unwrap_or(without_scheme);
-    let (host, path) = without_user.split_once('/')?;
-    let host = strip_port(host);
+    let (authority, path) = without_scheme.split_once('/')?;
+    let host = strip_port(authority.rsplit_once('@').map_or(authority, |(_, h)| h));
     if !is_cloud_host(host) && !is_server(host) {
         return None;
     }
@@ -1235,6 +1231,22 @@ mod tests {
         let repo =
             parse_azure_remote_url("https://dev.azure.com/myorg/myproject/_git/myrepo").unwrap();
         assert_eq!(repo, azure_repo());
+    }
+
+    #[test]
+    fn parses_https_dev_azure_remote_with_at_sign_in_project_or_repo() {
+        let repo =
+            parse_azure_remote_url("https://dev.azure.com/myorg/my@project/_git/my@repo").unwrap();
+        assert_eq!(
+            repo,
+            ForgeRepository::azure("dev.azure.com", "myorg/my@project", "my@repo")
+        );
+
+        let with_user = parse_azure_remote_url(
+            "https://myorg@dev.azure.com/myorg/my@project/_git/my@repo.git",
+        )
+        .unwrap();
+        assert_eq!(with_user, repo);
     }
 
     fn tfs_repo(owner: &str, name: &str) -> ForgeRepository {
