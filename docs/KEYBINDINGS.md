@@ -180,6 +180,7 @@ The title shows the selected comment's position and the total (`Comments · 17/3
 |-----|--------|
 | `r` | Toggle file reviewed (on the PR description: mark it reviewed and collapse it to one row) |
 | `R` | Toggle hunk reviewed |
+| `Space` | Expand / collapse the file under the cursor, independent of reviewed/generated status (diff panel; no effect in single-file view) |
 | `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
 | `<leader>c` | Add review comment |
@@ -195,6 +196,16 @@ In PR review, `r` with the cursor anywhere on the PR description marks the
 description reviewed and collapses it to its `═══ ✓ PR #N title` row; `r` on that
 row expands it again. The mark is saved with the session like a file's reviewed
 mark (`:w`), carries over when the PR gets new commits, and `:clear` resets it.
+
+Files marked `linguist-generated` or `gitlab-generated` in `.gitattributes` start
+collapsed to their header, labelled `[generated]`. `Space` in the diff expands or
+collapses the file under the cursor, whether it is generated, reviewed, or neither,
+without changing its reviewed mark. Pressing `r` on the file, `:clear`, or a change to
+the file's diff drops that override, so new or freshly reviewed changes fall back to
+the default. A collapsed header shows how many comments its hidden body holds
+(`· 2 comments`); `c`/`C` on the header, a summary jump, or `--line` opens the file.
+`:set nogenerated` shows every generated file; see
+[Generated files](CONFIG.md#generated-files) for the config.
 
 `e` opens the file at the cursor's line. Terminal editors (`vim`, `nvim`, `nano`, …)
 take over the screen and tuicr reloads the diff once they exit. Windowed editors
@@ -307,6 +318,9 @@ In command mode,
 | `:set reviewed` | Show files already marked reviewed |
 | `:set noreviewed` | Hide files already marked reviewed |
 | `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
+| `:set generated` | Collapse files marked generated in `.gitattributes` |
+| `:set nogenerated` | Show generated files |
+| `:set generated!`, `:generated` | Toggle generated file collapse |
 | `:set minimal` / `:set nominimal` | Enable / disable minimal UI (no header, idle footer, or diff frame) |
 | `:set minimal!` | Toggle minimal UI |
 | `:clear` | Clear all comments and reviewed marks |
