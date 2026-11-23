@@ -486,17 +486,18 @@ fn should_keep_hunk_positions_aligned_with_the_rendered_rows_while_hiding() {
 
     app.set_show_reviewed(false);
 
-    // Hidden files must not leave stale hunk targets in the rendered rows.
-    for pos in app.hunk_positions() {
-        assert!(
-            matches!(
-                app.line_annotations.get(pos),
-                Some(AnnotatedLine::HunkHeader { .. })
-            ),
-            "hunk position {pos} should land on a hunk header, got {:?}",
-            app.line_annotations.get(pos)
-        );
-    }
+    // Hidden files must not leave stale hunk targets in the rendered rows,
+    // and both remaining visible files (b.rs at 1, c.rs at 2) must keep theirs.
+    let positions = app.hunk_positions();
+    assert_eq!(positions.len(), 2, "expected 2 visible hunks for b.rs and c.rs");
+    let hunk_files: Vec<usize> = positions
+        .iter()
+        .map(|&pos| match app.line_annotations.get(pos) {
+            Some(AnnotatedLine::HunkHeader { file_idx, .. }) => *file_idx,
+            other => panic!("hunk position {pos} should land on a hunk header, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(hunk_files, vec![1, 2]);
 }
 
 #[test]

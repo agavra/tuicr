@@ -120,10 +120,21 @@ fn should_not_add_pr_info_to_file_tree() {
             .iter()
             .any(|line| matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. }))
     );
-    assert!(app.build_visible_items().iter().all(|item| matches!(
-        item,
-        crate::app::FileTreeItem::Directory { .. } | crate::app::FileTreeItem::File { .. }
-    )));
+    let items = app.build_visible_items();
+    assert_eq!(items.len(), 2, "tree should only contain src/ and src/lib.rs");
+    assert!(matches!(
+        &items[0],
+        crate::app::FileTreeItem::Directory { path, .. } if path == "src"
+    ));
+    assert!(matches!(
+        &items[1],
+        crate::app::FileTreeItem::File { file_idx: 0, .. }
+    ));
+    assert_eq!(app.diff_files.len(), 1);
+    assert_eq!(
+        app.diff_files[0].display_path(),
+        std::path::Path::new("src/lib.rs")
+    );
 }
 
 #[test]
@@ -231,7 +242,24 @@ fn should_walk_from_overview_to_first_file_with_next_file() {
 fn should_build_pr_info_panel_lines() {
     let lines =
         crate::ui::pr_info_panel::build_pr_info_lines(&sample_pr_info(), 80, &Theme::dark());
-    assert!(lines.len() > 5);
+    let rendered: String = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Add panel"), "missing title:\n{rendered}");
+    assert!(rendered.contains("alice"), "missing author:\n{rendered}");
+    assert!(
+        rendered.contains("feature") && rendered.contains("main"),
+        "missing branch refs:\n{rendered}"
+    );
+    assert!(rendered.contains("OPEN"), "missing state:\n{rendered}");
+    assert!(rendered.contains("Ship it"), "missing body:\n{rendered}");
 }
 
 #[test]

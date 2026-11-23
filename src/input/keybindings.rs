@@ -1169,8 +1169,9 @@ mod tests {
 
     #[test]
     fn should_keep_semicolon_as_default_leader() {
+        assert_eq!(DEFAULT_LEADER_KEY, ';');
         let action = map_key_to_action(
-            key(KeyCode::Char(DEFAULT_LEADER_KEY)),
+            key(KeyCode::Char(';')),
             InputMode::Normal,
             DEFAULT_LEADER_KEY,
         );
