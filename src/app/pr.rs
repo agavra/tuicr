@@ -952,6 +952,12 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         self.pr_load_rx = Some(rx);
 
+        #[cfg(test)]
+        if pr_bg_spawn_suppressed() {
+            park_test_pr_load_tx(tx);
+            return;
+        }
+
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
         let mut query = self.pr_list_query(origin.clone(), scope, 0);
@@ -1139,6 +1145,12 @@ impl App {
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.pr_open_rx = Some(rx);
+
+        #[cfg(test)]
+        if pr_bg_spawn_suppressed() {
+            park_test_pr_open_tx(tx);
+            return;
+        }
 
         let summary_repo = repository.clone();
         let pr_number = number;
@@ -1710,5 +1722,53 @@ impl App {
 
     pub fn pr_filter_editing(&self) -> bool {
         self.pr_filter_draft.is_some()
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static SUPPRESS_PR_BG_SPAWNS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PARKED_PR_LOAD_TX: std::cell::RefCell<Vec<std::sync::mpsc::Sender<PrLoadEvent>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static PARKED_PR_OPEN_TX: std::cell::RefCell<Vec<std::sync::mpsc::Sender<PrOpenEvent>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn pr_bg_spawn_suppressed() -> bool {
+    SUPPRESS_PR_BG_SPAWNS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn park_test_pr_load_tx(tx: std::sync::mpsc::Sender<PrLoadEvent>) {
+    PARKED_PR_LOAD_TX.with(|v| v.borrow_mut().push(tx));
+}
+
+#[cfg(test)]
+fn park_test_pr_open_tx(tx: std::sync::mpsc::Sender<PrOpenEvent>) {
+    PARKED_PR_OPEN_TX.with(|v| v.borrow_mut().push(tx));
+}
+
+#[cfg(test)]
+pub(in crate::app) struct SuppressPrBackgroundSpawns {
+    prev: bool,
+}
+
+#[cfg(test)]
+impl SuppressPrBackgroundSpawns {
+    pub(in crate::app) fn new() -> Self {
+        let prev = SUPPRESS_PR_BG_SPAWNS.with(|c| c.replace(true));
+        Self { prev }
+    }
+}
+
+#[cfg(test)]
+impl Drop for SuppressPrBackgroundSpawns {
+    fn drop(&mut self) {
+        SUPPRESS_PR_BG_SPAWNS.with(|c| c.set(self.prev));
+        if !self.prev {
+            PARKED_PR_LOAD_TX.with(|v| v.borrow_mut().clear());
+            PARKED_PR_OPEN_TX.with(|v| v.borrow_mut().clear());
+        }
     }
 }

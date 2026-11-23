@@ -361,6 +361,8 @@ struct FakeForgeBackend {
     commits: Vec<crate::forge::traits::PullRequestCommit>,
     review_metadata: PullRequestReviewMetadata,
     range_patch: Option<String>,
+    file_lines_requests:
+        std::sync::Arc<std::sync::Mutex<Vec<crate::forge::traits::ForgeFileLinesRequest>>>,
     line_count_requests: std::sync::Arc<std::sync::Mutex<Vec<PathBuf>>>,
 }
 
@@ -372,6 +374,7 @@ impl FakeForgeBackend {
             commits: Vec::new(),
             review_metadata: PullRequestReviewMetadata::default(),
             range_patch: None,
+            file_lines_requests: Default::default(),
             line_count_requests: Default::default(),
         }
     }
@@ -398,9 +401,18 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
     }
     fn fetch_file_lines(
         &self,
-        _request: crate::forge::traits::ForgeFileLinesRequest,
+        request: crate::forge::traits::ForgeFileLinesRequest,
     ) -> Result<Vec<crate::model::DiffLine>> {
-        Ok(Vec::new())
+        let start = request.start_line;
+        self.file_lines_requests.lock().unwrap().push(request);
+        Ok(vec![DiffLine {
+            origin: LineOrigin::Context,
+            content: "from-forge".to_string(),
+            old_lineno: Some(start),
+            new_lineno: Some(start),
+            raw_content: None,
+            highlighted_spans: None,
+        }])
     }
     fn file_line_count(&self, request: crate::forge::traits::ForgeFileLinesRequest) -> Result<u32> {
         self.line_count_requests.lock().unwrap().push(request.path);
@@ -471,6 +483,7 @@ fn should_default_to_local_tab_after_build() {
 #[test]
 fn should_cycle_between_local_and_pull_requests_on_tab_keypress() {
     // given
+    let _no_spawn = crate::app::pr::SuppressPrBackgroundSpawns::new();
     let mut app = build_app();
     app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
     app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
@@ -487,6 +500,7 @@ fn should_cycle_between_local_and_pull_requests_on_tab_keypress() {
 #[test]
 fn should_transition_pr_tab_to_loading_on_first_visit() {
     // given
+    let _no_spawn = crate::app::pr::SuppressPrBackgroundSpawns::new();
     let mut app = build_app();
     app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
     app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
@@ -495,9 +509,6 @@ fn should_transition_pr_tab_to_loading_on_first_visit() {
     // then — a background fetch is in flight
     assert!(app.pr_tab.is_loading());
     assert!(app.pr_load_rx.is_some());
-    // The spawned thread holds a backend that may fail without a real
-    // `gh` binary; cancel by dropping the receiver to avoid touching it.
-    app.pr_load_rx = None;
 }
 
 #[test]
@@ -1418,42 +1429,76 @@ fn should_warn_when_opening_closed_pr() {
 
 #[test]
 fn should_surface_pr_open_error_into_selector_state() {
-    // given a backend that fails at get_pull_request
+    // given a selector with a loaded PR list and an in-flight async open
+    // whose backend fails at get_pull_request
     let mut app = build_app();
-    app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+    let repo = ForgeRepository::github("github.com", "agavra", "tuicr");
+    app.forge_repository = Some(repo.clone());
     app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
     app.pr_tab.start_initial_load();
     let summary = sample_pr(42, "boom");
     app.pr_tab
         .apply_initial_load(Ok((vec![summary.clone()], false)));
     app.target_tab = TargetTab::PullRequests;
-    let backend = Box::new(FailingForgeBackend);
-    // when
-    let result = app.open_pr_with_backend(&summary, backend, None);
-    // then
-    assert!(result.is_err());
-    // diff source did not switch
+
+    let request = crate::app::PrOpenRequest {
+        repository: repo.clone(),
+        pr_number: summary.number,
+        started_at: std::time::Instant::now(),
+    };
+    app.pr_open_state = Some(request.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_open_rx = Some(rx);
+
+    let target = crate::forge::traits::PullRequestTarget::with_repository(
+        repo,
+        summary.number,
+        summary.number.to_string(),
+    );
+    let outcome =
+        crate::forge::pr_open::fetch_pr_data(&FailingForgeBackend, target).map_err(|e| e.to_string());
+    tx.send(crate::app::PrOpenEvent::Done {
+        request,
+        result: outcome,
+    })
+    .unwrap();
+
+    // when the main loop polls the failed open event
+    app.poll_pr_open_events();
+
+    // then — diff source did not switch, in-flight state cleared, selector list
+    // stays loaded, and the backend error is surfaced in the message bar
     assert!(matches!(app.diff_source, DiffSource::WorkingTree));
+    assert!(app.pr_open_state.is_none());
+    assert!(app.pr_open_rx.is_none());
+    assert!(matches!(app.pr_tab, PullRequestsTab::Loaded { .. }));
+    let msg = app
+        .message
+        .as_ref()
+        .expect("expected error message after failed PR open");
+    assert!(matches!(msg.message_type, MessageType::Error));
+    assert!(
+        msg.content.contains("PR #42") && msg.content.contains("simulated network failure"),
+        "unexpected error message: {msg:?}"
+    );
 }
 
 #[test]
 fn should_route_context_expansion_to_forge_provider_in_pr_mode() {
-    // given an app in PR mode with a counting fake backend
+    // given an app in PR mode with a recording fake forge backend
     let mut app = build_app();
     let summary = sample_pr(7, "ctx");
+    let details = test_pr_details(7, "ctx");
+    let expected_head_sha = details.head_sha.clone();
     let backend = Box::new(FakeForgeBackend::open_pr_details(
-        test_pr_details(7, "ctx"),
+        details,
         crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
     ));
+    let recorded = std::sync::Arc::clone(&backend.file_lines_requests);
     app.open_pr_with_backend(&summary, backend, None).unwrap();
-    // when we ask for a context provider
-    // (we can't easily trigger a real gap expansion without setting up
-    //  the full diff state, so instead we assert by construction)
+
+    // when we ask for a context provider and fetch lines for a Modified file
     let provider = app.context_provider();
-    // then — explicitly: the provider is the forge variant. We probe by
-    // calling fetch with a Modified file and asserting the forge backend
-    // recorded a head-side request via its trait method. The
-    // FakeForgeBackend just returns empty; we're verifying routing.
     let res = provider
         .fetch_context_lines(
             None,
@@ -1463,11 +1508,16 @@ fn should_route_context_expansion_to_forge_provider_in_pr_mode() {
             3,
         )
         .unwrap();
-    // The fake forge returns empty by default — the *call* succeeded
-    // (no error from a VCS backend would have meant VCS routing). The
-    // key signal: this didn't go through the VCS backend (DummyVcs
-    // doesn't implement fetch_context_lines and would have panicked).
-    assert!(res.is_empty());
+
+    // then — the request actually hit FakeForgeBackend (not DummyVcs/PrNoopVcs)
+    // and returned the forge-provided lines
+    assert_eq!(res.len(), 1);
+    assert_eq!(res[0].content, "from-forge");
+    let requests = recorded.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, PathBuf::from("src/lib.rs"));
+    assert_eq!(requests[0].head_sha, expected_head_sha);
+    assert_eq!((requests[0].start_line, requests[0].end_line), (1, 3));
 }
 
 #[test]
@@ -2666,6 +2716,7 @@ fn should_block_q_when_unsaved_comments_exist() {
 #[test]
 fn should_open_pr_selector_on_prs_command() {
     // given
+    let _no_spawn = crate::app::pr::SuppressPrBackgroundSpawns::new();
     let mut app = build_app();
     app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
     app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
@@ -2675,8 +2726,7 @@ fn should_open_pr_selector_on_prs_command() {
     // then
     assert_eq!(app.target_tab, TargetTab::PullRequests);
     assert_eq!(app.input_mode, InputMode::CommitSelect);
-    // Cancel the background fetch handle to avoid surprising real `gh` calls.
-    app.pr_load_rx = None;
+    assert!(app.pr_load_rx.is_some());
 }
 
 #[test]
@@ -2843,6 +2893,7 @@ fn loaded_pr_tab(pr_list: Vec<PullRequestSummary>) -> PullRequestsTab {
 #[test]
 fn should_set_pr_open_state_and_spawn_when_pressing_enter_on_a_pr_row() {
     // given a loaded PR tab and no in-flight open
+    let _no_spawn = crate::app::pr::SuppressPrBackgroundSpawns::new();
     let mut app = build_app();
     app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
     app.pr_tab = loaded_pr_tab(vec![sample_pr(42, "boom")]);
@@ -2852,13 +2903,9 @@ fn should_set_pr_open_state_and_spawn_when_pressing_enter_on_a_pr_row() {
     // then
     assert!(handled);
     assert!(app.pr_open_state.is_some());
+    assert!(app.pr_open_rx.is_some());
     let state = app.pr_open_state.as_ref().unwrap();
     assert_eq!(state.pr_number, 42);
-    // Drop the receiver so the spawned thread's tx send is a no-op
-    // when it completes (the real `gh` call would block; this test
-    // does not wait for it).
-    app.pr_open_rx = None;
-    app.pr_open_state = None;
 }
 
 #[test]
@@ -3243,6 +3290,7 @@ fn should_keep_locked_comments_when_only_the_sync_summary_fetch_fails() {
 
 #[test]
 fn configured_comments_visibility_seeds_a_fresh_pr_session() {
+    let _reviews = TestReviewsDir::new();
     let mut app = build_app();
     app.initial_comments_visibility = Some(PrCommentsVisibility::All);
     let summary = sample_pr(42, "answer");
