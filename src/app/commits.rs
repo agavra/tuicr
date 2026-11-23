@@ -1179,10 +1179,18 @@ impl App {
             return Ok(());
         };
 
+        let fetch_source = Self::source_for_commit_subrange(&self.review_commits, start, end);
+        // Only pure commit ranges are immutable; selections touching staged or
+        // unstaged rows can change externally without altering the row list.
+        let cacheable = matches!(fetch_source, DiffSource::CommitRange(_));
+
         // Each branch decides only where the files come from. The install runs
         // once, below, so no branch can forget a step of it. Session
         // registration went missing that way.
-        let diff_files = match self.cached_selection_diff(start, end) {
+        let diff_files = match cacheable
+            .then(|| self.cached_selection_diff(start, end))
+            .flatten()
+        {
             Some(files) => files,
             // Load diff for selected subrange. `source_for_commit_subrange`
             // holds the one copy of "which diff does this selection mean",
@@ -1190,8 +1198,6 @@ impl App {
             // can never disagree about it. An empty result is not an error
             // here: a subrange can legitimately contain no changes.
             None => {
-                let fetch_source =
-                    Self::source_for_commit_subrange(&self.review_commits, start, end);
                 let highlighter = self.theme.syntax_highlighter();
                 let fetched = match Self::fetch_diff_files_for_source(
                     self.vcs.as_ref(),
@@ -1205,7 +1211,9 @@ impl App {
                     Err(TuicrError::NoChanges) => Vec::new(),
                     Err(e) => return Err(e),
                 };
-                self.commit_diff_cache.insert((start, end), fetched.clone());
+                if cacheable {
+                    self.commit_diff_cache.insert((start, end), fetched.clone());
+                }
                 fetched
             }
         };

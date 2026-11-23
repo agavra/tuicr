@@ -1227,3 +1227,77 @@ fn esc_in_diff_pane_clears_search_highlight() {
     assert!(!app.search_highlight_visible);
     assert_eq!(app.focused_panel, FocusedPanel::Diff);
 }
+
+#[test]
+fn reload_inline_selection_does_not_serve_stale_cache_for_worktree_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    };
+    run(&["init", "-q"]);
+    std::fs::write(dir.path().join("a.txt"), "base\n").unwrap();
+    run(&["add", "a.txt"]);
+    run(&["commit", "-qm", "init"]);
+
+    let vcs = crate::vcs::git::GitBackend::discover_from(
+        dir.path(),
+        crate::vcs::git::GitBackendPreference::Libgit2,
+        Default::default(),
+    )
+    .unwrap();
+    let commits = vcs.get_recent_commits(0, 5).unwrap();
+    let vcs_info = vcs.info().clone();
+    let session = ReviewSession::new(
+        vcs_info.root_path.clone(),
+        vcs_info.head_commit.clone(),
+        vcs_info.branch_name.clone(),
+        SessionDiffSource::WorkingTree,
+    );
+    let mut app = App::build(
+        Box::new(vcs),
+        vcs_info,
+        Theme::dark(),
+        None,
+        false,
+        vec![],
+        session,
+        DiffSource::StagedUnstagedAndCommits(vec![commits[0].id.clone()]),
+        InputMode::Normal,
+        vec![],
+        None,
+        None,
+    )
+    .unwrap();
+    app.review_commits = vec![
+        App::unstaged_commit_entry(),
+        App::staged_commit_entry(),
+        commits[0].clone(),
+    ];
+    app.commit_list = app.review_commits.clone();
+
+    // Select Staged row while nothing is staged -> empty diff.
+    app.commit_selection_range = Some((1, 1));
+    app.reload_inline_selection().unwrap();
+    assert!(app.diff_files.is_empty());
+
+    // Externally stage a change, then switch away and back to the Staged row.
+    std::fs::write(dir.path().join("a.txt"), "staged change\n").unwrap();
+    run(&["add", "a.txt"]);
+
+    app.commit_selection_range = Some((1, 1));
+    app.reload_inline_selection().unwrap();
+    assert_eq!(
+        app.diff_files.len(),
+        1,
+        "Staged row must reflect newly staged changes instead of stale cache"
+    );
+}
