@@ -8,6 +8,8 @@
 
 use std::ops::Range;
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use crate::model::{DiffLine, LineOrigin};
 
 /// Changed byte ranges of one line, sorted and non-overlapping.
@@ -100,7 +102,7 @@ pub fn changed_ranges(old: &str, new: &str) -> Option<(ChangedRanges, ChangedRan
 }
 
 /// Split a line into word runs (alphanumerics and `_`), whitespace runs, and
-/// single punctuation characters, as byte ranges.
+/// single punctuation/grapheme clusters, as byte ranges.
 fn tokenize(line: &str) -> Vec<Range<usize>> {
     #[derive(PartialEq)]
     enum Class {
@@ -108,10 +110,14 @@ fn tokenize(line: &str) -> Vec<Range<usize>> {
         Space,
         Other,
     }
-    let class = |c: char| {
-        if c.is_alphanumeric() || c == '_' {
+    let class = |grapheme: &str| {
+        let mut chars = grapheme.chars();
+        let Some(first) = chars.next() else {
+            return Class::Other;
+        };
+        if first.is_alphanumeric() || first == '_' {
             Class::Word
-        } else if c.is_whitespace() {
+        } else if first.is_whitespace() && chars.all(char::is_whitespace) {
             Class::Space
         } else {
             Class::Other
@@ -120,8 +126,8 @@ fn tokenize(line: &str) -> Vec<Range<usize>> {
 
     let mut tokens: Vec<Range<usize>> = Vec::new();
     let mut current: Option<(usize, Class)> = None;
-    for (idx, c) in line.char_indices() {
-        let cls = class(c);
+    for (idx, grapheme) in line.grapheme_indices(true) {
+        let cls = class(grapheme);
         match current {
             Some((_, ref cur)) if *cur == cls && cls != Class::Other => {}
             Some((start, _)) => {
@@ -320,5 +326,38 @@ mod tests {
         let new = "b ".repeat(1000);
 
         assert_eq!(changed_ranges(&old, &new), None);
+    }
+
+    #[test]
+    fn should_not_split_vs16_emoji_grapheme_clusters() {
+        let old = "status: \u{2764}\u{fe0f} ok";
+        let new = "status: \u{26a0}\u{fe0f} ok";
+
+        let (old_r, new_r) = changed_ranges(old, new).expect("similar lines");
+
+        assert_eq!(slices(old, &old_r), ["\u{2764}\u{fe0f}"]);
+        assert_eq!(slices(new, &new_r), ["\u{26a0}\u{fe0f}"]);
+    }
+
+    #[test]
+    fn should_not_split_zwj_emoji_grapheme_clusters() {
+        let old = "dev: \u{1f468}\u{200d}\u{1f4bb} ready";
+        let new = "dev: \u{1f469}\u{200d}\u{1f4bb} ready";
+
+        let (old_r, new_r) = changed_ranges(old, new).expect("similar lines");
+
+        assert_eq!(slices(old, &old_r), ["\u{1f468}\u{200d}\u{1f4bb}"]);
+        assert_eq!(slices(new, &new_r), ["\u{1f469}\u{200d}\u{1f4bb}"]);
+    }
+
+    #[test]
+    fn should_not_split_nfd_combining_grapheme_clusters() {
+        let old = "prefix e\u{0301} suffix";
+        let new = "prefix a\u{0301} suffix";
+
+        let (old_r, new_r) = changed_ranges(old, new).expect("similar lines");
+
+        assert_eq!(slices(old, &old_r), ["e\u{0301}"]);
+        assert_eq!(slices(new, &new_r), ["a\u{0301}"]);
     }
 }
