@@ -1058,8 +1058,8 @@ fn should_request_a_redraw_when_an_external_writer_deletes_a_comment() {
     let mut external =
         crate::persistence::storage::load_session(&path).expect("persisted session should load");
     external.review_comments.clear();
-    let external_path = crate::persistence::storage::save_session(&external)
-        .expect("external session should save");
+    let external_path =
+        crate::persistence::storage::save_session(&external).expect("external session should save");
     // Bump the mtime deterministically past the watcher's last observation.
     std::fs::File::options()
         .write(true)
@@ -1118,8 +1118,8 @@ fn should_redraw_and_drop_the_annotation_when_one_of_two_line_comments_is_delete
         .get_mut(&10)
         .expect("line 10")
         .remove(0);
-    let external_path = crate::persistence::storage::save_session(&external)
-        .expect("external session should save");
+    let external_path =
+        crate::persistence::storage::save_session(&external).expect("external session should save");
     std::fs::File::options()
         .write(true)
         .open(&external_path)

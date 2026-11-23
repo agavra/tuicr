@@ -1455,8 +1455,8 @@ fn should_surface_pr_open_error_into_selector_state() {
         summary.number,
         summary.number.to_string(),
     );
-    let outcome =
-        crate::forge::pr_open::fetch_pr_data(&FailingForgeBackend, target).map_err(|e| e.to_string());
+    let outcome = crate::forge::pr_open::fetch_pr_data(&FailingForgeBackend, target)
+        .map_err(|e| e.to_string());
     tx.send(crate::app::PrOpenEvent::Done {
         request,
         result: outcome,

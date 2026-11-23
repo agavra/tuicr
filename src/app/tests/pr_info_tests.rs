@@ -121,7 +121,11 @@ fn should_not_add_pr_info_to_file_tree() {
             .any(|line| matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. }))
     );
     let items = app.build_visible_items();
-    assert_eq!(items.len(), 2, "tree should only contain src/ and src/lib.rs");
+    assert_eq!(
+        items.len(),
+        2,
+        "tree should only contain src/ and src/lib.rs"
+    );
     assert!(matches!(
         &items[0],
         crate::app::FileTreeItem::Directory { path, .. } if path == "src"
