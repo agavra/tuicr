@@ -479,7 +479,7 @@ impl VcsBackend for HgBackend {
         // Note on Sapling/Mercurial compatibility:
         // - Sapling (Meta's hg fork) has issues with full 40-char hashes in certain operations
         // - We use 12-char short hashes which work with both standard Mercurial and Sapling
-        // - The parents() revset is used to find the parent commit for diffing
+        // - The p1() revset is used to find the first parent commit for diffing
         let oldest = &commit_ids[0];
         let oldest_short = if oldest.len() > 12 {
             &oldest[..12]
@@ -494,14 +494,15 @@ impl VcsBackend for HgBackend {
             newest.as_str()
         };
 
-        // First, get the parent commit of the oldest
-        // We use "log -r 'parents({oldest})'" to get the parent hash
+        // First, get the first parent commit of the oldest (using `p1` so
+        // merge commits resolve to a single revision instead of concatenating
+        // both parent hashes).
         let parent_output = run_hg_command(
             &self.info.root_path,
             [
                 "log",
                 "-r",
-                &format!("parents({})", oldest_short),
+                &format!("p1({})", oldest_short),
                 "--template",
                 "{node|short}",
             ],
@@ -604,13 +605,14 @@ impl VcsBackend for HgBackend {
             oldest.as_str()
         };
 
-        // Get the parent of the oldest commit
+        // Get the first parent of the oldest commit (using `p1` so merge
+        // commits resolve to a single revision).
         let parent_output = run_hg_command(
             &self.info.root_path,
             [
                 "log",
                 "-r",
-                &format!("parents({})", oldest_short),
+                &format!("p1({})", oldest_short),
                 "--template",
                 "{node|short}",
             ],
@@ -1758,6 +1760,142 @@ line 2
                 .fetch_context_lines(Path::new("link.txt"), FileStatus::Added, None, 1, 2)
                 .is_err(),
             "fetch_context_lines must not follow symlinks"
+        );
+    }
+
+    #[test]
+    fn test_hg_range_diffs_succeed_when_oldest_commit_is_a_merge() {
+        let Some(temp) = setup_test_repo() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+        let root = temp.path();
+
+        // Commit base
+        fs::write(root.join("base.txt"), "base\n").unwrap();
+        Command::new("hg")
+            .args(["add", "base.txt"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("hg")
+            .args(["commit", "-m", "base"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let base_rev = String::from_utf8(
+            Command::new("hg")
+                .args(["log", "-r", ".", "--template", "{node}"])
+                .current_dir(root)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+
+        // Branch A commit
+        fs::write(root.join("a.txt"), "from a\n").unwrap();
+        Command::new("hg")
+            .args(["add", "a.txt"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("hg")
+            .args(["commit", "-m", "branch a"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let a_rev = String::from_utf8(
+            Command::new("hg")
+                .args(["log", "-r", ".", "--template", "{node}"])
+                .current_dir(root)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+
+        // Branch B commit from base
+        Command::new("hg")
+            .args(["update", "-r", base_rev.trim()])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        fs::write(root.join("b.txt"), "from b\n").unwrap();
+        Command::new("hg")
+            .args(["add", "b.txt"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("hg")
+            .args(["commit", "-m", "branch b"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Merge A into B (Sapling requires --noconflict when plain merge is disabled)
+        let mut merge_out = Command::new("hg")
+            .args(["merge", "-r", a_rev.trim()])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        if !merge_out.status.success() {
+            merge_out = Command::new("hg")
+                .args(["merge", "--noconflict", "-r", a_rev.trim()])
+                .current_dir(root)
+                .output()
+                .unwrap();
+        }
+        assert!(
+            merge_out.status.success(),
+            "hg merge failed: {}",
+            String::from_utf8_lossy(&merge_out.stderr)
+        );
+        Command::new("hg")
+            .args(["commit", "-m", "merge a into b"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let merge_rev = String::from_utf8(
+            Command::new("hg")
+                .args(["log", "-r", ".", "--template", "{node}"])
+                .current_dir(root)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+
+        let backend = HgBackend::from_path(root.to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create hg backend");
+        let hl = SyntaxHighlighter::default();
+
+        let merge_ids = [merge_rev.trim().to_string()];
+        let range = ResolvedRevisionRange::from_commit_ids(
+            &merge_ids,
+            RevisionDiffTarget::CommitList,
+        );
+        let range_files = backend
+            .get_commit_range_diff(&range, &hl)
+            .expect("get_commit_range_diff should succeed when oldest commit is a merge");
+        assert!(
+            range_files
+                .iter()
+                .any(|f| f.new_path.as_deref() == Some(Path::new("a.txt"))),
+            "merge diff against p1 should include changes from p2"
+        );
+
+        // Also test get_working_tree_with_commits_diff with a working-tree edit
+        fs::write(root.join("b.txt"), "from b\nworking tree edit\n").unwrap();
+        let wt_files = backend
+            .get_working_tree_with_commits_diff(&[merge_rev.trim().to_string()], &hl)
+            .expect(
+                "get_working_tree_with_commits_diff should succeed when oldest commit is a merge",
+            );
+        assert!(
+            wt_files
+                .iter()
+                .any(|f| f.new_path.as_deref() == Some(Path::new("b.txt")))
         );
     }
 }
