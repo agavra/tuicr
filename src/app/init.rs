@@ -15,6 +15,17 @@ impl App {
         output_to_stdout: bool,
         options: AppStartupOptions<'_>,
     ) -> Result<Self> {
+        Self::new_with_revision_drafts(theme, comment_type_configs, output_to_stdout, options, &[])
+    }
+
+    /// Open a local Git revision review with explicit draft paths from the checkout.
+    pub fn new_with_revision_drafts(
+        theme: Theme,
+        comment_type_configs: Option<Vec<CommentTypeConfig>>,
+        output_to_stdout: bool,
+        options: AppStartupOptions<'_>,
+        draft_paths: &[String],
+    ) -> Result<Self> {
         // `tuicr pr <target>` mode: enter PR review directly, skipping the
         // selector. Errors here surface before TUI startup like other
         // startup failures.
@@ -169,6 +180,11 @@ impl App {
         //   3. -w only: working tree directly (skip commit selector)
         //   4. neither: commit selection UI
         if let Some(revisions) = options.revisions {
+            if !draft_paths.is_empty() && vcs_info.vcs_type != VcsType::Git {
+                return Err(TuicrError::InvalidInput(
+                    "--file with --revisions requires a Git checkout".into(),
+                ));
+            }
             let revision_range = crate::profile::time_with(
                 "startup.resolve_revision_range",
                 || vcs.resolve_revision_range(revisions),
@@ -275,11 +291,18 @@ impl App {
                 return Ok(app);
             }
 
-            // Resolve the revisions to commits and diff as a commit range
-            let diff_files = Self::get_commit_range_diff_with_ignore(
+            let revision_review = RevisionReview {
+                range: revision_range,
+                draft_paths: crate::vcs::git::drafts::resolve_paths(
+                    &vcs_info.root_path,
+                    draft_paths,
+                )?,
+            };
+            let diff_files = Self::fetch_diff_files_with_revision_review(
                 vcs.as_ref(),
                 &vcs_info.root_path,
-                &revision_range,
+                &DiffSource::CommitRange(commit_ids.clone()),
+                Some(&revision_review),
                 highlighter,
                 options.path_filter,
             )?;
@@ -308,7 +331,7 @@ impl App {
                 options.repo_url_override.clone(),
             )?
             .with_vcs_open_options(options.vcs_open_options());
-            app.revision_range = Some(revision_range);
+            app.revision_review = Some(revision_review);
 
             app.install_review_commits(review_commits, options.commit_selection)?;
 
@@ -639,7 +662,7 @@ impl App {
             pending_count: None,
             pending_start_line: None,
             review_commits: Vec::new(),
-            revision_range: None,
+            revision_review: None,
             pr_commits: Vec::new(),
             pr_last_reviewed_commit_index: None,
             pr_range_reload_state: None,

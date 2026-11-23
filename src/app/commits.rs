@@ -282,6 +282,7 @@ impl App {
                 Ok(diff_files) => {
                     self.diff_files = diff_files;
                     self.diff_source = DiffSource::StagedAndUnstaged;
+                    self.revision_review = None;
 
                     // Update session for new files
                     for file in &self.diff_files {
@@ -1143,7 +1144,11 @@ impl App {
 
         // Update app state
         self.diff_files = diff_files;
+        if !self.revision_draft_paths().is_empty() {
+            self.diff_watch_reload = None;
+        }
         self.diff_source = DiffSource::CommitRange(selected_ids);
+        self.revision_review = None;
         self.input_mode = InputMode::Normal;
 
         // Reset navigation state
@@ -1203,7 +1208,7 @@ impl App {
                     self.vcs.as_ref(),
                     &self.vcs_info.root_path,
                     &fetch_source,
-                    self.revision_range.as_ref(),
+                    self.revision_review.as_ref().map(|review| &review.range),
                     highlighter,
                     self.diff_load_options(),
                 ) {
@@ -1218,7 +1223,12 @@ impl App {
             }
         };
 
-        self.diff_files = diff_files;
+        self.diff_files = Self::append_revision_drafts(
+            Ok(diff_files),
+            &self.vcs_info.root_path,
+            self.revision_draft_paths(),
+            self.theme.syntax_highlighter(),
+        )?;
 
         // Register the files in the session. `r`, `R` and the comment path all
         // look a file up here, so a file reachable only through a narrowed

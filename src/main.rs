@@ -246,7 +246,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let mut app = match profile::time("startup.app_init", || {
-        App::new(
+        App::new_with_revision_drafts(
             theme,
             config_outcome
                 .config
@@ -257,7 +257,11 @@ fn main() -> anyhow::Result<()> {
                 revisions: cli_args.revisions.as_deref(),
                 working_tree: cli_args.working_tree,
                 path_filter: cli_args.path_filter.as_deref(),
-                file_path: cli_args.file_path.as_deref(),
+                file_path: if cli_args.revisions.is_none() {
+                    cli_args.file_paths.first().map(String::as_str)
+                } else {
+                    None
+                },
                 all_files: cli_args.all_files,
                 show_pr_checks: config_outcome
                     .config
@@ -282,6 +286,11 @@ fn main() -> anyhow::Result<()> {
                 pr_target: cli_args.pr_target.as_deref(),
                 pr_current_branch: cli_args.pr_current_branch,
                 repo_url_override,
+            },
+            if cli_args.revisions.is_some() {
+                &cli_args.file_paths
+            } else {
+                &[]
             },
         )
     }) {

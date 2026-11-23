@@ -24,8 +24,8 @@ pub struct CliArgs {
     pub working_tree: bool,
     /// Filter diff to a specific file or directory path.
     pub path_filter: Option<String>,
-    /// Open a single file or directory for annotation (no VCS required).
-    pub file_path: Option<String>,
+    /// Open a file or directory, or include draft files in a Git revision review.
+    pub file_paths: Vec<String>,
     /// Whole-repo annotation mode.
     pub all_files: bool,
     /// Source line (new side) to put the cursor on at startup.
@@ -89,7 +89,7 @@ struct TuiOptions {
         long = "path",
         value_name = "PATH",
         value_parser = non_empty_path,
-        conflicts_with_all = ["file_path", "all_files"],
+        conflicts_with_all = ["file_paths", "all_files"],
     )]
     path_filter: Option<String>,
 
@@ -99,18 +99,18 @@ struct TuiOptions {
         short = 'w',
         long = "working-tree",
         action = ArgAction::SetTrue,
-        conflicts_with_all = ["file_path", "all_files"],
+        conflicts_with_all = ["file_paths", "all_files"],
     )]
     working_tree: bool,
 
-    /// Open a file or directory for annotation (no VCS required).
+    /// Annotate a file or directory. With a Git -r range, add untracked files (repeatable).
     #[arg(
         long = "file",
         value_name = "PATH",
         value_parser = non_empty_path,
-        conflicts_with_all = ["path_filter", "revisions", "working_tree", "all_files"],
+        conflicts_with_all = ["path_filter", "working_tree", "all_files"],
     )]
-    file_path: Option<String>,
+    file_paths: Vec<String>,
 
     /// Start with the cursor on this line of the file (new side). Requires
     /// --file or --path; with several files, applies to the first.
@@ -122,7 +122,7 @@ struct TuiOptions {
         short = 'A',
         long = "all-files",
         action = ArgAction::SetTrue,
-        conflicts_with_all = ["path_filter", "revisions", "working_tree", "file_path"],
+        conflicts_with_all = ["path_filter", "revisions", "working_tree", "file_paths"],
     )]
     all_files: bool,
 
@@ -380,7 +380,7 @@ impl From<Cli> for CliArgs {
             revisions: options.revisions,
             working_tree: options.working_tree,
             path_filter: options.path_filter,
-            file_path: options.file_path,
+            file_paths: options.file_paths,
             all_files: options.all_files,
             start_line: options.start_line,
             pr_current_branch: matches!(pr, Some(None)),
@@ -403,23 +403,32 @@ impl TuiOptions {
             || self.revisions.is_some()
             || self.working_tree
             || self.path_filter.is_some()
-            || self.file_path.is_some()
+            || !self.file_paths.is_empty()
             || self.start_line.is_some()
             || self.all_files
             || self.repo_url.is_some()
             || self.remote.is_some()
     }
 
-    fn merge(self, later: TuiOptions) -> Self {
+    fn merge(mut self, later: TuiOptions) -> Self {
+        let revisions = later.revisions.or(self.revisions);
+        let file_paths = if revisions.is_some() {
+            self.file_paths.extend(later.file_paths);
+            self.file_paths
+        } else if later.file_paths.is_empty() {
+            self.file_paths
+        } else {
+            later.file_paths
+        };
         Self {
             theme: later.theme.or(self.theme),
             appearance: later.appearance.or(self.appearance),
             stdout: self.stdout || later.stdout,
             no_update_check: self.no_update_check || later.no_update_check,
-            revisions: later.revisions.or(self.revisions),
+            revisions,
             working_tree: self.working_tree || later.working_tree,
             path_filter: later.path_filter.or(self.path_filter),
-            file_path: later.file_path.or(self.file_path),
+            file_paths,
             start_line: later.start_line.or(self.start_line),
             all_files: self.all_files || later.all_files,
             repo_url: later.repo_url.or(self.repo_url),
@@ -454,7 +463,7 @@ impl Cli {
                         ("--revisions", args.revisions.is_some()),
                         ("--working-tree", args.working_tree),
                         ("--path", args.path_filter.is_some()),
-                        ("--file", args.file_path.is_some()),
+                        ("--file", !args.file_paths.is_empty()),
                         ("--all-files", args.all_files),
                     ] {
                         if given {
@@ -467,20 +476,23 @@ impl Cli {
                 }
                 // clap only checks conflicts within one command level, and
                 // the root, `tui` and `pr` levels are merged afterwards.
-                let any_diff_scope =
-                    args.revisions.is_some() || args.working_tree || args.path_filter.is_some();
-                if (args.file_path.is_some() || args.all_files) && any_diff_scope
-                    || args.file_path.is_some() && args.all_files
+                let has_files = !args.file_paths.is_empty();
+                let has_other_scope = args.working_tree || args.path_filter.is_some();
+                if args.all_files && (args.revisions.is_some() || has_other_scope || has_files)
+                    || has_files && has_other_scope
                 {
                     return Err(clap::Error::raw(
                         clap::error::ErrorKind::ArgumentConflict,
-                        "--file, --all-files and the diff scope flags (--revisions, --working-tree, --path) cannot be combined\n",
+                        "These review scope flags cannot be combined. Use --all-files on its own or pair --file with --revisions\n",
                     ));
                 }
-                if args.start_line.is_some()
-                    && args.file_path.is_none()
-                    && args.path_filter.is_none()
-                {
+                if args.file_paths.len() > 1 && args.revisions.is_none() {
+                    return Err(clap::Error::raw(
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "Repeated --file requires --revisions\n",
+                    ));
+                }
+                if args.start_line.is_some() && !has_files && args.path_filter.is_none() {
                     return Err(clap::Error::raw(
                         clap::error::ErrorKind::MissingRequiredArgument,
                         "--line requires --file or --path\n",
@@ -624,8 +636,41 @@ mod tests {
     fn should_parse_line_with_file() {
         let parsed = parse_for_test(&["tuicr", "--file", "README.md", "--line", "42"])
             .expect("parse should succeed");
-        assert_eq!(parsed.file_path.as_deref(), Some("README.md"));
+        assert_eq!(parsed.file_paths, ["README.md"]);
         assert_eq!(parsed.start_line, Some(42));
+    }
+
+    #[test]
+    fn should_collect_revision_drafts_across_command_levels() {
+        let parsed = parse_for_test(&[
+            "tuicr",
+            "--file",
+            ".drafts/description.md",
+            "tui",
+            "-r",
+            "main..HEAD",
+            "--file",
+            "notes.md",
+            "--file",
+            "checklist.md",
+        ])
+        .expect("revision review accepts multiple draft paths");
+        assert_eq!(parsed.revisions.as_deref(), Some("main..HEAD"));
+        assert_eq!(
+            parsed.file_paths,
+            [".drafts/description.md", "notes.md", "checklist.md"]
+        );
+    }
+
+    #[test]
+    fn should_preserve_standalone_file_option_across_command_levels() {
+        let parsed = parse_for_test(&["tuicr", "--file", "first.md", "tui", "--file", "second.md"])
+            .expect("the later standalone file wins");
+        assert_eq!(parsed.file_paths, ["second.md"]);
+
+        let err = parse_for_test(&["tuicr", "--file", "one.md", "--file", "two.md"])
+            .expect_err("repeatable files require a revision");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -915,10 +960,11 @@ mod tests {
     }
 
     #[test]
-    fn should_reject_file_combined_with_revisions() {
-        let err = parse_for_test(&["tuicr", "--file", "f.md", "-r", "HEAD~1.."])
-            .expect_err("parse should fail");
-        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    fn should_allow_file_combined_with_revisions() {
+        let parsed = parse_for_test(&["tuicr", "--file", "f.md", "-r", "HEAD~1.."])
+            .expect("revision review accepts a draft");
+        assert_eq!(parsed.file_paths, ["f.md"]);
+        assert_eq!(parsed.revisions.as_deref(), Some("HEAD~1.."));
     }
 
     #[test]
