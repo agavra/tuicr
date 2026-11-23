@@ -1208,8 +1208,14 @@ mod tests {
             }
         }
         let backend = BitbucketBktBackend::with_runner(Some(repo()), AlwaysMore);
-        // when / then — bounded, and not a silently partial Ok
-        assert!(backend.list_pull_request_commits(&details()).is_err());
+        // when / then — bounded with ForgeLimit, not a silently partial Ok
+        let err = backend
+            .list_pull_request_commits(&details())
+            .expect_err("expected pagination ceiling error");
+        assert!(
+            matches!(err, TuicrError::ForgeLimit(_)),
+            "expected TuicrError::ForgeLimit, got {err:?}"
+        );
     }
 
     #[test]

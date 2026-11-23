@@ -1990,7 +1990,8 @@ mod tests {
         comment.start_line = Some(1);
         comment.start_side = Some(GhSide::Left);
         let (result, shared) = review_with_base(None, Some("mid999"), comment, "src/lib.rs");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("old side"), "{err}");
         assert!(shared.0.calls.lock().unwrap().is_empty());
     }
 

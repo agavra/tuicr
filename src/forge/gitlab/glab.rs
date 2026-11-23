@@ -2612,6 +2612,7 @@ mod tests {
         backend.create_review(&pr, request).unwrap();
 
         let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 2, "expected overall + inline draft note calls");
         for (args, _) in calls.iter() {
             assert!(
                 !args
