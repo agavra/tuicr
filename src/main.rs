@@ -362,6 +362,7 @@ fn main() -> anyhow::Result<()> {
     let mut terminal = TerminalFeatures::new()
         .mouse_enabled(mouse_enabled)
         .keyboard_enhancements_supported(keyboard_enhancement_supported)
+        .use_dev_tty(cli_args.output_to_stdout)
         .enter(tty_output)?;
 
     // Apply config-driven defaults
