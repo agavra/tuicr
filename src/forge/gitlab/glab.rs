@@ -2993,10 +2993,8 @@ mod tests {
     #[test]
     fn maps_mixed_case_glab_ssh_host_back_to_the_default_host() {
         let runner = RecordingRunner::new_with_responses(vec![
-            "gitlab.example.org
-".to_string(),
-            "gitlabssh.example.org
-".to_string(),
+            "gitlab.example.org\n".to_string(),
+            "gitlabssh.example.org\n".to_string(),
         ]);
         assert_eq!(
             glab_host_for_ssh_host("GitLabSSH.example.org", &runner).as_deref(),

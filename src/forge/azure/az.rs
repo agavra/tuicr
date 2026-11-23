@@ -420,11 +420,7 @@ impl AzureDevOpsBackend {
             .map_err(|err| map_http_error(err, &repo.host))
     }
 
-    fn get_with_continuation(
-        &self,
-        repo: &ForgeRepository,
-        url: String,
-    ) -> Result<AzHttpResponse> {
+    fn get_with_continuation(&self, repo: &ForgeRepository, url: String) -> Result<AzHttpResponse> {
         self.http
             .request_with_continuation("GET", &with_api_version(&url), None)
             .map_err(|err| map_http_error(err, &repo.host))
@@ -1242,10 +1238,9 @@ mod tests {
             ForgeRepository::azure("dev.azure.com", "myorg/my@project", "my@repo")
         );
 
-        let with_user = parse_azure_remote_url(
-            "https://myorg@dev.azure.com/myorg/my@project/_git/my@repo.git",
-        )
-        .unwrap();
+        let with_user =
+            parse_azure_remote_url("https://myorg@dev.azure.com/myorg/my@project/_git/my@repo.git")
+                .unwrap();
         assert_eq!(with_user, repo);
     }
 
