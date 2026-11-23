@@ -1223,9 +1223,78 @@ mod tests {
     use super::*;
     use crate::forge::remote_comments::RemoteReviewState;
 
-    /// `GERRIT_*` env vars are process-global, so the tests that set them run
-    /// one at a time.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    /// RAII guard for `GERRIT_URL` that serializes env access across modules
+    /// and restores the previous value even if a test panics.
+    struct GerritUrlGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        saved: Option<std::ffi::OsString>,
+    }
+
+    impl GerritUrlGuard {
+        fn set(value: &str) -> Self {
+            let lock = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let saved = std::env::var_os(URL_ENV_VAR);
+            unsafe { std::env::set_var(URL_ENV_VAR, value) };
+            Self { _lock: lock, saved }
+        }
+
+        fn unset() -> Self {
+            let lock = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let saved = std::env::var_os(URL_ENV_VAR);
+            unsafe { std::env::remove_var(URL_ENV_VAR) };
+            Self { _lock: lock, saved }
+        }
+    }
+
+    impl Drop for GerritUrlGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.saved {
+                    Some(v) => std::env::set_var(URL_ENV_VAR, v),
+                    None => std::env::remove_var(URL_ENV_VAR),
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    struct SshEnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        saved: [(&'static str, Option<std::ffi::OsString>); 2],
+    }
+
+    #[cfg(unix)]
+    impl SshEnvGuard {
+        fn set(stub: &Path) -> Self {
+            let lock = crate::forge::GIT_SSH_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let saved = ["GIT_SSH_COMMAND", "GIT_SSH_VARIANT"].map(|k| (k, std::env::var_os(k)));
+            unsafe {
+                std::env::set_var("GIT_SSH_COMMAND", stub);
+                std::env::set_var("GIT_SSH_VARIANT", "ssh");
+            }
+            Self { _lock: lock, saved }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for SshEnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                unsafe {
+                    match value {
+                        Some(v) => std::env::set_var(key, v),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
 
     fn gerrit_repo() -> ForgeRepository {
         ForgeRepository::gerrit("gerrit.example.com", "platform/base")
@@ -1257,6 +1326,7 @@ mod tests {
 
     #[test]
     fn should_parse_ssh_remotes_on_the_canonical_gerrit_port() {
+        let _guard = GerritUrlGuard::unset();
         // given/when — the host says nothing; port 29418 does
         let repo = parse_gerrit_remote_url("ssh://jdoe@review.internal:29418/platform/base");
         // then
@@ -1268,6 +1338,7 @@ mod tests {
 
     #[test]
     fn should_parse_https_remotes_on_a_gerrit_hostname() {
+        let _guard = GerritUrlGuard::unset();
         for url in [
             "https://gerrit.example.com/platform/base",
             "https://gerrit.example.com/platform/base.git",
@@ -1304,6 +1375,7 @@ mod tests {
 
     #[test]
     fn should_find_gerrit_remote_in_a_repo_libgit2_cannot_open() {
+        let _guard = GerritUrlGuard::unset();
         let dir = std::env::temp_dir().join(format!("tuicr-gerrit-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let git = |args: &[&str]| {
@@ -1332,8 +1404,7 @@ mod tests {
 
     #[test]
     fn should_reject_remotes_that_do_not_look_like_gerrit() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         assert_eq!(
             parse_gerrit_remote_url("https://github.com/agavra/tuicr"),
             None
@@ -1347,8 +1418,7 @@ mod tests {
     #[test]
     fn should_recognize_a_configured_host_and_strip_its_path_prefix() {
         // given — Gerrit served under a subdirectory on a neutral hostname
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::set_var(URL_ENV_VAR, "https://review.internal/gerrit/") };
+        let _guard = GerritUrlGuard::set("https://review.internal/gerrit/");
         // when
         let repo = parse_gerrit_remote_url("https://review.internal/gerrit/platform/base");
         // then — the prefix belongs to the server URL, not the project
@@ -1360,14 +1430,12 @@ mod tests {
             web_base(&repo.expect("parsed")),
             "https://review.internal/gerrit"
         );
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
     }
 
     #[test]
     fn should_strip_the_configured_prefix_only_on_a_segment_boundary_and_not_for_ssh() {
         // given
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::set_var(URL_ENV_VAR, "https://review.internal/gerrit/") };
+        let _guard = GerritUrlGuard::set("https://review.internal/gerrit/");
         // when/then — `gerrit-tools` is a project, not the prefix plus `-tools`
         assert_eq!(
             parse_gerrit_remote_url("https://review.internal/gerrit-tools/base"),
@@ -1381,14 +1449,12 @@ mod tests {
             parse_gerrit_remote_url("ssh://jdoe@review.internal:29418/gerrit/base"),
             Some(ForgeRepository::gerrit("review.internal", "gerrit/base"))
         );
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
     }
 
     #[test]
     fn should_parse_change_targets_with_fragments_and_a_prefix_containing_c() {
         // given
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::set_var(URL_ENV_VAR, "https://review.internal/tools/c/") };
+        let _guard = GerritUrlGuard::set("https://review.internal/tools/c/");
         let repo = ForgeRepository::gerrit("review.internal", "platform/base");
         // when/then
         for url in [
@@ -1403,75 +1469,64 @@ mod tests {
         // the legacy hash route still works
         let legacy = parse_pull_request_target_gerrit("https://review.internal/#/c/3965/").unwrap();
         assert_eq!(legacy.number, 3965);
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
     }
 
     #[test]
     fn should_default_a_schemeless_gerrit_url_to_https() {
         // given — a bare host used to reach the HTTP client verbatim, which
         // rejected it with `http: invalid format`
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::set_var(URL_ENV_VAR, "review.internal/gerrit/") };
+        let _guard = GerritUrlGuard::set("review.internal/gerrit/");
         // when/then
         assert_eq!(
             configured_base_url().as_deref(),
             Some("https://review.internal/gerrit")
         );
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
     }
 
     #[test]
     fn should_normalize_an_ssh_gerrit_url_onto_https_without_its_port() {
         // given — an SSH URL pasted from `git remote -v`; 29418 is the SSH
         // port and must not be carried onto HTTPS
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::set_var(URL_ENV_VAR, "ssh://jdoe@review.internal:29418") };
+        let _guard = GerritUrlGuard::set("ssh://jdoe@review.internal:29418");
         // when/then
         assert_eq!(
             configured_base_url().as_deref(),
             Some("https://review.internal")
         );
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
     }
 
     #[test]
     fn should_keep_a_deliberate_port_on_a_schemeless_gerrit_url() {
         // given — only Gerrit's SSH port is meaningless over HTTPS; dropping
         // every port silently turned `127.0.0.1:8731` into `https://127.0.0.1`
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::set_var(URL_ENV_VAR, "review.internal:8443/gerrit") };
+        let _guard = GerritUrlGuard::set("review.internal:8443/gerrit");
         // when/then
         assert_eq!(
             configured_base_url().as_deref(),
             Some("https://review.internal:8443/gerrit")
         );
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
     }
 
     #[test]
     fn should_keep_an_explicit_http_url_with_its_port_and_prefix() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::set_var(URL_ENV_VAR, "http://review.internal:8080/gerrit") };
+        let _guard = GerritUrlGuard::set("http://review.internal:8080/gerrit");
         assert_eq!(
             configured_base_url().as_deref(),
             Some("http://review.internal:8080/gerrit")
         );
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
     }
 
     #[test]
     fn should_use_gerrit_url_when_the_web_host_differs_from_the_git_remote_host() {
         // given — the SSH gateway in the remote is not the web host, the one
         // deployment shape a remote URL cannot describe
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::set_var(URL_ENV_VAR, "https://review.corp.com") };
+        let _guard = GerritUrlGuard::set("https://review.corp.com");
         let repo = parse_gerrit_remote_url("ssh://jdoe@gerrit-ssh.corp.com:29418/platform/base")
             .expect("parsed");
         // when/then — identity still follows the remote, but requests go to
         // the configured server
         assert_eq!(repo.host, "gerrit-ssh.corp.com");
         assert_eq!(web_base(&repo), "https://review.corp.com");
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
     }
 
     // ---- Target parsing ----
@@ -1649,8 +1704,7 @@ mod tests {
     #[test]
     fn should_prefix_authenticated_requests_with_the_gerrit_a_path() {
         // given
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, http) = backend_with(true, vec![")]}'\n[]"]);
         // when
         let _ = backend.list_pull_requests(PullRequestListQuery::first_page(gerrit_repo(), 10));
@@ -1669,8 +1723,7 @@ mod tests {
     #[test]
     fn should_scope_the_requested_list_to_the_signed_in_users_attention_set() {
         // given
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, http) = backend_with(true, vec![")]}'\n[]"]);
         // when
         let _ = backend.list_pull_requests(PullRequestListQuery::first_page_with_scope(
@@ -1691,8 +1744,7 @@ mod tests {
     #[test]
     fn should_omit_the_attention_filter_when_anonymous() {
         // given — `attention:self` is meaningless without a session
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, http) = backend_with(false, vec![")]}'\n[]"]);
         // when
         let _ = backend.list_pull_requests(PullRequestListQuery::first_page_with_scope(
@@ -1712,8 +1764,7 @@ mod tests {
     #[test]
     fn should_post_one_review_carrying_the_message_vote_and_comments() {
         // given
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, http) = backend_with(true, vec![")]}'\n{}"]);
         let comments = vec![
             inline_comment(12, None, GhSide::Right),
@@ -1858,8 +1909,7 @@ mod tests {
     #[test]
     fn should_send_draft_reviews_to_the_gerrit_drafts_endpoint() {
         // given
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, http) = backend_with(true, vec![")]}'\n{}", ")]}'\n{}"]);
         let comments = vec![inline_comment(12, None, GhSide::Right)];
         // when
@@ -1894,8 +1944,7 @@ mod tests {
     #[test]
     fn should_name_how_many_drafts_landed_when_the_sequence_fails_part_way() {
         // given — the body and the first comment store, then the link drops
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let fake = Arc::new(FakeHttp::failing_after(true, 2));
         let backend =
             GerritBackend::with_transport(Some(gerrit_repo()), Box::new(Arc::clone(&fake)));
@@ -1928,8 +1977,7 @@ mod tests {
     #[test]
     fn should_pass_through_a_failure_on_the_very_first_draft_untouched() {
         // given — nothing landed, so there is no partial state to describe
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let fake = Arc::new(FakeHttp::failing_after(true, 0));
         let backend =
             GerritBackend::with_transport(Some(gerrit_repo()), Box::new(Arc::clone(&fake)));
@@ -1955,8 +2003,7 @@ mod tests {
     #[test]
     fn should_read_review_threads_from_the_change_level_comments_endpoint() {
         // given — a comment left on patch set 1 while the change is on 2
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, http) = backend_with(
             true,
             vec![
@@ -1992,8 +2039,7 @@ mod tests {
     fn should_show_the_callers_drafts_as_threads_after_a_draft_submit() {
         // given — one published thread and two drafts: a reply to it, and a
         // fresh comment of the kind `:submit draft` leaves behind
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, _http) = backend_with(
             true,
             vec![
@@ -2041,8 +2087,7 @@ mod tests {
     #[test]
     fn should_delete_a_draft_on_the_patch_set_it_was_written_on() {
         // given — the caller has two drafts, one on an earlier patch set
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, http) = backend_with(true, vec![TWO_DRAFTS, ""]);
         // when
         backend
@@ -2067,8 +2112,7 @@ mod tests {
     #[test]
     fn should_percent_encode_the_draft_id_in_the_delete_url() {
         // given
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, http) = backend_with(true, vec![TWO_DRAFTS, ""]);
         // when
         backend
@@ -2084,8 +2128,7 @@ mod tests {
     #[test]
     fn should_not_delete_an_id_that_is_not_one_of_the_callers_drafts() {
         // given — a published comment's id is not in the drafts listing
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, http) = backend_with(true, vec![TWO_DRAFTS]);
         // when
         let err = backend
@@ -2100,8 +2143,7 @@ mod tests {
     #[test]
     fn should_ask_for_credentials_before_deleting_a_draft_anonymously() {
         // given
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, http) = backend_with(false, vec![]);
         // when
         let err = backend
@@ -2115,8 +2157,7 @@ mod tests {
     #[test]
     fn should_surface_a_failed_delete_and_report_the_capability() {
         // given — the DELETE itself is refused after the drafts were read
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let fake = Arc::new(FakeHttp::failing_after(true, 1));
         fake.responses.lock().unwrap().push(TWO_DRAFTS.to_string());
         let backend =
@@ -2242,25 +2283,14 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let _guard = crate::forge::GIT_SSH_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-        unsafe {
-            std::env::set_var("GIT_SSH_COMMAND", &stub);
-            std::env::set_var("GIT_SSH_VARIANT", "ssh");
-        }
+        let _ssh_guard = SshEnvGuard::set(&stub);
         let mut pr = details();
         pr.head_sha = head;
         pr.base_sha = EMPTY_TREE_SHA.to_string();
         let (backend, _http) = backend_with(true, vec![]);
         let backend = backend.with_local_checkout(Some(checkout.path().to_path_buf()));
         // when
-        let result = backend.get_pull_request_diff(&pr);
-        unsafe {
-            std::env::remove_var("GIT_SSH_COMMAND");
-            std::env::remove_var("GIT_SSH_VARIANT");
-        }
-        let patches = result.expect("diff");
+        let patches = backend.get_pull_request_diff(&pr).expect("diff");
         // then — the fetch ran and the root base did not make it fail
         assert_eq!(patches.len(), 1);
         assert_eq!(patches[0].new_path.as_deref(), Some(Path::new("a.txt")));
@@ -2269,8 +2299,7 @@ mod tests {
     #[test]
     fn should_not_ask_for_drafts_when_reading_anonymously() {
         // given
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, http) = backend_with(false, vec![")]}'\n{}"]);
         // when
         let threads = backend.list_review_threads(&details()).expect("threads");
@@ -2291,8 +2320,7 @@ mod tests {
     #[test]
     fn should_show_a_patch_set_level_draft_as_a_pending_review_summary() {
         // given — where `:submit draft` puts the review body
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, http) = backend_with(
             true,
             vec![
@@ -2329,8 +2357,7 @@ mod tests {
     #[test]
     fn should_fetch_file_content_by_project_and_commit() {
         // given — a request with no local checkout to read the blob from
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, http) = backend_with(true, vec![&BASE64.encode("one\ntwo\nthree\n")]);
         let request = ForgeFileLinesRequest {
             repository: gerrit_repo(),
@@ -2387,8 +2414,7 @@ mod tests {
     #[test]
     fn should_read_file_content_through_the_trait_byte_faithfully() {
         // given — the editor calls `fetch_file_content`, not `fetch_file_lines`
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let _guard = GerritUrlGuard::unset();
         let (backend, http) = backend_with(true, vec![&BASE64.encode("a\tb\n\tc\n")]);
         let request = ForgeFileLinesRequest {
             repository: gerrit_repo(),

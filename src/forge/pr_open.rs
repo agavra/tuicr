@@ -736,11 +736,49 @@ rename to new_name.rs
         assert_eq!(opened.pr_info.details.base_sha, "1234567890abcdef");
     }
 
-    /// Fake forge whose calls each sleep for `delay`, recording the call
-    /// order and how many calls were in flight at once. Calls named in
-    /// `fail` return a forge error after the sleep.
+    /// Deterministic barrier with a timeout so a regression to sequential
+    /// execution fails with a panic instead of deadlocking the test runner.
+    struct Rendezvous {
+        expected: usize,
+        arrived: Mutex<usize>,
+        cvar: std::sync::Condvar,
+    }
+
+    impl Rendezvous {
+        fn new(expected: usize) -> Self {
+            Self {
+                expected,
+                arrived: Mutex::new(0),
+                cvar: std::sync::Condvar::new(),
+            }
+        }
+
+        fn wait(&self) {
+            let mut count = self.arrived.lock().unwrap();
+            *count += 1;
+            if *count >= self.expected {
+                self.cvar.notify_all();
+                return;
+            }
+            let (guard, timeout) = self
+                .cvar
+                .wait_timeout_while(count, std::time::Duration::from_secs(5), |c| {
+                    *c < self.expected
+                })
+                .unwrap();
+            assert!(
+                !timeout.timed_out(),
+                "expected {} concurrent calls, only {} arrived",
+                self.expected,
+                *guard
+            );
+        }
+    }
+
+    /// Fake forge recording call order and peak concurrency, optionally
+    /// synchronizing the three independent fetch calls at a rendezvous.
     struct SlowBackend {
-        delay: std::time::Duration,
+        rendezvous: Option<Rendezvous>,
         fail: Vec<&'static str>,
         limit: Vec<&'static str>,
         calls: Mutex<Vec<&'static str>>,
@@ -749,9 +787,9 @@ rename to new_name.rs
     }
 
     impl SlowBackend {
-        fn new(delay_ms: u64, fail: &[&'static str]) -> Self {
+        fn new(fail: &[&'static str]) -> Self {
             Self {
-                delay: std::time::Duration::from_millis(delay_ms),
+                rendezvous: None,
                 fail: fail.to_vec(),
                 limit: Vec::new(),
                 calls: Mutex::new(Vec::new()),
@@ -760,12 +798,27 @@ rename to new_name.rs
             }
         }
 
+        fn with_rendezvous(expected: usize) -> Self {
+            Self {
+                rendezvous: Some(Rendezvous::new(expected)),
+                ..Self::new(&[])
+            }
+        }
+
         fn call<T>(&self, name: &'static str, value: impl FnOnce() -> T) -> Result<T> {
             use std::sync::atomic::Ordering::SeqCst;
             self.calls.lock().unwrap().push(name);
             let now = self.in_flight.fetch_add(1, SeqCst) + 1;
             self.peak_in_flight.fetch_max(now, SeqCst);
-            std::thread::sleep(self.delay);
+            if matches!(
+                name,
+                "get_pull_request_diff"
+                    | "list_pull_request_commits"
+                    | "list_pull_request_review_metadata"
+            ) && let Some(rendezvous) = &self.rendezvous
+            {
+                rendezvous.wait();
+            }
             self.in_flight.fetch_sub(1, SeqCst);
             if self.limit.contains(&name) {
                 Err(TuicrError::ForgeLimit(format!("{name} hit the bound")))
@@ -894,7 +947,7 @@ rename to new_name.rs
             "list_pull_request_commits",
             "list_pull_request_review_metadata",
         ] {
-            let mut backend = SlowBackend::new(0, &[]);
+            let mut backend = SlowBackend::new(&[]);
             backend.limit = vec![name];
             let error = fetch_pr_data(&backend, target()).expect_err(name);
             assert!(
@@ -906,34 +959,21 @@ rename to new_name.rs
 
     #[test]
     fn should_still_degrade_ordinary_commit_failures_to_empty() {
-        let backend = SlowBackend::new(0, &["list_pull_request_commits"]);
+        let backend = SlowBackend::new(&["list_pull_request_commits"]);
         let (_, _, commits, _, _) = fetch_pr_data(&backend, target()).unwrap();
         assert!(commits.is_empty());
     }
 
     #[test]
     fn should_fetch_diff_commits_and_review_metadata_concurrently() {
-        // given — every forge call takes 150ms.
-        let delay_ms = 150;
-        let sequential_backend = SlowBackend::new(delay_ms, &[]);
-        let concurrent_backend = SlowBackend::new(delay_ms, &[]);
+        // given — the three independent calls must all arrive at the
+        // rendezvous simultaneously before any of them can return.
+        let sequential_backend = SlowBackend::new(&[]);
+        let concurrent_backend = SlowBackend::with_rendezvous(3);
         // when
-        let started = std::time::Instant::now();
         fetch_pr_data_sequential(&sequential_backend, target()).unwrap();
-        let sequential = started.elapsed();
-        let started = std::time::Instant::now();
         fetch_pr_data(&concurrent_backend, target()).unwrap();
-        let concurrent = started.elapsed();
-        eprintln!("4 calls x {delay_ms}ms: sequential {sequential:?}, concurrent {concurrent:?}");
-        // then — the sequential path pays for all four calls; the concurrent
-        // one pays for the PR metadata, the slowest of the other three and the
-        // head re-check.
-        assert!(sequential >= std::time::Duration::from_millis(4 * delay_ms));
-        assert!(
-            concurrent < std::time::Duration::from_millis(4 * delay_ms),
-            "expected ~{}ms, took {concurrent:?}",
-            3 * delay_ms
-        );
+        // then — sequential never overlaps; concurrent overlaps all three.
         assert_eq!(sequential_backend.peak_in_flight(), 1);
         assert_eq!(concurrent_backend.peak_in_flight(), 3);
         // and — PR metadata is still fetched before anything that needs it.
@@ -964,8 +1004,8 @@ rename to new_name.rs
         ];
         for fail in scenarios {
             // given
-            let sequential = SlowBackend::new(0, fail);
-            let concurrent = SlowBackend::new(0, fail);
+            let sequential = SlowBackend::new(fail);
+            let concurrent = SlowBackend::new(fail);
             // when
             let expected = outcome(fetch_pr_data_sequential(&sequential, target()));
             let actual = outcome(fetch_pr_data(&concurrent, target()));
@@ -977,20 +1017,17 @@ rename to new_name.rs
     #[test]
     fn should_surface_the_diff_error_and_degrade_optional_calls() {
         // given — the diff and the commit list both fail.
-        let backend = SlowBackend::new(0, &["get_pull_request_diff", "list_pull_request_commits"]);
+        let backend = SlowBackend::new(&["get_pull_request_diff", "list_pull_request_commits"]);
         // when
         let error = fetch_pr_data(&backend, target()).unwrap_err();
         // then — the required call's error wins; the best-effort one is dropped.
         assert_eq!(error.to_string(), "get_pull_request_diff failed");
 
         // given — only the best-effort calls fail.
-        let backend = SlowBackend::new(
-            0,
-            &[
-                "list_pull_request_commits",
-                "list_pull_request_review_metadata",
-            ],
-        );
+        let backend = SlowBackend::new(&[
+            "list_pull_request_commits",
+            "list_pull_request_review_metadata",
+        ]);
         // when
         let (_, patches, commits, review_metadata, _) = fetch_pr_data(&backend, target()).unwrap();
         // then — the diff still opens, without the commit selector.
@@ -1002,7 +1039,7 @@ rename to new_name.rs
     #[test]
     fn should_not_start_dependent_calls_when_pr_metadata_fails() {
         // given
-        let backend = SlowBackend::new(0, &["get_pull_request"]);
+        let backend = SlowBackend::new(&["get_pull_request"]);
         // when
         let result = fetch_pr_data(&backend, target());
         // then

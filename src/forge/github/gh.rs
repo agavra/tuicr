@@ -1438,11 +1438,6 @@ index 1111111..2222222 100644
     }
 
     #[test]
-    fn constructs_system_runner_backend() {
-        let _backend = GitHubGhBackend::new(Some(repo()));
-    }
-
-    #[test]
     fn parses_numeric_pull_request_target() {
         let target = parse_pull_request_target("125").unwrap();
         assert_eq!(target.number, 125);
@@ -2243,13 +2238,52 @@ Match host github-work
         );
     }
 
-    /// Wraps `FakeGhRunner`, sleeping on every call and optionally failing
-    /// the file-list or `gh pr diff` request, to exercise the concurrent
-    /// fetch in `get_pull_request_diff`.
+    /// Deterministic barrier with a timeout so a regression to sequential
+    /// execution fails with a panic instead of deadlocking the test runner.
+    struct Rendezvous {
+        expected: usize,
+        arrived: std::sync::Mutex<usize>,
+        cvar: std::sync::Condvar,
+    }
+
+    impl Rendezvous {
+        fn new(expected: usize) -> Self {
+            Self {
+                expected,
+                arrived: std::sync::Mutex::new(0),
+                cvar: std::sync::Condvar::new(),
+            }
+        }
+
+        fn wait(&self) {
+            let mut count = self.arrived.lock().unwrap();
+            *count += 1;
+            if *count >= self.expected {
+                self.cvar.notify_all();
+                return;
+            }
+            let (guard, timeout) = self
+                .cvar
+                .wait_timeout_while(count, std::time::Duration::from_secs(5), |c| {
+                    *c < self.expected
+                })
+                .unwrap();
+            assert!(
+                !timeout.timed_out(),
+                "expected {} concurrent requests, only {} arrived",
+                self.expected,
+                *guard
+            );
+        }
+    }
+
+    /// Wraps `FakeGhRunner`, optionally synchronizing the file-list and
+    /// `gh pr diff` requests at a rendezvous or failing either call, to
+    /// exercise the concurrent fetch in `get_pull_request_diff`.
     #[derive(Default)]
     struct SlowGhRunner {
         inner: FakeGhRunner,
-        delay_ms: u64,
+        rendezvous: Option<Rendezvous>,
         fail_files: bool,
         fail_diff: bool,
         in_flight: std::sync::atomic::AtomicUsize,
@@ -2259,15 +2293,19 @@ Match host github-work
     impl GhCommandRunner for SlowGhRunner {
         fn run(&self, args: &[String]) -> GhCommandResult<String> {
             use std::sync::atomic::Ordering::SeqCst;
-            let now = self.in_flight.fetch_add(1, SeqCst) + 1;
-            self.peak_in_flight.fetch_max(now, SeqCst);
-            std::thread::sleep(std::time::Duration::from_millis(self.delay_ms));
-            self.in_flight.fetch_sub(1, SeqCst);
             let is_files = args
                 .iter()
                 .any(|a| a.contains("/pulls/") && a.contains("/files"));
             let is_diff = args.first().map(String::as_str) == Some("pr")
                 && args.get(1).map(String::as_str) == Some("diff");
+            let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+            self.peak_in_flight.fetch_max(now, SeqCst);
+            if (is_files || is_diff)
+                && let Some(rendezvous) = &self.rendezvous
+            {
+                rendezvous.wait();
+            }
+            self.in_flight.fetch_sub(1, SeqCst);
             if (self.fail_files && is_files) || (self.fail_diff && is_diff) {
                 return Err(GhCommandError::Failed {
                     status: Some(1),
@@ -2285,9 +2323,9 @@ Match host github-work
 
     #[test]
     fn should_fetch_pr_file_list_and_patch_concurrently() {
-        // given — every gh call takes 150ms.
+        // given — both diff requests must meet at the rendezvous to proceed.
         let runner = SlowGhRunner {
-            delay_ms: 150,
+            rendezvous: Some(Rendezvous::new(2)),
             ..Default::default()
         };
         let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
@@ -2295,10 +2333,8 @@ Match host github-work
             .get_pull_request(parse_pull_request_target("125").unwrap())
             .unwrap();
         // when
-        let started = std::time::Instant::now();
         let patches = backend.get_pull_request_diff(&details).unwrap();
-        let elapsed = started.elapsed();
-        // then — both requests overlapped, so the pair costs one round trip.
+        // then — both requests overlapped deterministically.
         assert_eq!(patches.len(), 1);
         assert_eq!(
             backend
@@ -2306,10 +2342,6 @@ Match host github-work
                 .peak_in_flight
                 .load(std::sync::atomic::Ordering::SeqCst),
             2
-        );
-        assert!(
-            elapsed < std::time::Duration::from_millis(300),
-            "expected ~150ms, took {elapsed:?}"
         );
     }
 
