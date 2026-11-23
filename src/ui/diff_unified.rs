@@ -2063,6 +2063,48 @@ mod remote_comments_snapshot_tests {
     }
 
     #[test]
+    fn empty_review_placeholder_does_not_overwrite_review_comments_or_comment_editor() {
+        let mut app = make_revision_app(Vec::new());
+        app.diff_source = DiffSource::Staged;
+        app.rebuild_annotations();
+
+        // Truly empty staged review renders the placeholder.
+        let empty = body_text(&draw(&mut app));
+        assert!(
+            empty.contains("No staged changes"),
+            "expected placeholder on empty staged review:\n{empty}"
+        );
+
+        // Opening the review-level comment editor suppresses the placeholder.
+        app.input_mode = InputMode::Comment;
+        app.comment_is_review_level = true;
+        let editing = body_text(&draw(&mut app));
+        assert!(
+            !editing.contains("No staged changes"),
+            "placeholder should not overwrite open comment editor:\n{editing}"
+        );
+
+        // Persisted review-level comments suppress the placeholder even in Normal mode.
+        app.input_mode = InputMode::Normal;
+        app.comment_is_review_level = false;
+        app.session.review_comments.push(crate::model::Comment::new(
+            "overall note".to_string(),
+            crate::model::CommentType::None,
+            None,
+        ));
+        app.rebuild_annotations();
+        let with_comment = body_text(&draw(&mut app));
+        assert!(
+            with_comment.contains("overall note"),
+            "expected review-level comment to remain visible:\n{with_comment}"
+        );
+        assert!(
+            !with_comment.contains("No staged changes"),
+            "placeholder should not overwrite review-level comments:\n{with_comment}"
+        );
+    }
+
+    #[test]
     fn should_render_resolved_remote_comment_only_under_comments_all() {
         // given a PR app with one resolved remote thread
         let mut app = make_pr_app();

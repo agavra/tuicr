@@ -315,6 +315,9 @@ fn render_empty_review_placeholder(frame: &mut Frame, app: &App, area: Rect) {
     let Some(text) = app.empty_review_placeholder() else {
         return;
     };
+    if !app.line_annotations.is_empty() || app.input_mode == crate::app::InputMode::Comment {
+        return;
+    }
     // Inside the pane's border, on its middle row.
     if area.width <= 2 || area.height <= 2 {
         return;
