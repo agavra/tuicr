@@ -132,8 +132,10 @@ launch_tuicr_pane() {
   local use_stdout=false
 
   if tuicr_stdout_supported; then
-    output_file=$(mktemp /tmp/tuicr-output.XXXXXX)
-    tuicr_cmd="$tuicr_cmd --stdout > '$output_file'"
+    output_file=$(mktemp "${TMPDIR:-/tmp}/tuicr-output.XXXXXX")
+    local quoted_output
+    printf -v quoted_output '%q' "$output_file"
+    tuicr_cmd="$tuicr_cmd --stdout > $quoted_output"
     use_stdout=true
     log_info "Using --stdout mode (output will be captured)"
   else

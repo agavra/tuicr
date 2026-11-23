@@ -148,7 +148,9 @@ launch_tuicr_pane() {
 
   # FIFO for blocking until tuicr exits (zellij has no wait-for primitive)
   local fifo
-  fifo=$(mktemp -u "/tmp/tuicr-fifo.XXXXXX")
+  fifo=$(mktemp -u "${TMPDIR:-/tmp}/tuicr-fifo.XXXXXX")
+  local quoted_fifo
+  printf -v quoted_fifo '%q' "$fifo"
   mkfifo "$fifo"
 
   # Optional --stdout capture
@@ -157,8 +159,10 @@ launch_tuicr_pane() {
   local use_stdout=false
 
   if tuicr_stdout_supported; then
-    output_file=$(mktemp /tmp/tuicr-output.XXXXXX)
-    tuicr_cmd="$tuicr_cmd --stdout > '$output_file'"
+    output_file=$(mktemp "${TMPDIR:-/tmp}/tuicr-output.XXXXXX")
+    local quoted_output
+    printf -v quoted_output '%q' "$output_file"
+    tuicr_cmd="$tuicr_cmd --stdout > $quoted_output"
     use_stdout=true
     log_info "Using --stdout mode (output will be captured)"
   else
@@ -190,7 +194,7 @@ launch_tuicr_pane() {
   # bash, not sh: $tuicr_cmd carries bash's printf %q quoting, which can emit
   # non-POSIX $'...' forms that dash (the default /bin/sh on many Linux
   # distros) does not understand.
-  zellij_args+=(-- bash -c "$tuicr_cmd; echo done > '$fifo'")
+  zellij_args+=(-- bash -c "$tuicr_cmd; echo done > $quoted_fifo")
 
   "$ZELLIJ_BIN" run\
     "${zellij_args[@]}"
