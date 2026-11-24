@@ -100,6 +100,13 @@ One rejection comes from the server itself, since tuicr cannot know it in
 advance: you cannot approve or request changes on your own pull request. tuicr
 surfaces Gitea's message rather than reporting success.
 
+## Draft state
+
+Gitea marks a pull request work in progress by a title prefix. `:ready` strips a leading `WIP:` or
+`[WIP]` (case-insensitive) from the title, and `:draft` prepends `WIP: `. Both ask for confirmation
+first. An instance with custom `WORK_IN_PROGRESS_PREFIXES` may keep the PR in progress; tuicr then
+reports that the draft state did not change.
+
 ## Limitations
 
 - Gitea collections (PRs, files, reviews) are read up to 200 pages and beyond that the call fails with an explicit error rather than returning a partial list.

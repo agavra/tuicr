@@ -534,6 +534,19 @@ where
         endpoint: &str,
         body: Option<&str>,
     ) -> Result<TeaResponse> {
+        self.api_unmapped(repo, method, endpoint, body)
+            .map_err(|error| map_tea_error(error, &repo.host))
+    }
+
+    /// [`Self::api`] before error mapping, for callers with their own message
+    /// for a status.
+    fn api_unmapped(
+        &self,
+        repo: &ForgeRepository,
+        method: &str,
+        endpoint: &str,
+        body: Option<&str>,
+    ) -> TeaCommandResult<TeaResponse> {
         let mut args = vec!["api".to_string(), "-i".to_string()];
         if let Some(login) = tea_login_for_host(&repo.host) {
             args.extend(["--login".to_string(), login.to_string()]);
@@ -546,9 +559,7 @@ where
         }
         args.push(endpoint.to_string());
 
-        self.runner
-            .run(&args, body)
-            .map_err(|error| map_tea_error(error, &repo.host))
+        self.runner.run(&args, body)
     }
 
     fn get_json<T: DeserializeOwned>(&self, repo: &ForgeRepository, endpoint: &str) -> Result<T> {
@@ -1120,6 +1131,58 @@ where
             state: review.state,
         })
     }
+
+    fn can_set_draft_state(&self) -> bool {
+        true
+    }
+
+    /// Gitea has no draft flag: a title prefix (`WIP:` / `[WIP]` by default)
+    /// makes a PR work in progress, so the title is rewritten.
+    fn set_draft_state(&self, pr: &PullRequestDetails, draft: bool) -> Result<()> {
+        let endpoint = Self::pulls_endpoint(&pr.repository, pr.number, "");
+        let current: GiteaPullRequest = self.get_json(&pr.repository, &endpoint)?;
+        let title = if draft {
+            format!("{GITEA_DRAFT_PREFIX} {}", current.title)
+        } else {
+            strip_wip_prefix(&current.title).unwrap_or(current.title)
+        };
+        let response = self
+            .api_unmapped(
+                &pr.repository,
+                "PATCH",
+                &endpoint,
+                Some(&json!({ "title": title }).to_string()),
+            )
+            .map_err(|err| match err {
+                TeaCommandError::Http { status: 403, .. } => TuicrError::Forge(
+                    "Cannot change draft state: you lack write access to this pull request."
+                        .to_string(),
+                ),
+                err => map_tea_error(err, &pr.repository.host),
+            })?;
+        let updated: GiteaPullRequest = serde_json::from_str(&response.body)?;
+        if updated.draft != draft {
+            return Err(TuicrError::Forge(format!(
+                "Gitea did not change the draft state; this instance's work-in-progress \
+                 title prefixes may differ from `{GITEA_DRAFT_PREFIX}` / `[WIP]`."
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Prefix written by `:draft`; Gitea's default `WORK_IN_PROGRESS_PREFIXES`
+/// are `WIP:` and `[WIP]`, matched case-insensitively.
+const GITEA_DRAFT_PREFIX: &str = "WIP:";
+
+/// The title without a leading default work-in-progress prefix, or `None`
+/// when it has none.
+fn strip_wip_prefix(title: &str) -> Option<String> {
+    ["WIP:", "[WIP]"].iter().find_map(|prefix| {
+        let head = title.get(..prefix.len())?;
+        head.eq_ignore_ascii_case(prefix)
+            .then(|| title[prefix.len()..].trim_start().to_string())
+    })
 }
 
 // ----- Conversions -----
@@ -2745,5 +2808,124 @@ mod tests {
             "gitea.example.com"
         );
         assert_eq!(resolve_ssh_hostname_from_config("other", config), "other");
+    }
+
+    // ----- draft state -----
+
+    /// Answers the PR GET with `title`/`draft`, and the PATCH with the state
+    /// Gitea would derive from the title it was sent (or a fixed error).
+    struct DraftStateRunner {
+        title: &'static str,
+        patch_error: Option<u16>,
+        calls: RefCell<Vec<(Vec<String>, Option<String>)>>,
+    }
+
+    impl DraftStateRunner {
+        fn new(title: &'static str) -> Self {
+            Self {
+                title,
+                patch_error: None,
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn patched_title(&self) -> String {
+            let calls = self.calls.borrow();
+            let (_, body) = calls
+                .iter()
+                .find(|(args, _)| args.iter().any(|a| a == "PATCH"))
+                .expect("a PATCH call");
+            let body: serde_json::Value = serde_json::from_str(body.as_ref().unwrap()).unwrap();
+            body["title"].as_str().unwrap().to_string()
+        }
+    }
+
+    impl TeaCommandRunner for DraftStateRunner {
+        fn run(&self, args: &[String], stdin: Option<&str>) -> TeaCommandResult<TeaResponse> {
+            self.calls
+                .borrow_mut()
+                .push((args.to_vec(), stdin.map(str::to_string)));
+            let title = if args.iter().any(|a| a == "PATCH") {
+                if let Some(status) = self.patch_error {
+                    return Err(TeaCommandError::Http {
+                        status,
+                        body: r#"{"message":"forbidden"}"#.to_string(),
+                    });
+                }
+                let body: serde_json::Value = serde_json::from_str(stdin.unwrap()).unwrap();
+                body["title"].as_str().unwrap().to_string()
+            } else {
+                self.title.to_string()
+            };
+            let mut pr: serde_json::Value = serde_json::from_str(PR_JSON).unwrap();
+            pr["draft"] = json!(strip_wip_prefix(&title).is_some());
+            pr["title"] = json!(title);
+            Ok(TeaResponse {
+                body: pr.to_string(),
+                total_count: None,
+            })
+        }
+    }
+
+    #[test]
+    fn should_strip_the_wip_prefix_when_marking_ready() {
+        let backend =
+            GiteaTeaBackend::with_runner(Some(repo()), DraftStateRunner::new("WIP: Add the thing"));
+        backend.set_draft_state(&details(), false).unwrap();
+        assert_eq!(backend.runner.patched_title(), "Add the thing");
+    }
+
+    #[test]
+    fn should_strip_a_bracketed_wip_prefix_case_insensitively() {
+        let backend = GiteaTeaBackend::with_runner(
+            Some(repo()),
+            DraftStateRunner::new("[wip] Add the thing"),
+        );
+        backend.set_draft_state(&details(), false).unwrap();
+        assert_eq!(backend.runner.patched_title(), "Add the thing");
+    }
+
+    #[test]
+    fn should_prefix_wip_when_converting_to_draft() {
+        let backend =
+            GiteaTeaBackend::with_runner(Some(repo()), DraftStateRunner::new("Add the thing"));
+        backend.set_draft_state(&details(), true).unwrap();
+        assert_eq!(backend.runner.patched_title(), "WIP: Add the thing");
+        let calls = backend.runner.calls.borrow();
+        let (args, _) = calls.last().unwrap();
+        assert_eq!(args.last().unwrap(), "/repos/team/service/pulls/42");
+    }
+
+    #[test]
+    fn should_report_when_gitea_still_sees_the_pr_as_a_draft() {
+        // given a custom prefix tuicr does not know, so the title is unchanged
+        // and Gitea (configured for it) keeps the PR a draft
+        struct CustomPrefixRunner;
+        impl TeaCommandRunner for CustomPrefixRunner {
+            fn run(&self, _: &[String], _: Option<&str>) -> TeaCommandResult<TeaResponse> {
+                let mut pr: serde_json::Value = serde_json::from_str(PR_JSON).unwrap();
+                pr["title"] = json!("DRAFT Add the thing");
+                pr["draft"] = json!(true);
+                Ok(TeaResponse {
+                    body: pr.to_string(),
+                    total_count: None,
+                })
+            }
+        }
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), CustomPrefixRunner);
+        let err = backend.set_draft_state(&details(), false).unwrap_err();
+        assert!(
+            err.to_string().contains("did not change the draft state"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn should_explain_missing_write_access_when_gitea_forbids_the_edit() {
+        let mut runner = DraftStateRunner::new("WIP: Add the thing");
+        runner.patch_error = Some(403);
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let err = backend.set_draft_state(&details(), false).unwrap_err();
+        assert!(err.to_string().contains("you lack write access"), "{err}");
     }
 }
