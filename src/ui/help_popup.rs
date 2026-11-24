@@ -1004,6 +1004,14 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             Span::raw("  Push a pending (draft) review to the forge"),
         ]),
         Line::from(vec![
+            Span::styled("  :ready", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("  Mark the draft PR ready for review (GitHub)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  :draft", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("  Convert the PR back to a draft (GitHub)"),
+        ]),
+        Line::from(vec![
             Span::styled(
                 "  :set relativenumber[!]",
                 Style::default().add_modifier(Modifier::BOLD),

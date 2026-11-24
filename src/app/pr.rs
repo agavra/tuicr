@@ -1616,6 +1616,161 @@ impl App {
         }
     }
 
+    /// `:ready` (`draft == false`) or `:draft` (`draft == true`): ask before
+    /// changing the open PR's draft state, since marking ready notifies
+    /// reviewers.
+    pub fn begin_set_draft_state(&mut self, draft: bool) {
+        let command = if draft { ":draft" } else { ":ready" };
+        let DiffSource::PullRequest(pr) = &self.diff_source else {
+            self.set_warning(format!("{command} only applies in PR mode"));
+            return;
+        };
+        if let Some(reason) = pr.read_only_reason() {
+            self.set_warning(format!("Cannot change draft state: PR is {reason}"));
+            return;
+        }
+        if self.pr_draft_state_rx.is_some() {
+            self.set_message("A draft-state change is already in progress");
+            return;
+        }
+        let supported = self
+            .forge_backend
+            .as_deref()
+            .is_some_and(|b| b.can_set_draft_state());
+        if !supported {
+            self.set_warning(format!(
+                "{command} is not supported for {}",
+                self.forge_display_name()
+            ));
+            return;
+        }
+        if self
+            .pr_info
+            .as_ref()
+            .is_some_and(|info| info.details.is_draft == draft)
+        {
+            self.set_message(if draft {
+                "PR is already a draft"
+            } else {
+                "PR is already ready for review"
+            });
+            return;
+        }
+        self.pending_draft_state = Some(draft);
+        self.enter_confirm_mode(if draft {
+            ConfirmAction::MarkDraft
+        } else {
+            ConfirmAction::MarkReady
+        });
+    }
+
+    /// Answer to the `:ready` / `:draft` confirmation: change the draft state
+    /// on the forge in the background.
+    pub fn spawn_set_draft_state(&mut self) {
+        let Some(draft) = self.pending_draft_state.take() else {
+            return;
+        };
+        let Some(details) = self.open_pr_details() else {
+            return;
+        };
+        let local_checkout = self
+            .forge_backend
+            .as_deref()
+            .and_then(|b| b.local_checkout_path());
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pr_draft_state_rx = Some(rx);
+        self.set_message(if draft {
+            "Converting PR to draft…"
+        } else {
+            "Marking PR ready for review…"
+        });
+
+        let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
+        std::thread::spawn(move || {
+            let backend = create_forge_backend(
+                &details.repository,
+                local_checkout,
+                show_pr_checks,
+                show_pr_comments,
+            );
+            let result = backend
+                .set_draft_state(&details, draft)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(PrDraftStateEvent::Done {
+                repository: details.repository,
+                pr_number: details.number,
+                draft,
+                result,
+            });
+        });
+    }
+
+    /// Apply the result of a background draft-state change. The PR list row
+    /// is updated even when the user has since left the PR; the open PR's
+    /// metadata and status message only when it is still on screen.
+    pub fn poll_pr_draft_state_events(&mut self) {
+        let Some(rx) = self.pr_draft_state_rx.as_ref() else {
+            return;
+        };
+        let PrDraftStateEvent::Done {
+            repository,
+            pr_number,
+            draft,
+            result,
+        } = match rx.try_recv() {
+            Ok(event) => event,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pr_draft_state_rx = None;
+                return;
+            }
+        };
+        self.pr_draft_state_rx = None;
+        // Draft state belongs to the PR, not a head, so a reload to a new
+        // head in the meantime still gets the result.
+        let still_open = matches!(
+            &self.diff_source,
+            DiffSource::PullRequest(pr)
+                if pr.key.repository == repository && pr.key.number == pr_number
+        );
+        match result {
+            Ok(()) => {
+                if let crate::forge::selector::PullRequestsTab::Loaded { rows, .. } =
+                    &mut self.pr_tab
+                {
+                    for row in rows
+                        .iter_mut()
+                        .filter(|row| row.repository == repository && row.number == pr_number)
+                    {
+                        row.is_draft = draft;
+                    }
+                }
+                if !still_open {
+                    return;
+                }
+                if let Some(info) = self.pr_info.as_mut() {
+                    info.details.is_draft = draft;
+                }
+                self.rebuild_annotations();
+                self.set_message(if draft {
+                    format!("PR #{pr_number} converted to draft")
+                } else {
+                    format!("PR #{pr_number} marked ready for review")
+                });
+            }
+            Err(e) if still_open => {
+                let action = if draft {
+                    "convert PR to draft"
+                } else {
+                    "mark PR ready for review"
+                };
+                self.set_error(format!("Failed to {action}: {e}"));
+            }
+            Err(_) => {}
+        }
+    }
+
     /// Open a PR using the provided forge backend, synchronously. Exists
     /// as a seam for tests that want to drive the open without spinning
     /// up a background thread + mpsc round-trip. Production paths go

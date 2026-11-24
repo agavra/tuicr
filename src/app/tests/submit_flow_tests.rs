@@ -2289,12 +2289,15 @@ fn should_let_request_changes_retry_bare_on_bitbucket_and_azure() {
     }
 }
 
-/// A backend that, like Gerrit, lets the signed-in user delete a draft.
-struct DraftDeletingBackend {
+/// A backend whose optional write capabilities are switched on per test:
+/// deleting a draft comment (like Gerrit) or changing draft state (like GitHub).
+#[derive(Default)]
+struct CapabilityBackend {
     can_delete: bool,
+    can_set_draft: bool,
 }
 
-impl crate::forge::traits::ForgeBackend for DraftDeletingBackend {
+impl crate::forge::traits::ForgeBackend for CapabilityBackend {
     fn list_pull_requests(
         &self,
         _: crate::forge::traits::PullRequestListQuery,
@@ -2343,6 +2346,9 @@ impl crate::forge::traits::ForgeBackend for DraftDeletingBackend {
     fn can_delete_draft_comments(&self) -> bool {
         self.can_delete
     }
+    fn can_set_draft_state(&self) -> bool {
+        self.can_set_draft
+    }
 }
 
 /// A PR app with one published remote comment and one draft reply, the cursor
@@ -2353,7 +2359,10 @@ fn app_with_remote_draft(can_delete: bool, comment_idx: usize) -> App {
     };
 
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
-    app.forge_backend = Some(Box::new(DraftDeletingBackend { can_delete }));
+    app.forge_backend = Some(Box::new(CapabilityBackend {
+        can_delete,
+        ..Default::default()
+    }));
     app.forge_review_threads = vec![RemoteReviewThread {
         id: "thread-1".into(),
         path: "src/lib.rs".into(),
@@ -2504,4 +2513,222 @@ fn should_refetch_the_threads_once_the_forge_has_deleted_the_draft() {
     assert!(app.pr_draft_delete_rx.is_none());
     assert!(app.pr_threads_rx.is_some());
     assert!(app.forge_review_threads_loading);
+}
+
+// `:ready` / `:draft`
+
+fn pr_details(is_draft: bool) -> PullRequestDetails {
+    PullRequestDetails {
+        repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+        number: 125,
+        title: "test pr".into(),
+        url: "https://github.com/agavra/tuicr/pull/125".into(),
+        state: "OPEN".into(),
+        is_draft,
+        author: None,
+        head_ref_name: "feat".into(),
+        base_ref_name: "main".into(),
+        head_sha: "abcdef0123".into(),
+        base_sha: "0000".into(),
+        body: String::new(),
+        updated_at: None,
+        closed: false,
+        merged_at: None,
+        diff_start_sha: None,
+    }
+}
+
+/// A PR app on a draft PR (per `pr_info`), with the PR list loaded and
+/// showing the same PR as a draft.
+fn app_with_draft_pr(can_set_draft: bool) -> App {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.forge_backend = Some(Box::new(CapabilityBackend {
+        can_set_draft,
+        ..Default::default()
+    }));
+    let details = pr_details(true);
+    app.pr_tab = crate::forge::selector::PullRequestsTab::Loaded {
+        repository: details.repository.clone(),
+        rows: vec![crate::forge::traits::PullRequestSummary {
+            repository: details.repository.clone(),
+            number: details.number,
+            title: details.title.clone(),
+            author: None,
+            head_ref_name: details.head_ref_name.clone(),
+            base_ref_name: details.base_ref_name.clone(),
+            updated_at: None,
+            last_commit_at: None,
+            url: details.url.clone(),
+            state: details.state.clone(),
+            is_draft: true,
+        }],
+        has_more: false,
+        loading_more: false,
+        filter: String::new(),
+        scope: crate::forge::traits::PullRequestListScope::Open,
+        cursor: 0,
+        scroll_offset: 0,
+    };
+    app.pr_info = Some(PullRequestInfo::from_details(details));
+    app
+}
+
+fn send_draft_state_result(
+    app: &mut App,
+    repository: ForgeRepository,
+    pr_number: u64,
+    draft: bool,
+    result: std::result::Result<(), String>,
+) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_draft_state_rx = Some(rx);
+    tx.send(PrDraftStateEvent::Done {
+        repository,
+        pr_number,
+        draft,
+        result,
+    })
+    .unwrap();
+}
+
+fn pr_list_row_is_draft(app: &App) -> bool {
+    let crate::forge::selector::PullRequestsTab::Loaded { rows, .. } = &app.pr_tab else {
+        panic!("expected a loaded PR list");
+    };
+    rows[0].is_draft
+}
+
+#[test]
+fn should_ask_before_marking_a_draft_pr_ready() {
+    // given a draft PR on a forge that can change draft state
+    let mut app = app_with_draft_pr(true);
+    // when :ready is run
+    app.begin_set_draft_state(false);
+    // then the prompt is up and nothing is sent yet
+    assert_eq!(app.input_mode, InputMode::Confirm);
+    assert_eq!(app.pending_confirm, Some(ConfirmAction::MarkReady));
+    assert_eq!(app.pending_draft_state, Some(false));
+    assert!(app.pr_draft_state_rx.is_none());
+}
+
+#[test]
+fn should_stay_open_and_send_nothing_when_the_ready_prompt_is_declined() {
+    // given the :ready prompt is up
+    let mut app = app_with_draft_pr(true);
+    app.begin_set_draft_state(false);
+    // when the user answers no
+    crate::handler::handle_confirm_action(&mut app, crate::input::Action::ConfirmNo);
+    // then nothing is sent and the app keeps running
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(!app.should_quit);
+    assert!(app.pending_draft_state.is_none());
+    assert!(app.pr_draft_state_rx.is_none());
+}
+
+#[test]
+fn should_warn_when_the_forge_cannot_change_draft_state() {
+    // given a forge without draft-state support
+    let mut app = app_with_draft_pr(false);
+    // when :ready is run
+    app.begin_set_draft_state(false);
+    // then no prompt, just a warning naming the forge
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.pending_draft_state.is_none());
+    let message = app.message.as_ref().expect("a warning");
+    assert_eq!(message.message_type, MessageType::Warning);
+    assert!(
+        message.content.contains("not supported for GitHub"),
+        "{}",
+        message.content
+    );
+}
+
+#[test]
+fn should_not_ask_when_the_pr_is_already_ready() {
+    // given a PR that is already ready for review
+    let mut app = app_with_draft_pr(true);
+    app.pr_info = Some(PullRequestInfo::from_details(pr_details(false)));
+    // when :ready is run
+    app.begin_set_draft_state(false);
+    // then no prompt, just a note
+    assert_eq!(app.input_mode, InputMode::Normal);
+    let message = app.message.as_ref().expect("a message");
+    assert!(
+        message.content.contains("already ready"),
+        "{}",
+        message.content
+    );
+}
+
+#[test]
+fn should_refuse_to_change_draft_state_of_a_closed_pr() {
+    // given a closed PR
+    let mut app = app_with_draft_pr(true);
+    let DiffSource::PullRequest(pr) = &mut app.diff_source else {
+        panic!("expected PR mode");
+    };
+    pr.closed = true;
+    // when :ready is run
+    app.begin_set_draft_state(false);
+    // then no prompt, just a warning
+    assert_eq!(app.input_mode, InputMode::Normal);
+    let message = app.message.as_ref().expect("a warning");
+    assert_eq!(message.message_type, MessageType::Warning);
+    assert!(message.content.contains("closed"), "{}", message.content);
+}
+
+#[test]
+fn should_clear_draft_marks_once_the_forge_marks_the_pr_ready() {
+    // given the forge has marked the open PR ready
+    let mut app = app_with_draft_pr(true);
+    let repository = ForgeRepository::github("github.com", "agavra", "tuicr");
+    send_draft_state_result(&mut app, repository, 125, false, Ok(()));
+    // when the result is applied
+    app.poll_pr_draft_state_events();
+    // then the info panel and the PR list no longer show it as a draft
+    assert!(app.pr_draft_state_rx.is_none());
+    assert!(!app.pr_info.as_ref().unwrap().details.is_draft);
+    assert!(!pr_list_row_is_draft(&app));
+    let message = app.message.as_ref().expect("a message");
+    assert!(
+        message.content.contains("PR #125 marked ready for review"),
+        "{}",
+        message.content
+    );
+}
+
+#[test]
+fn should_keep_draft_marks_and_report_when_the_forge_refuses() {
+    // given the forge refused to mark the PR ready
+    let mut app = app_with_draft_pr(true);
+    let repository = ForgeRepository::github("github.com", "agavra", "tuicr");
+    send_draft_state_result(
+        &mut app,
+        repository,
+        125,
+        false,
+        Err("you lack write access to this PR".to_string()),
+    );
+    // when the result is applied
+    app.poll_pr_draft_state_events();
+    // then the PR still shows as a draft and the error is shown
+    assert!(app.pr_info.as_ref().unwrap().details.is_draft);
+    assert!(pr_list_row_is_draft(&app));
+    let message = app.message.as_ref().expect("an error");
+    assert_eq!(message.message_type, MessageType::Error);
+    assert!(
+        message.content.contains("write access"),
+        "{}",
+        message.content
+    );
+}
+
+#[test]
+fn should_drop_a_draft_state_failure_for_a_pr_that_is_no_longer_open() {
+    let mut app = app_with_draft_pr(true);
+    let other = ForgeRepository::github("github.com", "agavra", "other");
+    send_draft_state_result(&mut app, other, 7, false, Err("boom".to_string()));
+    app.poll_pr_draft_state_events();
+    assert!(app.pr_draft_state_rx.is_none());
+    assert!(app.message.is_none());
 }

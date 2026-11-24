@@ -116,6 +116,8 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         CommandKind::Submit(SubmitEvent::RequestChanges),
     ),
     CommandSpec::new(&["submit draft"], CommandKind::Submit(SubmitEvent::Draft)),
+    CommandSpec::new(&["ready"], CommandKind::SetPrDraft(false)),
+    CommandSpec::new(&["draft"], CommandKind::SetPrDraft(true)),
     CommandSpec::new(&["summary"], CommandKind::Summary),
     CommandSpec::new(&["theme"], CommandKind::ThemePicker),
     CommandSpec::new(
@@ -187,6 +189,7 @@ enum CommandKind {
     Targets(TargetTab),
     SubmitPicker,
     Submit(SubmitEvent),
+    SetPrDraft(bool),
     Comments(PrCommentsVisibility),
     ThemePicker,
 }
@@ -1184,6 +1187,11 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.start_submit(event);
             CommandAfterDispatch::KeepMode
         }
+        CommandKind::SetPrDraft(draft) => {
+            app.exit_command_mode();
+            app.begin_set_draft_state(draft);
+            CommandAfterDispatch::KeepMode
+        }
         CommandKind::Comments(visibility) => {
             set_remote_comments_visibility(app, visibility);
             CommandAfterDispatch::ExitCommandMode
@@ -1432,7 +1440,12 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
     // in place and returns to the selector.
     let quits = !matches!(
         app.pending_confirm,
-        Some(app::ConfirmAction::DeleteSession | app::ConfirmAction::DeleteRemoteDraft)
+        Some(
+            app::ConfirmAction::DeleteSession
+                | app::ConfirmAction::DeleteRemoteDraft
+                | app::ConfirmAction::MarkReady
+                | app::ConfirmAction::MarkDraft
+        )
     );
     match action {
         Action::ConfirmYes => {
@@ -1441,6 +1454,11 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
             }
             if let Some(app::ConfirmAction::DeleteRemoteDraft) = app.pending_confirm {
                 app.spawn_remote_draft_delete();
+            }
+            if let Some(app::ConfirmAction::MarkReady | app::ConfirmAction::MarkDraft) =
+                app.pending_confirm
+            {
+                app.spawn_set_draft_state();
             }
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
                 let slug = app.session_slug();
@@ -2251,6 +2269,18 @@ mod command_tests {
         assert_eq!(
             command_spec_for("copy-url").map(|spec| spec.kind),
             Some(CommandKind::CopyUrl)
+        );
+    }
+
+    #[test]
+    fn parses_ready_and_draft_commands() {
+        assert_eq!(
+            command_spec_for("ready").map(|spec| spec.kind),
+            Some(CommandKind::SetPrDraft(false))
+        );
+        assert_eq!(
+            command_spec_for("draft").map(|spec| spec.kind),
+            Some(CommandKind::SetPrDraft(true))
         );
     }
 

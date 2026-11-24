@@ -53,6 +53,13 @@ created in one request against the head commit you reviewed (in a commit subset,
 selected commit). Review-level comments become the
 review body. Comments on a commit message cannot be posted inline, so they go into the review body.
 
+## Draft state
+
+`:ready` marks the open draft pull request ready for review (`gh pr ready`), and `:draft` converts
+it back (`gh pr ready --undo`). Both ask for confirmation first, since marking ready notifies
+reviewers. On success the PR info panel and the `:prs` list drop or show `[draft]` without a reload.
+Other forges report the commands as not supported.
+
 ## Existing comments
 
 Unresolved review threads from GitHub show inline in the diff. `:comments all` also shows
@@ -67,6 +74,8 @@ fetching PR conversation comments, and `show_pr_checks = true` to show CI check 
 - **`GitHub authentication failed`**: run `gh auth login` for the host named in the message.
 - **`GitHub token lacks pull request write permission`**: the `gh` token cannot write reviews to
   this repository; log in with an account or token that can.
+- **`Cannot change draft state: you lack write access to this PR`**: `:ready` / `:draft` need
+  write access to the pull request (its author or a collaborator with write permission).
 - **`You already have a pending review on this PR`**: GitHub allows one pending review per user.
   Submit or discard the existing one on GitHub, then retry.
 - **`the selected commit is not part of this PR`**: the PR was force-pushed since you opened it.

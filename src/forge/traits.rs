@@ -859,6 +859,18 @@ pub trait ForgeBackend {
             "this forge cannot delete draft comments".to_string(),
         ))
     }
+
+    /// Whether `set_draft_state` works on this forge.
+    fn can_set_draft_state(&self) -> bool {
+        false
+    }
+
+    /// Mark the PR as a draft (`true`) or ready for review (`false`).
+    fn set_draft_state(&self, _pr: &PullRequestDetails, _draft: bool) -> Result<()> {
+        Err(TuicrError::UnsupportedOperation(
+            "this forge cannot change a PR's draft state".to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]

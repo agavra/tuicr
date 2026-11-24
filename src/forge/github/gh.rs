@@ -601,6 +601,27 @@ where
 
         parse_create_review_response(&output)
     }
+
+    fn can_set_draft_state(&self) -> bool {
+        true
+    }
+
+    fn set_draft_state(&self, pr: &PullRequestDetails, draft: bool) -> Result<()> {
+        let mut args = vec![
+            "pr".to_string(),
+            "ready".to_string(),
+            pr.number.to_string(),
+            "--repo".to_string(),
+            gh_repo_arg(&pr.repository),
+        ];
+        if draft {
+            args.push("--undo".to_string());
+        }
+        self.runner
+            .run(&args)
+            .map_err(|err| map_set_draft_error(err, &pr.repository.host))?;
+        Ok(())
+    }
 }
 
 impl<R> GitHubGhBackend<R>
@@ -1052,6 +1073,17 @@ fn map_create_review_error(error: GhCommandError, host: &str) -> TuicrError {
                     .to_string(),
             );
         }
+    }
+    map_gh_error(error, host)
+}
+
+fn map_set_draft_error(error: GhCommandError, host: &str) -> TuicrError {
+    if let GhCommandError::Failed { stderr, .. } = &error
+        && looks_like_permission_failure(stderr)
+    {
+        return TuicrError::Forge(
+            "Cannot change draft state: you lack write access to this PR.".to_string(),
+        );
     }
     map_gh_error(error, host)
 }
@@ -3175,6 +3207,128 @@ Match host github-work
             "expected unknown-commit hint, got: {msg:?}"
         );
         assert!(msg.contains(":e"), "got: {msg:?}");
+    }
+
+    // set_draft_state tests
+
+    #[derive(Default)]
+    struct DraftStateRunner {
+        calls: Mutex<Vec<Vec<String>>>,
+        error: Option<GhCommandError>,
+    }
+
+    impl GhCommandRunner for DraftStateRunner {
+        fn run(&self, args: &[String]) -> GhCommandResult<String> {
+            self.calls.lock().unwrap().push(args.to_vec());
+            match &self.error {
+                Some(err) => Err(err.clone()),
+                None => Ok(String::new()),
+            }
+        }
+    }
+
+    fn draft_details(repository: ForgeRepository) -> PullRequestDetails {
+        let mut details = GitHubGhBackend::with_runner(Some(repo()), FakeGhRunner::default())
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        details.repository = repository;
+        details
+    }
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn should_run_gh_pr_ready_when_marking_ready() {
+        // given
+        let backend = GitHubGhBackend::with_runner(Some(repo()), DraftStateRunner::default());
+        // when
+        backend
+            .set_draft_state(&draft_details(repo()), false)
+            .unwrap();
+        // then
+        let calls = backend.runner.calls.lock().unwrap();
+        assert_eq!(
+            *calls,
+            vec![strings(&["pr", "ready", "125", "--repo", "agavra/tuicr"])]
+        );
+    }
+
+    #[test]
+    fn should_pass_undo_when_converting_to_draft() {
+        // given
+        let backend = GitHubGhBackend::with_runner(Some(repo()), DraftStateRunner::default());
+        // when
+        backend
+            .set_draft_state(&draft_details(repo()), true)
+            .unwrap();
+        // then
+        let calls = backend.runner.calls.lock().unwrap();
+        assert_eq!(
+            *calls,
+            vec![strings(&[
+                "pr",
+                "ready",
+                "125",
+                "--repo",
+                "agavra/tuicr",
+                "--undo"
+            ])]
+        );
+    }
+
+    #[test]
+    fn should_prefix_enterprise_host_in_repo_arg_for_draft_state() {
+        // given
+        let ghe = ForgeRepository::github("github.example.com", "agavra", "tuicr");
+        let backend = GitHubGhBackend::with_runner(Some(ghe.clone()), DraftStateRunner::default());
+        // when
+        backend.set_draft_state(&draft_details(ghe), false).unwrap();
+        // then
+        let calls = backend.runner.calls.lock().unwrap();
+        assert_eq!(calls[0][4], "github.example.com/agavra/tuicr");
+    }
+
+    #[test]
+    fn should_explain_missing_write_access_when_draft_state_is_forbidden() {
+        // given
+        let runner = DraftStateRunner {
+            error: Some(GhCommandError::Failed {
+                status: Some(1),
+                stderr: "GraphQL: Resource not accessible by integration (markPullRequestReadyForReview)".to_string(),
+            }),
+            ..Default::default()
+        };
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        // when
+        let err = backend
+            .set_draft_state(&draft_details(repo()), false)
+            .unwrap_err();
+        // then
+        assert!(
+            err.to_string().contains("you lack write access to this PR"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn should_report_generic_gh_failure_when_draft_state_fails() {
+        // given
+        let runner = DraftStateRunner {
+            error: Some(GhCommandError::Failed {
+                status: Some(1),
+                stderr: "network down".to_string(),
+            }),
+            ..Default::default()
+        };
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        // when
+        let err = backend
+            .set_draft_state(&draft_details(repo()), true)
+            .unwrap_err();
+        // then
+        assert!(err.to_string().contains("network down"), "got: {err}");
     }
 }
 
