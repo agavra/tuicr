@@ -3,8 +3,10 @@
 `argv(log, *cmd)` is the command line for Scenario.start_cmd. The command runs on a pty of its own (its controlling
 terminal, so `/dev/tty` is that pty too) the size of the pane; keys pass through and output is copied to the pane, so
 the Tui drives it as usual. Every synchronized update the command draws (`CSI ?2026h` ... `CSI ?2026l`) is logged as
-one JSON line: its size in bytes and how many reads of the pty it took. `frames(log)` reads them back. Stdlib only:
-this file runs as a script in the pane.
+one JSON line: its size in bytes and how many reads of the pty it took. `frames(log)` reads them back. With
+`da1_only=True` the pty also answers the startup keyboard probe the way tmux does (a Primary Device Attributes reply,
+no kitty flags), and the command's terminal-control requests are logged for `controls(log)`. Stdlib only: this file
+runs as a script in the pane.
 """
 
 from __future__ import annotations
@@ -22,11 +24,14 @@ from pathlib import Path
 from typing import TextIO
 
 OPEN, CLOSE = b"\x1b[?2026h", b"\x1b[?2026l"
+PROBE = b"\x1b[?u\x1b[c"
+DA1_ONLY = b"\x1b[?1;2c"
+CONTROLS = {b"\x1b[>4;1m": "modify-other-keys:1", b"\x1b[>4;0m": "modify-other-keys:0"}
 
 
-def argv(log: str | os.PathLike[str], *cmd: str) -> list[str]:
-    """`cmd` behind the relay, logging its frames to `log`."""
-    return [sys.executable, __file__, os.fspath(log), *cmd]
+def argv(log: str | os.PathLike[str], *cmd: str, da1_only: bool = False) -> list[str]:
+    """`cmd` behind the relay, logging its frames to `log`. `da1_only` answers the keyboard probe like tmux."""
+    return [sys.executable, __file__, *(["--da1-only"] if da1_only else []), os.fspath(log), *cmd]
 
 
 def frames(log: str | os.PathLike[str]) -> list[dict[str, int]]:
@@ -34,7 +39,15 @@ def frames(log: str | os.PathLike[str]) -> list[dict[str, int]]:
     path = Path(log)
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines()]
+    return [e for e in map(json.loads, path.read_text().splitlines()) if "bytes" in e]
+
+
+def controls(log: str | os.PathLike[str]) -> list[str]:
+    """The terminal-control requests logged so far, oldest first, e.g. "modify-other-keys:1"."""
+    path = Path(log)
+    if not path.exists():
+        return []
+    return [e["control"] for e in map(json.loads, path.read_text().splitlines()) if "control" in e]
 
 
 def _log_frames(stream: bytearray, ends: list[int], done: int, log: TextIO) -> int:
@@ -53,7 +66,31 @@ def _write_all(fd: int, data: bytes) -> None:
         data = data[os.write(fd, data) :]
 
 
-def main(log_path: str, cmd: list[str]) -> int:
+class Terminal:
+    """The command's terminal: answers the keyboard probe like tmux and logs its control requests."""
+
+    def __init__(self, da1_only: bool, log: TextIO) -> None:
+        self.da1_only = da1_only
+        self.log = log
+        self.carry = b""
+        self.probe_answered = False
+        self.seen: set[bytes] = set()
+
+    def observe(self, data: bytes, master: int) -> None:
+        """Consume the command's output: answer the startup probe and log each control request once."""
+        window = self.carry + data
+        if self.da1_only and not self.probe_answered and PROBE in window:
+            _write_all(master, DA1_ONLY)
+            self.probe_answered = True
+            print(json.dumps({"control": "probe-answered"}), file=self.log, flush=True)
+        for seq, name in CONTROLS.items():
+            if seq in window and seq not in self.seen:
+                self.seen.add(seq)
+                print(json.dumps({"control": name}), file=self.log, flush=True)
+        self.carry = window[-max(len(PROBE), *(len(s) for s in CONTROLS)) :]
+
+
+def main(log_path: str, cmd: list[str], da1_only: bool = False) -> int:
     size = fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8)
     pid, master = pty.fork()
     if pid == 0:
@@ -65,6 +102,7 @@ def main(log_path: str, cmd: list[str]) -> int:
     inputs = [master, 0]
     try:
         with open(log_path, "a") as log:
+            terminal = Terminal(da1_only, log)
             while True:
                 ready, _, _ = select.select(inputs, [], [])
                 if master in ready:
@@ -76,6 +114,7 @@ def main(log_path: str, cmd: list[str]) -> int:
                         break
                     stream += data
                     ends.append(len(stream))
+                    terminal.observe(data, master)
                     _write_all(1, data)
                     done = _log_frames(stream, ends, done, log)
                 if 0 in ready:
@@ -90,4 +129,8 @@ def main(log_path: str, cmd: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1], sys.argv[2:]))
+    args = sys.argv[1:]
+    da1_only = bool(args and args[0] == "--da1-only")
+    if da1_only:
+        args = args[1:]
+    sys.exit(main(args[0], args[1:], da1_only))

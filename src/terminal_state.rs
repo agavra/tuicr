@@ -102,6 +102,9 @@ pub struct TerminalSession<W: Write> {
     terminal: Terminal<CrosstermBackend<W>>,
     features: TerminalFeatures,
     active: bool,
+    /// The xterm modifyOtherKeys fallback was requested because the kitty
+    /// keyboard probe failed. Only then may deactivation reset it.
+    modify_other_keys: bool,
 }
 
 impl<W: Write> TerminalSession<W> {
@@ -109,15 +112,23 @@ impl<W: Write> TerminalSession<W> {
         let backend = CrosstermBackend::new(writer);
         let mut terminal = Terminal::new(backend)?;
         set_panic_restore_target(features.panic_restore_target());
-        if let Err(err) = activate_writer(terminal.backend_mut(), features) {
-            set_panic_restore_target(PanicRestoreTarget::None);
-            deactivate_writer_best_effort(terminal.backend_mut(), features.mouse_enabled);
-            return Err(err);
-        }
+        let modify_other_keys = match activate_writer(terminal.backend_mut(), features) {
+            Ok(enabled) => enabled,
+            Err(err) => {
+                set_panic_restore_target(PanicRestoreTarget::None);
+                deactivate_writer_best_effort(
+                    terminal.backend_mut(),
+                    features.mouse_enabled,
+                    false,
+                );
+                return Err(err);
+            }
+        };
         Ok(Self {
             terminal,
             features,
             active: true,
+            modify_other_keys,
         })
     }
 
@@ -166,10 +177,17 @@ impl<W: Write> TerminalSession<W> {
             return Ok(());
         }
         set_panic_restore_target(self.features.panic_restore_target());
-        if let Err(err) = activate_writer(self.terminal.backend_mut(), self.features) {
-            set_panic_restore_target(PanicRestoreTarget::None);
-            deactivate_writer_best_effort(self.terminal.backend_mut(), self.features.mouse_enabled);
-            return Err(err);
+        match activate_writer(self.terminal.backend_mut(), self.features) {
+            Ok(enabled) => self.modify_other_keys = enabled,
+            Err(err) => {
+                set_panic_restore_target(PanicRestoreTarget::None);
+                deactivate_writer_best_effort(
+                    self.terminal.backend_mut(),
+                    self.features.mouse_enabled,
+                    self.modify_other_keys,
+                );
+                return Err(err);
+            }
         }
         self.active = true;
         Ok(())
@@ -181,7 +199,12 @@ impl<W: Write> TerminalSession<W> {
         }
         self.active = false;
         set_panic_restore_target(PanicRestoreTarget::None);
-        deactivate_writer(self.terminal.backend_mut(), self.features.mouse_enabled)?;
+        deactivate_writer(
+            self.terminal.backend_mut(),
+            self.features.mouse_enabled,
+            self.modify_other_keys,
+        )?;
+        self.modify_other_keys = false;
         Ok(())
     }
 
@@ -212,7 +235,12 @@ impl<W: Write> Drop for TerminalSession<W> {
         if self.active {
             self.active = false;
             set_panic_restore_target(PanicRestoreTarget::None);
-            deactivate_writer_best_effort(self.terminal.backend_mut(), self.features.mouse_enabled);
+            deactivate_writer_best_effort(
+                self.terminal.backend_mut(),
+                self.features.mouse_enabled,
+                self.modify_other_keys,
+            );
+            self.modify_other_keys = false;
         }
     }
 }
@@ -281,17 +309,27 @@ fn restore_target_best_effort<S, T>(
         PanicRestoreTarget::None => {}
         PanicRestoreTarget::Stdout => {
             let mut stdout = open_stdout();
-            deactivate_writer_best_effort(&mut stdout, true);
+            // The session tracks the modifyOtherKeys fallback and resets it when
+            // it is dropped during the same unwind; this blind restore must not
+            // reset a mode that was never set.
+            deactivate_writer_best_effort(&mut stdout, true, false);
         }
         PanicRestoreTarget::DevTty => {
             if let Ok(mut tty) = open_dev_tty() {
-                deactivate_writer_best_effort(&mut tty, true);
+                deactivate_writer_best_effort(&mut tty, true, false);
             }
         }
     }
 }
 
-fn activate_writer<W: Write>(writer: &mut W, features: TerminalFeatures) -> anyhow::Result<()> {
+/// xterm modifyOtherKeys level 1: report Shift-Enter and Ctrl-Enter as CSI-u.
+const ENABLE_MODIFY_OTHER_KEYS: &[u8] = b"\x1b[>4;1m";
+/// Back to the terminal's default modifyOtherKeys level.
+const RESET_MODIFY_OTHER_KEYS: &[u8] = b"\x1b[>4;0m";
+
+/// Enters terminal modes for the event loop. Returns whether the
+/// modifyOtherKeys fallback was enabled and must be reset on deactivation.
+fn activate_writer<W: Write>(writer: &mut W, features: TerminalFeatures) -> anyhow::Result<bool> {
     enable_raw_mode()?;
     execute!(writer, EnterAlternateScreen)?;
     if features.mouse_enabled {
@@ -303,11 +341,15 @@ fn activate_writer<W: Write>(writer: &mut W, features: TerminalFeatures) -> anyh
     // actions like Enter submit or command-mode entry.
     execute!(writer, EnableBracketedPaste)?;
 
-    // REPORT_EVENT_TYPES distinguishes Press from Repeat from Release so the
-    // two-press file walk can require an actual key release between presses.
-    // Without it, terminals emit Press for every auto-repeat tick, so the
-    // walk is turned off and j/k stop at the file's edges instead.
+    Ok(enable_keyboard_modes(writer, features))
+}
+
+fn enable_keyboard_modes<W: Write>(writer: &mut W, features: TerminalFeatures) -> bool {
     if features.keyboard_enhancements_supported {
+        // REPORT_EVENT_TYPES distinguishes Press from Repeat from Release so
+        // the two-press file walk can require an actual key release between
+        // presses. Without it, terminals emit Press for every auto-repeat
+        // tick, so the walk is turned off and j/k stop at the file's edges.
         let _ = execute!(
             writer,
             PushKeyboardEnhancementFlags(
@@ -315,20 +357,47 @@ fn activate_writer<W: Write>(writer: &mut W, features: TerminalFeatures) -> anyh
                     | KeyboardEnhancementFlags::REPORT_EVENT_TYPES,
             )
         );
+        return false;
     }
-    Ok(())
+    // tmux answers the kitty probe with DA1 only, so Shift-Enter would arrive
+    // as bare Enter and submit. modifyOtherKeys level 1 makes tmux (extended-keys
+    // on, format csi-u) report it as CSI 13;2u, which crossterm parses.
+    // Not on Windows, whose consoles have no modifyOtherKeys and could render
+    // the raw bytes as text.
+    if cfg!(unix) {
+        writer
+            .write_all(ENABLE_MODIFY_OTHER_KEYS)
+            .and_then(|()| writer.flush())
+            .is_ok()
+    } else {
+        false
+    }
 }
 
-fn deactivate_writer<W: Write>(writer: &mut W, mouse_enabled: bool) -> anyhow::Result<()> {
-    deactivate_writer_with_raw_mode(writer, mouse_enabled, disable_raw_mode)
+fn disable_keyboard_modes<W: Write>(writer: &mut W, modify_other_keys: bool) {
+    let _ = execute!(writer, PopKeyboardEnhancementFlags);
+    if modify_other_keys && cfg!(unix) {
+        let _ = writer
+            .write_all(RESET_MODIFY_OTHER_KEYS)
+            .and_then(|()| writer.flush());
+    }
+}
+
+fn deactivate_writer<W: Write>(
+    writer: &mut W,
+    mouse_enabled: bool,
+    modify_other_keys: bool,
+) -> anyhow::Result<()> {
+    deactivate_writer_with_raw_mode(writer, mouse_enabled, modify_other_keys, disable_raw_mode)
 }
 
 fn deactivate_writer_with_raw_mode<W: Write>(
     writer: &mut W,
     mouse_enabled: bool,
+    modify_other_keys: bool,
     disable_raw: impl FnOnce() -> io::Result<()>,
 ) -> anyhow::Result<()> {
-    let _ = execute!(writer, PopKeyboardEnhancementFlags);
+    disable_keyboard_modes(writer, modify_other_keys);
     let _ = execute!(writer, DisableBracketedPaste);
     if mouse_enabled {
         let _ = execute!(writer, DisableMouseCapture);
@@ -340,8 +409,12 @@ fn deactivate_writer_with_raw_mode<W: Write>(
     Ok(())
 }
 
-fn deactivate_writer_best_effort<W: Write>(writer: &mut W, mouse_enabled: bool) {
-    let _ = deactivate_writer(writer, mouse_enabled);
+fn deactivate_writer_best_effort<W: Write>(
+    writer: &mut W,
+    mouse_enabled: bool,
+    modify_other_keys: bool,
+) {
+    let _ = deactivate_writer(writer, mouse_enabled, modify_other_keys);
 }
 
 #[cfg(test)]
@@ -351,7 +424,7 @@ mod tests {
     #[test]
     fn deactivate_writer_leaves_alternate_screen_even_when_disable_raw_mode_fails() {
         let mut buf = Vec::new();
-        let err = deactivate_writer_with_raw_mode(&mut buf, true, || {
+        let err = deactivate_writer_with_raw_mode(&mut buf, true, false, || {
             Err(io::Error::other("raw mode failed"))
         })
         .expect_err("should propagate raw mode error");
@@ -430,5 +503,46 @@ mod tests {
                 .panic_restore_target(),
             PanicRestoreTarget::DevTty
         );
+    }
+
+    fn features(keyboard_enhancements_supported: bool) -> TerminalFeatures {
+        TerminalFeatures::new()
+            .mouse_enabled(false)
+            .keyboard_enhancements_supported(keyboard_enhancements_supported)
+    }
+
+    #[test]
+    fn kitty_supported_pushes_flags_and_does_not_request_modify_other_keys() {
+        let mut out = Vec::new();
+        assert!(!enable_keyboard_modes(&mut out, features(true)));
+        assert_eq!(out.as_slice(), b"\x1b[>3u");
+    }
+
+    #[test]
+    fn fallback_requests_modify_other_keys_level_1() {
+        let mut out = Vec::new();
+        let enabled = enable_keyboard_modes(&mut out, features(false));
+        if cfg!(unix) {
+            assert!(enabled);
+            assert_eq!(out.as_slice(), ENABLE_MODIFY_OTHER_KEYS);
+        } else {
+            assert!(!enabled);
+            assert!(out.is_empty());
+        }
+    }
+
+    #[test]
+    fn release_resets_modify_other_keys_only_when_it_was_enabled() {
+        let mut out = Vec::new();
+        disable_keyboard_modes(&mut out, true);
+        if cfg!(unix) {
+            assert_eq!(out.as_slice(), b"\x1b[<1u\x1b[>4;0m");
+        } else {
+            assert_eq!(out.as_slice(), b"\x1b[<1u");
+        }
+
+        let mut out = Vec::new();
+        disable_keyboard_modes(&mut out, false);
+        assert_eq!(out.as_slice(), b"\x1b[<1u");
     }
 }

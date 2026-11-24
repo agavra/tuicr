@@ -129,7 +129,8 @@ Fixtures: `s.diff()` / `s.open(*args)` (git fixture, tuicr started), `s.pr_open(
 `empty_repo` (empty git repo on main), `git_merge_base` (`.repo .base .main .topic`), `pr_repo`, `wide_repo`, `long_file_repo`, `hg_repo`, `jj_repo`, `git(repo, *args)`,
 `run(cwd, *argv)`, `write(path, text_or_bytes)`. `e2e.ttyrelay.argv(log, *cmd)` wraps a command for `s.start_cmd` in a
 pty of its own and logs each synchronized frame it draws; `e2e.ttyrelay.frames(log)` reads back `{"bytes", "reads"}` per
-frame.
+frame. `da1_only=True` answers the startup keyboard probe as tmux does, and `e2e.ttyrelay.controls(log)` reads back the
+terminal-control requests the command made (e.g. `modify-other-keys:1`).
 
 `Tui`: input `keys(*tmux_keys)`, `type(text)` (literal, `send-keys -l`), `click(col, row)`, `paste(text)`,
 `resize(cols, rows)`, `kill()`; screen `screen(colors=, join=)`, `cursor_row()` (the diff cursor `▶`; the file tree's
