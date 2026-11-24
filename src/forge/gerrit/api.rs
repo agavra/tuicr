@@ -721,6 +721,33 @@ impl ForgeBackend for GerritBackend {
         Ok(())
     }
 
+    fn can_set_draft_state(&self) -> bool {
+        true
+    }
+
+    /// Gerrit's draft is work in progress (WIP), toggled by `/wip` and `/ready`.
+    fn set_draft_state(&self, pr: &PullRequestDetails, draft: bool) -> Result<()> {
+        if !self.http.is_authenticated() {
+            return Err(TuicrError::Forge(format!(
+                "Changing a Gerrit change's work-in-progress state needs credentials. Set \
+                 {USER_ENV_VAR} and {PASSWORD_ENV_VAR} (Settings → HTTP Credentials in Gerrit)."
+            )));
+        }
+        let action = if draft { "wip" } else { "ready" };
+        let path = format!("/changes/{}/{action}", pr.number);
+        self.http
+            .request("POST", &self.url(&pr.repository, &path), Some("{}"))
+            .map_err(|err| match err {
+                GerritHttpError::Auth(detail) => TuicrError::Forge(format!(
+                    "Cannot change draft state: Gerrit lets only the change owner (or a user \
+                     with the Toggle Work In Progress permission) do this.\n{}",
+                    trim_detail(&detail)
+                )),
+                err => map_http_error(err, &web_base(&pr.repository)),
+            })?;
+        Ok(())
+    }
+
     fn list_pull_request_commits(&self, pr: &PullRequestDetails) -> Result<Vec<PullRequestCommit>> {
         // A Gerrit change is one commit per patch set, and the pinned details
         // already describe it, so there is nothing to refetch.
@@ -2553,5 +2580,56 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("local clone"), "{err}");
+    }
+
+    // ---- set_draft_state ----
+
+    #[test]
+    fn should_post_ready_when_marking_a_wip_change_ready() {
+        let (backend, fake) = backend_with(true, vec![""]);
+        backend.set_draft_state(&details(), false).unwrap();
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "POST");
+        assert!(
+            calls[0].1.ends_with("/a/changes/3965/ready"),
+            "{}",
+            calls[0].1
+        );
+    }
+
+    #[test]
+    fn should_post_wip_when_converting_to_draft() {
+        let (backend, fake) = backend_with(true, vec![""]);
+        backend.set_draft_state(&details(), true).unwrap();
+        assert!(fake.calls()[0].1.ends_with("/a/changes/3965/wip"));
+    }
+
+    #[test]
+    fn should_require_credentials_to_change_wip_state() {
+        let (backend, fake) = backend_with(false, vec![]);
+        let err = backend.set_draft_state(&details(), false).unwrap_err();
+        assert!(err.to_string().contains("needs credentials"), "{err}");
+        assert!(fake.calls().is_empty());
+    }
+
+    #[test]
+    fn should_explain_owner_only_when_gerrit_forbids_the_toggle() {
+        struct Forbidden;
+        impl GerritHttp for Forbidden {
+            fn username(&self) -> Option<&str> {
+                Some("me")
+            }
+            fn request(&self, _: &str, _: &str, _: Option<&str>) -> GerritHttpResult<String> {
+                Err(GerritHttpError::Auth(
+                    "not permitted: toggle work in progress state".to_string(),
+                ))
+            }
+        }
+        let backend = GerritBackend::with_transport(Some(gerrit_repo()), Box::new(Forbidden));
+        let err = backend.set_draft_state(&details(), false).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("only the change owner"), "{msg}");
+        assert!(msg.contains("not permitted"), "{msg}");
     }
 }
