@@ -254,7 +254,9 @@ impl App {
         } else {
             "suggestion".to_string()
         };
-        // Require one hunk with a new-side source line on every selected code row.
+        // Require one hunk with a new-side source line on every selected code
+        // row. A side-by-side row for a deleted line is empty on the new pane
+        // and is not a gap: it adds no line to the suggestion.
         let mut selected_hunk = None;
         for idx in start.annotation_idx..=end.annotation_idx {
             let hunk = match self.line_annotations.get(idx) {
@@ -271,9 +273,18 @@ impl App {
                 }) => Some((*file_idx, *hunk_idx)),
                 _ => None,
             };
+            let deletion_only_row = matches!(
+                self.line_annotations.get(idx),
+                Some(AnnotatedLine::SideBySideLine {
+                    old_lineno: Some(_),
+                    new_lineno: None,
+                    ..
+                })
+            );
             if hunk.is_none()
                 || selected_hunk.is_some_and(|selected| Some(selected) != hunk)
-                || self.annotation_line_for_side(idx, LineSide::New).is_none()
+                || (!deletion_only_row
+                    && self.annotation_line_for_side(idx, LineSide::New).is_none())
             {
                 self.set_warning(
                     "Suggestions must stay within one diff hunk, without gaps or expanded context",

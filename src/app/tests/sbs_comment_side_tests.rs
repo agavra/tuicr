@@ -628,40 +628,123 @@ fn visual_suggestion_uses_gitlab_offsets_relative_to_range_end() {
 }
 
 #[test]
-fn visual_suggestion_rejects_deleted_line_gaps_inside_a_hunk() {
-    for view in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
-        let mut app = suggestion_app_from_patch("@@ -1,3 +1,2 @@\n before\n-deleted\n after\n");
-        app.diff_view_mode = view;
-        app.rebuild_annotations();
-        let indices: Vec<_> = app
-            .line_annotations
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, ann)| {
-                matches!(
-                    ann,
-                    AnnotatedLine::DiffLine {
-                        new_lineno: Some(_),
-                        ..
-                    } | AnnotatedLine::SideBySideLine {
-                        new_lineno: Some(_),
-                        ..
-                    }
-                )
-                .then_some(idx)
-            })
-            .collect();
-        let selection = app.visual_selection.as_mut().unwrap();
-        selection.anchor.annotation_idx = indices[0];
-        selection.head.annotation_idx = *indices.last().unwrap();
+fn visual_suggestion_rejects_deleted_line_gaps_inside_a_unified_hunk() {
+    let mut app = suggestion_app_from_patch("@@ -1,3 +1,2 @@\n before\n-deleted\n after\n");
+    let indices: Vec<_> = app
+        .line_annotations
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, ann)| {
+            matches!(
+                ann,
+                AnnotatedLine::DiffLine {
+                    new_lineno: Some(_),
+                    ..
+                }
+            )
+            .then_some(idx)
+        })
+        .collect();
+    let selection = app.visual_selection.as_mut().unwrap();
+    selection.anchor.annotation_idx = indices[0];
+    selection.head.annotation_idx = *indices.last().unwrap();
 
-        crate::handler::handle_visual_action(&mut app, Action::AddRangeSuggestion);
+    crate::handler::handle_visual_action(&mut app, Action::AddRangeSuggestion);
 
-        assert_eq!(app.input_mode, InputMode::VisualSelect);
-        assert!(app.visual_selection.is_some());
-        assert!(app.comment_buffer.is_empty());
-        assert!(app.comment_line_range.is_none());
-    }
+    assert_eq!(app.input_mode, InputMode::VisualSelect);
+    assert!(app.visual_selection.is_some());
+    assert!(app.comment_buffer.is_empty());
+    assert!(app.comment_line_range.is_none());
+    assert_eq!(
+        app.message.as_ref().map(|m| m.content.as_str()),
+        Some("Suggestions must stay within one diff hunk, without gaps or expanded context")
+    );
+}
+
+#[test]
+fn sbs_visual_suggestion_spans_a_deletion_run_between_new_lines() {
+    // Rows: (before, before), (deleted, empty), (after, after). The helper's
+    // range runs from the first to the last new-side row, so the deletion-only
+    // row sits inside the selection with nothing on the new pane.
+    let mut app = suggestion_app_from_patch_in_view(
+        "@@ -1,3 +1,2 @@\n before\n-deleted\n after\n",
+        DiffViewMode::SideBySide,
+    );
+
+    app.enter_suggestion_from_visual();
+
+    assert_eq!(app.input_mode, InputMode::Comment, "{:?}", app.message);
+    assert!(
+        app.message.is_none(),
+        "unexpected warning: {:?}",
+        app.message
+    );
+    assert_eq!(app.comment_buffer, "\n```suggestion\nbefore\nafter\n```");
+    assert_eq!(
+        app.comment_line_range,
+        Some((LineRange::new(1, 2), LineSide::New))
+    );
+    assert_eq!(app.comment_line, Some((2, LineSide::New)));
+}
+
+#[test]
+fn sbs_visual_suggestion_rejects_a_selection_spanning_two_hunks() {
+    let mut app = suggestion_app_from_patch_in_view(
+        "@@ -1,2 +1,2 @@\n same\n-old\n+new\n@@ -10,2 +10,2 @@\n same2\n-old2\n+new2\n",
+        DiffViewMode::SideBySide,
+    );
+
+    app.enter_suggestion_from_visual();
+
+    assert_eq!(app.input_mode, InputMode::VisualSelect);
+    assert!(app.comment_buffer.is_empty());
+    assert!(app.comment_line_range.is_none());
+    assert_eq!(
+        app.message.as_ref().map(|m| m.content.as_str()),
+        Some("Suggestions must stay within one diff hunk, without gaps or expanded context")
+    );
+}
+
+#[test]
+fn sbs_visual_suggestion_rejects_a_selection_of_only_deleted_rows() {
+    // Rows: (a, d), (b, empty), (c, empty): no annotated row carries a
+    // new-side line number, so there is no range to replace.
+    let mut app = suggestion_app_from_patch_in_view(
+        "@@ -1,3 +1 @@\n-a\n-b\n-c\n+d\n",
+        DiffViewMode::SideBySide,
+    );
+    let deletion_rows: Vec<_> = app
+        .line_annotations
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, ann)| {
+            matches!(
+                ann,
+                AnnotatedLine::SideBySideLine {
+                    new_lineno: None,
+                    ..
+                }
+            )
+            .then_some(idx)
+        })
+        .collect();
+    assert!(
+        deletion_rows.len() >= 2,
+        "fixture needs two deletion-only rows"
+    );
+    let selection = app.visual_selection.as_mut().unwrap();
+    selection.anchor.annotation_idx = deletion_rows[0];
+    selection.head.annotation_idx = *deletion_rows.last().unwrap();
+
+    crate::handler::handle_visual_action(&mut app, Action::AddRangeSuggestion);
+
+    assert_eq!(app.input_mode, InputMode::VisualSelect);
+    assert!(app.comment_buffer.is_empty());
+    assert!(app.comment_line_range.is_none());
+    assert_eq!(
+        app.message.as_ref().map(|m| m.content.as_str()),
+        Some("Invalid visual selection")
+    );
 }
 
 #[test]
