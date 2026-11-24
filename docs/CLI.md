@@ -141,7 +141,8 @@ tuicr -r main..HEAD --file notes.md --file checklist.md
 Paths are relative to the invocation directory or absolute. Each path must
 point to an untracked regular file inside the Git checkout. Git-ignored files
 are eligible when named explicitly. The files appear in the sidebar, and
-their comments export with code comments from the same review. After
+their comments export with code comments from the same review. The files and
+their comments stay visible whichever commits are selected. After
 editing a file on disk, use `:e` to reread it. Existing comments keep their
 original line numbers.
 

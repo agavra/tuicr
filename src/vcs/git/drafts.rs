@@ -151,4 +151,28 @@ mod tests {
         let err = resolve_paths(&root, &[root.to_str().unwrap().to_owned()]).unwrap_err();
         assert!(err.to_string().contains("expected a regular file"));
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_drafts() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("checkout");
+        std::fs::create_dir(&root).unwrap();
+        let outside = dir.path().join("outside.md");
+        std::fs::write(&outside, "outside\n").unwrap();
+        let inside = root.join("notes.md");
+        std::fs::write(&inside, "notes\n").unwrap();
+
+        let escape = root.join("escape.md");
+        symlink(&outside, &escape).unwrap();
+        let err = resolve_paths(&root, &[escape.to_str().unwrap().to_owned()]).unwrap_err();
+        assert!(err.to_string().contains("outside the Git checkout"));
+
+        let alias = root.join("alias.md");
+        symlink(&inside, &alias).unwrap();
+        let err = resolve_paths(&root, &[alias.to_str().unwrap().to_owned()]).unwrap_err();
+        assert!(err.to_string().contains("expected a regular file"));
+    }
 }

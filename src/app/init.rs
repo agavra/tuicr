@@ -304,7 +304,7 @@ impl App {
                 &DiffSource::CommitRange(commit_ids.clone()),
                 Some(&revision_review),
                 highlighter,
-                options.path_filter,
+                diff_load_options,
             )?;
             let session = Self::load_or_create_commit_range_session(&vcs_info, &commit_ids);
             // Get commit info for the inline commit selector

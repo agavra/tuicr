@@ -864,7 +864,7 @@ impl App {
         source: &DiffSource,
         review: Option<&RevisionReview>,
         highlighter: &SyntaxHighlighter,
-        path_filter: Option<&str>,
+        options: DiffLoadOptions<'_>,
     ) -> Result<Vec<DiffFile>> {
         let diff = Self::fetch_diff_files_for_source(
             vcs,
@@ -872,7 +872,7 @@ impl App {
             source,
             review.map(|review| &review.range),
             highlighter,
-            path_filter,
+            options,
         );
         if let Some(review) = review
             && matches!(source, DiffSource::CommitRange(_))

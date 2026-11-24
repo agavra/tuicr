@@ -937,6 +937,21 @@ impl App {
             .map(|c| c.id.clone())
     }
 
+    /// Commit to stamp on a new comment anchored to `path`.
+    ///
+    /// Draft files stay visible across every commit selection, so their
+    /// comments must not be scoped to the commit narrowed at the time.
+    pub(in crate::app) fn commit_id_for_new_comment_on(&self, path: &Path) -> Option<String> {
+        if self
+            .revision_draft_paths()
+            .iter()
+            .any(|draft| draft == path)
+        {
+            return None;
+        }
+        self.commit_id_for_new_comment()
+    }
+
     pub(in crate::app) fn set_pr_last_reviewed_commit_from_metadata(
         &mut self,
         commits: &[crate::forge::traits::PullRequestCommit],
