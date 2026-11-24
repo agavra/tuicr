@@ -1005,11 +1005,11 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled("  :ready", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("  Mark the draft PR ready for review (GitHub)"),
+            Span::raw("  Mark the draft PR ready for review"),
         ]),
         Line::from(vec![
             Span::styled("  :draft", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("  Convert the PR back to a draft (GitHub)"),
+            Span::raw("  Convert the PR back to a draft"),
         ]),
         Line::from(vec![
             Span::styled(

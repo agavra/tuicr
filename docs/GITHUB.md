@@ -58,7 +58,6 @@ review body. Comments on a commit message cannot be posted inline, so they go in
 `:ready` marks the open draft pull request ready for review (`gh pr ready`), and `:draft` converts
 it back (`gh pr ready --undo`). Both ask for confirmation first, since marking ready notifies
 reviewers. On success the PR info panel and the `:prs` list drop or show `[draft]` without a reload.
-Other forges report the commands as not supported.
 
 ## Existing comments
 
