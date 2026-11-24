@@ -240,6 +240,7 @@ impl FileBackend {
                 new_lineno: Some(line_num),
                 raw_content: lines[i].contains('\t').then(|| lines[i].to_string()),
                 highlighted_spans: None,
+                stage: None,
             });
         }
 

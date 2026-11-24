@@ -185,6 +185,7 @@ where
                 old_lineno,
                 new_lineno,
                 highlighted_spans: None,
+                stage: None,
             }
         })
         .collect();

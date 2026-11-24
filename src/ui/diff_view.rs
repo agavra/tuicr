@@ -8,7 +8,9 @@ use ratatui::{
 use crate::app::{
     AnnotatedLine, App, DiffViewMode, ExpandDirection, GAP_EXPAND_BATCH, GapId, VisualSelection,
 };
-use crate::model::{Comment, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide};
+use crate::model::{
+    Comment, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide, StageState,
+};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_side_by_side::render_side_by_side_diff;
@@ -88,37 +90,39 @@ pub(super) fn hidden_lines_body_text(count: usize) -> String {
     format!("       ... {count} lines hidden ...")
 }
 
-/// Unified-mode line-number gutter field for a diff line — a right-aligned
-/// number followed by a single space, or all spaces when the side is absent.
-pub(super) fn unified_line_number_field(
+/// Number the unified gutter shows for a diff line: the new side for additions
+/// and context, the old side for deletions, mapped to the cursor distance under
+/// relative numbering. `None` for commit-message prose and absent sides. Pair
+/// with [`line_number_cell`], as side-by-side does with its own sides.
+pub(super) fn unified_display_lineno(
     dl: &DiffLine,
-    lw: usize,
     relative_line_numbers: bool,
     line_idx: usize,
     current_line_idx: usize,
     is_commit_message: bool,
-) -> String {
-    let blank = || " ".repeat(lw + 1);
+) -> Option<u32> {
     if is_commit_message {
-        return blank();
+        return None;
     }
     if relative_line_numbers {
-        return relative_line_number_field(
-            dl.new_lineno.or(dl.old_lineno),
-            line_idx,
-            current_line_idx,
-            lw,
-        );
-    }
-    let format_n = |n: u32| format!("{n:>lw$} ");
-    match dl.origin {
-        LineOrigin::Addition => dl.new_lineno.map(format_n).unwrap_or_else(blank),
-        LineOrigin::Deletion => dl.old_lineno.map(format_n).unwrap_or_else(blank),
-        LineOrigin::Context => dl
+        return dl
             .new_lineno
             .or(dl.old_lineno)
-            .map(format_n)
-            .unwrap_or_else(blank),
+            .map(|line| relative_line_number(line, line_idx, current_line_idx));
+    }
+    match dl.origin {
+        LineOrigin::Addition => dl.new_lineno,
+        LineOrigin::Deletion => dl.old_lineno,
+        LineOrigin::Context => dl.new_lineno.or(dl.old_lineno),
+    }
+}
+
+/// Line-number gutter cell for both layouts: the number right-aligned to `lw`
+/// (blank when absent), then the one-cell stage marker ([`stage_cell`]).
+pub(super) fn line_number_cell(lineno: Option<u32>, lw: usize, stage: char) -> String {
+    match lineno {
+        Some(n) => format!("{n:>lw$}{stage}"),
+        None => format!("{:lw$}{stage}", ""),
     }
 }
 
@@ -153,7 +157,7 @@ pub(super) fn relative_line_number_field(
 
 #[cfg(test)]
 mod relative_line_number_tests {
-    use super::{relative_line_number_field, unified_line_number_field};
+    use super::{line_number_cell, relative_line_number_field, unified_display_lineno};
     use crate::model::{DiffLine, LineOrigin};
 
     fn line(origin: LineOrigin, old: Option<u32>, new: Option<u32>) -> DiffLine {
@@ -164,6 +168,7 @@ mod relative_line_number_tests {
             new_lineno: new,
             raw_content: None,
             highlighted_spans: None,
+            stage: None,
         }
     }
 
@@ -189,13 +194,36 @@ mod relative_line_number_tests {
         ];
         for dl in cases {
             assert_eq!(
-                unified_line_number_field(&dl, 3, true, 7, 7, false),
-                unified_line_number_field(&dl, 3, false, 7, 7, false),
+                unified_display_lineno(&dl, true, 7, 7, false),
+                unified_display_lineno(&dl, false, 7, 7, false),
                 "{:?}",
                 dl.origin
             );
-            assert_eq!(unified_line_number_field(&dl, 3, true, 9, 7, false), "  2 ");
+            assert_eq!(unified_display_lineno(&dl, true, 9, 7, false), Some(2));
         }
+    }
+
+    #[test]
+    fn line_number_cell_pads_the_number_and_appends_the_stage_marker() {
+        assert_eq!(line_number_cell(Some(42), 3, '●'), " 42●");
+        assert_eq!(line_number_cell(Some(1234), 3, '○'), "1234○");
+        assert_eq!(line_number_cell(None, 3, ' '), "    ");
+    }
+
+    #[test]
+    fn commit_message_rows_have_no_unified_number() {
+        let dl = line(LineOrigin::Addition, None, Some(3));
+        assert_eq!(unified_display_lineno(&dl, false, 0, 0, true), None);
+        assert_eq!(unified_display_lineno(&dl, true, 0, 0, true), None);
+    }
+}
+
+/// Gutter cell after the line number: `●` staged, `○` unstaged, else blank.
+pub(super) fn stage_cell(dl: &DiffLine) -> char {
+    match dl.stage {
+        Some(StageState::Staged) => '●',
+        Some(StageState::Unstaged) => '○',
+        None => ' ',
     }
 }
 

@@ -1,0 +1,287 @@
+use std::cell::Cell;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+use tempfile::tempdir;
+
+use crate::app::*;
+use crate::model::StageState;
+use crate::vcs::GitBackendPreference;
+use crate::vcs::git::GitBackend;
+use crate::vcs::traits::{VcsDiffOptions, VcsType};
+
+fn git(dir: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args([
+            "-c",
+            "user.name=Stage test",
+            "-c",
+            "user.email=stage@example.test",
+        ])
+        .args(["-c", "core.autocrlf=false", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+fn fixture() -> tempfile::TempDir {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    fs::write(root.join("mixed.txt"), "a\nb\nc\nd\n").unwrap();
+    fs::write(root.join("staged.txt"), "old\n").unwrap();
+    fs::write(root.join("dropped.txt"), "keep\ndrop\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "base"]);
+
+    // b -> B staged, then E appended in the worktree only.
+    fs::write(root.join("mixed.txt"), "a\nB\nc\nd\n").unwrap();
+    fs::write(root.join("staged.txt"), "new\n").unwrap();
+    git(root, &["add", "mixed.txt", "staged.txt"]);
+    fs::write(root.join("mixed.txt"), "a\nB\nc\nd\nE\n").unwrap();
+    // A removal only in the worktree, and an untracked file.
+    fs::write(root.join("dropped.txt"), "keep\n").unwrap();
+    fs::write(root.join("untracked.txt"), "x\n").unwrap();
+    dir
+}
+
+type Marks = BTreeMap<String, Vec<(char, String, Option<StageState>)>>;
+
+fn marks(files: &[DiffFile]) -> Marks {
+    files
+        .iter()
+        .map(|file| {
+            let lines = file
+                .hunks
+                .iter()
+                .flat_map(|hunk| &hunk.lines)
+                .filter(|line| line.origin != LineOrigin::Context)
+                .map(|line| {
+                    let sign = if line.origin == LineOrigin::Addition {
+                        '+'
+                    } else {
+                        '-'
+                    };
+                    (sign, line.content.trim_end().to_string(), line.stage)
+                })
+                .collect();
+            (file.display_path().to_string_lossy().into_owned(), lines)
+        })
+        .collect()
+}
+
+fn load(root: &Path, preference: GitBackendPreference, staged_markers: bool) -> Vec<DiffFile> {
+    let vcs = GitBackend::discover_from(root, preference, VcsDiffOptions::default()).unwrap();
+    App::get_working_tree_diff_with_ignore(
+        &vcs,
+        root,
+        &SyntaxHighlighter::default(),
+        DiffLoadOptions {
+            path_filter: None,
+            staged_markers,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn should_mark_staged_and_unstaged_lines_the_same_on_both_git_backends() {
+    use StageState::{Staged as S, Unstaged as U};
+    let dir = fixture();
+    let expected: Marks = [
+        (
+            "mixed.txt",
+            vec![
+                ('-', "b", Some(S)),
+                ('+', "B", Some(S)),
+                ('+', "E", Some(U)),
+            ],
+        ),
+        (
+            "staged.txt",
+            vec![('-', "old", Some(S)), ('+', "new", Some(S))],
+        ),
+        ("dropped.txt", vec![('-', "drop", Some(U))]),
+        ("untracked.txt", vec![('+', "x", Some(U))]),
+    ]
+    .into_iter()
+    .map(|(path, lines)| {
+        let lines = lines
+            .into_iter()
+            .map(|(sign, text, stage)| (sign, text.to_string(), stage))
+            .collect();
+        (path.to_string(), lines)
+    })
+    .collect();
+
+    for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+        assert_eq!(
+            marks(&load(dir.path(), preference, true)),
+            expected,
+            "{preference:?}"
+        );
+    }
+}
+
+#[test]
+fn should_move_the_marks_when_the_rest_is_staged() {
+    let dir = fixture();
+    git(dir.path(), &["add", "-A"]);
+    for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+        let files = load(dir.path(), preference, true);
+        let all_staged = marks(&files)
+            .values()
+            .flatten()
+            .all(|(_, _, stage)| *stage == Some(StageState::Staged));
+        assert!(all_staged, "{preference:?}: {:#?}", marks(&files));
+    }
+}
+
+/// Stands in for jj and Mercurial, which have no index.
+struct NoIndexVcs {
+    info: VcsInfo,
+    files: Vec<DiffFile>,
+    staged_calls: Cell<usize>,
+    unstaged_calls: Cell<usize>,
+}
+
+impl VcsBackend for NoIndexVcs {
+    fn info(&self) -> &VcsInfo {
+        &self.info
+    }
+
+    fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        Ok(self.files.clone())
+    }
+
+    fn get_staged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        self.staged_calls.set(self.staged_calls.get() + 1);
+        Err(TuicrError::UnsupportedOperation("No index".to_string()))
+    }
+
+    fn get_unstaged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        self.unstaged_calls.set(self.unstaged_calls.get() + 1);
+        Ok(self.files.clone())
+    }
+
+    fn fetch_context_lines(
+        &self,
+        _file_path: &Path,
+        _file_status: FileStatus,
+        _ref_commit: Option<&str>,
+        _start_line: u32,
+        _end_line: u32,
+    ) -> Result<Vec<DiffLine>> {
+        Ok(Vec::new())
+    }
+
+    fn file_line_count(
+        &self,
+        _file_path: &Path,
+        _file_status: FileStatus,
+        _ref_commit: Option<&str>,
+    ) -> Result<u32> {
+        Ok(0)
+    }
+}
+
+#[test]
+fn should_only_probe_for_an_index_when_markers_are_enabled() {
+    let dir = fixture();
+    let vcs = NoIndexVcs {
+        info: VcsInfo {
+            root_path: dir.path().to_path_buf(),
+            head_commit: "HEAD".to_string(),
+            branch_name: None,
+            vcs_type: VcsType::Jujutsu,
+        },
+        files: load(dir.path(), GitBackendPreference::Libgit2, false),
+        staged_calls: Cell::new(0),
+        unstaged_calls: Cell::new(0),
+    };
+    for staged_markers in [false, true] {
+        let loaded = App::get_working_tree_diff_with_ignore(
+            &vcs,
+            dir.path(),
+            &SyntaxHighlighter::default(),
+            DiffLoadOptions {
+                path_filter: None,
+                staged_markers,
+            },
+        )
+        .unwrap();
+        assert!(!loaded.is_empty());
+        assert!(
+            marks(&loaded)
+                .values()
+                .flatten()
+                .all(|(_, _, stage)| stage.is_none())
+        );
+        assert_eq!(vcs.staged_calls.get(), usize::from(staged_markers));
+        assert_eq!(vcs.unstaged_calls.get(), 0);
+    }
+}
+
+fn display_paths(files: &[DiffFile]) -> Vec<String> {
+    let mut paths: Vec<_> = files
+        .iter()
+        .map(|file| file.display_path().to_string_lossy().into_owned())
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// The extra staged and unstaged diffs go through the same `.tuicrignore` and
+/// path filtering as the reviewed diff, so excluded files never reach the
+/// marker pass.
+#[test]
+fn should_filter_the_marker_diffs_like_the_reviewed_diff() {
+    use StageState::{Staged as S, Unstaged as U};
+    let dir = fixture();
+    let root = dir.path();
+    fs::write(root.join(".tuicrignore"), "staged.txt\nuntracked.txt\n").unwrap();
+
+    for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+        let vcs = GitBackend::discover_from(root, preference, VcsDiffOptions::default()).unwrap();
+
+        let (staged, unstaged) =
+            App::stage_mark_side_diffs(&vcs, root, None).expect("git has an index");
+        assert_eq!(display_paths(&staged), ["mixed.txt"], "{preference:?}");
+        assert_eq!(
+            display_paths(&unstaged),
+            [".tuicrignore", "dropped.txt", "mixed.txt"],
+            "{preference:?}"
+        );
+
+        let (staged, unstaged) =
+            App::stage_mark_side_diffs(&vcs, root, Some("mixed.txt")).expect("git has an index");
+        assert_eq!(display_paths(&staged), ["mixed.txt"], "{preference:?}");
+        assert_eq!(display_paths(&unstaged), ["mixed.txt"], "{preference:?}");
+
+        let files = App::get_working_tree_diff_with_ignore(
+            &vcs,
+            root,
+            &SyntaxHighlighter::default(),
+            DiffLoadOptions {
+                path_filter: Some("mixed.txt"),
+                staged_markers: true,
+            },
+        )
+        .unwrap();
+        let expected: Marks = [(
+            "mixed.txt".to_string(),
+            vec![
+                ('-', "b".to_string(), Some(S)),
+                ('+', "B".to_string(), Some(S)),
+                ('+', "E".to_string(), Some(U)),
+            ],
+        )]
+        .into_iter()
+        .collect();
+        assert_eq!(marks(&files), expected, "{preference:?}");
+    }
+}

@@ -158,6 +158,10 @@ impl App {
         let vcs_info = vcs.info().clone();
         let highlighter =
             crate::profile::time("startup.syntax_highlighter", || theme.syntax_highlighter());
+        let diff_load_options = DiffLoadOptions {
+            path_filter: options.path_filter,
+            staged_markers: options.staged_markers,
+        };
         // Determine the diff source, files, and session based on input.
         // Four paths:
         //   1. -r + -w: combined commit range and uncommitted changes
@@ -189,7 +193,7 @@ impl App {
                     vcs.as_ref(),
                     &vcs_info.root_path,
                     highlighter,
-                    options.path_filter,
+                    diff_load_options,
                 )?;
                 let session =
                     Self::load_or_create_session(&vcs_info, SessionDiffSource::StagedAndUnstaged);
@@ -315,7 +319,7 @@ impl App {
                 vcs.as_ref(),
                 &vcs_info.root_path,
                 highlighter,
-                options.path_filter,
+                diff_load_options,
             )?;
             let session =
                 Self::load_or_create_session(&vcs_info, SessionDiffSource::StagedAndUnstaged);
@@ -419,8 +423,7 @@ impl App {
         }
     }
 
-    /// Records how `detect_vcs` opened the backend, so the diff-watch worker
-    /// can open its own the same way.
+    /// Keeps the local diff settings for the diff-watch worker and reloads.
     fn with_vcs_open_options(mut self, vcs_open_options: VcsOpenOptions) -> Self {
         self.vcs_open_options = vcs_open_options;
         self

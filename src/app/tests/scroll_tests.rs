@@ -65,6 +65,7 @@ fn app_with_diff_lines(line_count: usize) -> App {
                 new_lineno: Some(n as u32),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             })
             .collect();
         vec![DiffFile {

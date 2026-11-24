@@ -215,6 +215,7 @@ mod tests {
             old_lineno: None,
             new_lineno: None,
             highlighted_spans: None,
+            stage: None,
         }
     }
 

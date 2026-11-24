@@ -44,6 +44,7 @@ fn startup_options(working_tree: bool) -> AppStartupOptions<'static> {
         git_backend_preference: GitBackendPreference::Libgit2,
         diff_whitespace_mode: DiffWhitespaceMode::default(),
         include_untracked: true,
+        staged_markers: false,
         commit_selection: CommitSelectionStart::All,
         pr_target: None,
         pr_current_branch: false,

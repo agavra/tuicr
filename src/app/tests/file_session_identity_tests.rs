@@ -24,6 +24,7 @@ impl Drop for TestReviewsDir {
 fn file_options(path: &str) -> AppStartupOptions<'_> {
     AppStartupOptions {
         include_untracked: true,
+        staged_markers: false,
         revisions: None,
         working_tree: false,
         path_filter: None,

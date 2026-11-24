@@ -335,6 +335,7 @@ fn visual_suggestion_prefills_selected_side_in_both_views() {
                         .starts_with("    ")
                         .then(|| content.replacen("    ", "\t", 1)),
                     highlighted_spans: None,
+                    stage: None,
                 })
                 .collect();
                 app.diff_files = vec![DiffFile {

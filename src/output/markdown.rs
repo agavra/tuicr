@@ -3023,6 +3023,7 @@ mod tests {
             old_lineno: old,
             new_lineno: new,
             highlighted_spans: None,
+            stage: None,
         }
     }
 

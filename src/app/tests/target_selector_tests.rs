@@ -412,6 +412,7 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
             new_lineno: Some(start),
             raw_content: None,
             highlighted_spans: None,
+            stage: None,
         }])
     }
     fn file_line_count(&self, request: crate::forge::traits::ForgeFileLinesRequest) -> Result<u32> {
@@ -4757,6 +4758,7 @@ fn should_record_the_startup_vcs_options_for_cli_pr_startup() {
     .unwrap();
     let configured = VcsOpenOptions {
         include_untracked: false,
+        staged_markers: false,
         git_backend_preference: GitBackendPreference::Cli,
         diff_whitespace_mode: DiffWhitespaceMode::IgnoreAll,
     };
