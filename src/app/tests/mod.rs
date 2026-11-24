@@ -8,6 +8,7 @@ mod diff_reload_tests;
 mod diff_search_tests;
 mod diff_source_tests;
 mod diff_watch_tests;
+mod dispatch_tests;
 mod expand_gap_tests;
 mod file_filter_tests;
 mod file_picker_tests;

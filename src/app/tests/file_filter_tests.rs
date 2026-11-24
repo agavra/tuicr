@@ -1,5 +1,5 @@
 use crate::app::*;
-use crate::input::keybindings::Action;
+use crate::input::Action;
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
 use std::path::PathBuf;
