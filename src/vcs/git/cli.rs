@@ -98,6 +98,41 @@ impl GitCliBackend {
         self.repo_mode
     }
 
+    /// The old side of a range diff. A range from a revision expression keeps its own base. With a
+    /// merge in the range, the parent of the oldest commit can sit before that base.
+    fn range_base_rev(&self, revision_range: &ResolvedRevisionRange<'_>) -> Result<String> {
+        match &revision_range.diff_target {
+            RevisionDiffTarget::Explicit {
+                base: Some(base), ..
+            } => Ok(base.clone()),
+            RevisionDiffTarget::Explicit { base: None, .. } => empty_tree_oid(&self.root_path),
+            RevisionDiffTarget::CommitList => {
+                parent_rev_or_empty(&self.root_path, &revision_range.commit_ids[0])
+            }
+        }
+    }
+
+    /// Diff from `base_rev` (a commit or tree) through to the working tree.
+    fn get_working_tree_diff_from(
+        &self,
+        base_rev: String,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        self.get_cli_diff(
+            vec![
+                "diff".into(),
+                "--no-ext-diff".into(),
+                "--binary".into(),
+                base_rev.clone(),
+                "--".into(),
+            ],
+            self.include_untracked,
+            GitContentSource::Revision(&base_rev),
+            GitContentSource::Workdir,
+            highlighter,
+        )
+    }
+
     fn get_cli_diff(
         &self,
         args: Vec<String>,
@@ -387,18 +422,10 @@ impl VcsBackend for GitCliBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        let (base_rev, newest_rev) = match &revision_range.diff_target {
-            RevisionDiffTarget::CommitList => (
-                parent_rev_or_empty(&self.root_path, &revision_range.commit_ids[0])?,
-                revision_range.commit_ids.last().unwrap().clone(),
-            ),
-            RevisionDiffTarget::Explicit { base, head } => (
-                match base {
-                    Some(base) => base.clone(),
-                    None => empty_tree_oid(&self.root_path)?,
-                },
-                head.clone(),
-            ),
+        let base_rev = self.range_base_rev(revision_range)?;
+        let newest_rev = match &revision_range.diff_target {
+            RevisionDiffTarget::CommitList => revision_range.commit_ids.last().unwrap().clone(),
+            RevisionDiffTarget::Explicit { head, .. } => head.clone(),
         };
         self.get_cli_diff(
             vec![
@@ -443,19 +470,20 @@ impl VcsBackend for GitCliBackend {
         }
 
         let base_rev = parent_rev_or_empty(&self.root_path, &commit_ids[0])?;
-        self.get_cli_diff(
-            vec![
-                "diff".into(),
-                "--no-ext-diff".into(),
-                "--binary".into(),
-                base_rev.clone(),
-                "--".into(),
-            ],
-            self.include_untracked,
-            GitContentSource::Revision(&base_rev),
-            GitContentSource::Workdir,
-            highlighter,
-        )
+        self.get_working_tree_diff_from(base_rev, highlighter)
+    }
+
+    fn get_working_tree_with_range_diff(
+        &self,
+        revision_range: &ResolvedRevisionRange<'_>,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        if revision_range.commit_ids.is_empty() {
+            return self.get_working_tree_diff(highlighter);
+        }
+
+        let base_rev = self.range_base_rev(revision_range)?;
+        self.get_working_tree_diff_from(base_rev, highlighter)
     }
 
     fn stage_file(&self, path: &Path) -> Result<()> {

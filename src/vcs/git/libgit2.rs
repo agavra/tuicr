@@ -238,6 +238,20 @@ impl VcsBackend for Libgit2Backend {
         )
     }
 
+    fn get_working_tree_with_range_diff(
+        &self,
+        revision_range: &ResolvedRevisionRange<'_>,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        diff::get_working_tree_with_range_diff(
+            &self.repo,
+            revision_range,
+            &self.whitespace_mode,
+            self.include_untracked,
+            highlighter,
+        )
+    }
+
     fn stage_file(&self, path: &Path) -> Result<()> {
         staging::stage_file(&self.repo, path)
     }

@@ -476,6 +476,21 @@ impl VcsBackend for GitBackend {
         }
     }
 
+    fn get_working_tree_with_range_diff(
+        &self,
+        revision_range: &ResolvedRevisionRange<'_>,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        match self {
+            Self::Libgit2(backend) => {
+                backend.get_working_tree_with_range_diff(revision_range, highlighter)
+            }
+            Self::Cli(backend) => {
+                backend.get_working_tree_with_range_diff(revision_range, highlighter)
+            }
+        }
+    }
+
     fn stage_file(&self, path: &Path) -> Result<()> {
         match self {
             Self::Libgit2(backend) => backend.stage_file(path),

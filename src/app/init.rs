@@ -220,7 +220,7 @@ impl App {
                 let diff_files = Self::get_working_tree_with_commits_diff_with_ignore(
                     vcs.as_ref(),
                     &vcs_info.root_path,
-                    &commit_ids,
+                    &revision_range,
                     highlighter,
                     options.path_filter,
                 )?;
