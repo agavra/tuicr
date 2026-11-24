@@ -69,6 +69,11 @@ or reviewer state). If one fails midway, the comments already posted are locked
 so a retry does not post them twice, and tuicr reports the partial submit rather
 than a clean failure.
 
+## Draft state
+
+`:ready` marks the open draft merge request ready (`glab mr update --ready`), and `:draft` marks
+it as a draft again (`glab mr update --draft`). Both ask for confirmation first.
+
 ## Self-hosted GitLab
 
 Authenticate against your instance once, and make it `glab`'s default host
