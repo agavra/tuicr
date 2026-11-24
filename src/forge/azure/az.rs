@@ -155,6 +155,12 @@ impl AzHttp for PatHttp {
                 .header("Authorization", self.auth_header.as_str())
                 .header("Content-Type", "application/json")
                 .send(body.unwrap_or("")),
+            "PATCH" => self
+                .agent
+                .patch(url)
+                .header("Authorization", self.auth_header.as_str())
+                .header("Content-Type", "application/json")
+                .send(body.unwrap_or("")),
             other => {
                 return Err(AzHttpError::Failed {
                     status: None,
@@ -942,6 +948,31 @@ impl ForgeBackend for AzureDevOpsBackend {
             })
         })();
         result.map_err(|err| receipts.into_error(err))
+    }
+
+    fn can_set_draft_state(&self) -> bool {
+        true
+    }
+
+    fn set_draft_state(&self, pr: &PullRequestDetails, draft: bool) -> Result<()> {
+        let url = format!(
+            "{}/pullRequests/{}",
+            git_api_base(&pr.repository),
+            pr.number
+        );
+        let output = self.send(
+            &pr.repository,
+            "PATCH",
+            url,
+            &json!({ "isDraft": draft }).to_string(),
+        )?;
+        let updated: AzPullRequest = serde_json::from_str(&output)?;
+        if updated.is_draft != draft {
+            return Err(TuicrError::Forge(
+                "Azure DevOps did not change the pull request's draft state.".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -2413,5 +2444,48 @@ mod tests {
         let calls = shared.0.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert!(calls[0].1.contains("connectionData"));
+    }
+
+    // ---- set_draft_state ----
+
+    fn set_draft_with(draft: bool, response_is_draft: bool) -> (Result<()>, SharedHttp) {
+        let shared = SharedHttp::new(vec![
+            json!({ "pullRequestId": 42, "isDraft": response_is_draft }).to_string(),
+        ]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        (backend.set_draft_state(&pr_details(), draft), shared)
+    }
+
+    #[test]
+    fn should_patch_is_draft_false_when_marking_ready() {
+        let (result, shared) = set_draft_with(false, false);
+        result.unwrap();
+        let calls = shared.0.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        let (method, url, body) = &calls[0];
+        assert_eq!(method, "PATCH");
+        assert_eq!(
+            url,
+            "https://dev.azure.com/myorg/myproject/_apis/git/repositories/myrepo/pullRequests/42?api-version=7.1"
+        );
+        let body: serde_json::Value = serde_json::from_str(body.as_deref().unwrap()).unwrap();
+        assert_eq!(body, json!({ "isDraft": false }));
+    }
+
+    #[test]
+    fn should_patch_is_draft_true_when_converting_to_draft() {
+        let (result, shared) = set_draft_with(true, true);
+        result.unwrap();
+        let calls = shared.0.calls.lock().unwrap();
+        let body: serde_json::Value = serde_json::from_str(calls[0].2.as_deref().unwrap()).unwrap();
+        assert_eq!(body, json!({ "isDraft": true }));
+    }
+
+    #[test]
+    fn should_report_when_azure_leaves_the_draft_state_unchanged() {
+        let (result, _) = set_draft_with(false, true);
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("did not change"), "{err}");
     }
 }
