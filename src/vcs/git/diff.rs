@@ -304,26 +304,19 @@ fn get_working_tree_with_commits_diff_once(
     include_untracked: bool,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
-    let commit_ids = &revision_range.commit_ids;
-    if commit_ids.is_empty() {
+    if revision_range.commit_ids.is_empty() {
         // An empty revision range still has a meaningful working-tree diff.
         return get_working_tree_diff_once(repo, comparison, include_untracked, highlighter);
     }
 
     let old_tree = match &revision_range.diff_target {
-        RevisionDiffTarget::Explicit {
-            base: Some(base), ..
-        } => Some(repo.find_commit(git2::Oid::from_str(base)?)?.tree()?),
-        RevisionDiffTarget::Explicit { base: None, .. } => None,
         RevisionDiffTarget::CommitList => {
-            let oldest_id = git2::Oid::from_str(&commit_ids[0])?;
-            let oldest_commit = repo.find_commit(oldest_id)?;
-            if oldest_commit.parent_count() > 0 {
-                Some(oldest_commit.parent(0)?.tree()?)
-            } else {
-                None
-            }
+            commit_list_range_trees(repo, &revision_range.commit_ids)?.0
         }
+        RevisionDiffTarget::Explicit { base, .. } => base
+            .as_deref()
+            .map(|base| tree_for_commit(repo, base))
+            .transpose()?,
     };
 
     let mut opts = diff_options(comparison);

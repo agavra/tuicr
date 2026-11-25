@@ -2236,36 +2236,42 @@ mod tests {
                 crate::vcs::VcsDiffOptions::default(),
             )
             .unwrap();
-            for revisions in ["main...feature", "main..feature"] {
+            // Each range form reloads as a plain range and with the working tree (`-w`).
+            for (revisions, with_worktree) in [
+                ("main...feature", false),
+                ("main..feature", false),
+                ("main...feature", true),
+                ("main..feature", true),
+            ] {
                 let range = vcs.resolve_revision_range(revisions).unwrap();
-                // A clean worktree adds nothing, so `-w` lists the same files as the plain range.
-                for source in [
-                    DiffSource::CommitRange(range.commit_ids.to_vec()),
-                    DiffSource::StagedUnstagedAndCommits(range.commit_ids.to_vec()),
-                ] {
-                    let reload = |range| {
-                        App::fetch_diff_files_for_source(
-                            &vcs,
-                            root,
-                            &source,
-                            range,
-                            &highlighter,
-                            DiffLoadOptions::default(),
-                        )
-                        .unwrap()
-                    };
-                    assert_eq!(
-                        paths(&reload(Some(&range))),
-                        ["feature.txt"],
-                        "{preference:?} {revisions} {source:?}"
-                    );
-                    // Without the resolved base, the merged-in file shows up.
-                    assert_eq!(
-                        paths(&reload(None)),
-                        ["feature.txt", "main-only.txt"],
-                        "{preference:?} {revisions} {source:?}"
-                    );
-                }
+                let ids = range.commit_ids.to_vec();
+                let source = if with_worktree {
+                    DiffSource::StagedUnstagedAndCommits(ids)
+                } else {
+                    DiffSource::CommitRange(ids)
+                };
+                let reload = |range| {
+                    App::fetch_diff_files_for_source(
+                        &vcs,
+                        root,
+                        &source,
+                        range,
+                        &highlighter,
+                        DiffLoadOptions::default(),
+                    )
+                    .unwrap()
+                };
+                assert_eq!(
+                    paths(&reload(Some(&range))),
+                    ["feature.txt"],
+                    "{preference:?} {revisions} worktree={with_worktree}"
+                );
+                // Without the resolved base, the merged-in file shows up.
+                assert_eq!(
+                    paths(&reload(None)),
+                    ["feature.txt", "main-only.txt"],
+                    "{preference:?} {revisions} worktree={with_worktree}"
+                );
             }
         }
     }
