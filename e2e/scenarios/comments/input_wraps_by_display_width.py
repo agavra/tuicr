@@ -9,12 +9,13 @@ from e2e import Scenario, scenario
 def main(s: Scenario) -> None:
     tui = s.diff()
     tui.keys("j", "j").keys("c").wait_for("Add L1")
-    tui.type("\u2764\ufe0f" * 60).settle(0.4)
+    # Two columns each and one more than a pane-wide row holds, so they wrap whatever width the layout gives the box.
+    tui.type("\u2764\ufe0f" * (s.cols // 2 + 1)).settle(0.4)
     rows = [line for line in tui.screen().split("\n") if "\u2764" in line]
     assert rows, "no emoji rows"
     # tmux's own VS16 width handling garbles the *last* wrapped row, so judge the first row only: it must close at
     # the border.
     assert rows[0].endswith("││"), "first wrapped emoji row spills past the comment box border"
-    assert len(rows) >= 2, "60 emoji did not wrap inside the box (single overlong row)"
+    assert len(rows) >= 2, "the emoji did not wrap inside the box (single overlong row)"
     tui.keys("C-c").settle()
     tui.quit()

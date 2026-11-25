@@ -5,7 +5,7 @@ Workflow areas (`e2e/scenarios/<area>/<behaviour>.py`; each file's header commen
 | Area | Workflow |
 |---|---|
 | `local` | Local reviews: git/hg/jj targets, empty working-tree rows, commit selector, sessions tab, `-A`/`-p`/`--file --line`, `.tuicrignore`, editor handoff |
-| `tree` | File tree: filters, reviewed-file hiding, hit areas, horizontal scroll |
+| `tree` | File tree: filters, reviewed-file hiding, hit areas, horizontal scroll, width |
 | `diff` | Diff view: wrap, side-by-side, scroll, goto/expand context, relative numbers, `:focus` |
 | `comments` | Comment input, types, side-by-side anchors, `:clear*` |
 | `review` | Reviewed marks, session persistence/merge, quit guards, diff watch |
