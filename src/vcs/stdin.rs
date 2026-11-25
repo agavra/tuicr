@@ -114,43 +114,197 @@ pub(crate) fn split_git_diff(text: &str) -> Vec<FilePatch> {
     chunks.iter().filter_map(|c| parse_chunk(c)).collect()
 }
 
+fn unquote_git_path(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    let Some(inner) = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
+        return PathBuf::from(trimmed);
+    };
+
+    let mut bytes = Vec::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            let mut buf = [0u8; 4];
+            bytes.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        match chars.next() {
+            Some('"') => bytes.push(b'"'),
+            Some('\\') => bytes.push(b'\\'),
+            Some('a') => bytes.push(0x07),
+            Some('b') => bytes.push(0x08),
+            Some('f') => bytes.push(0x0c),
+            Some('n') => bytes.push(b'\n'),
+            Some('r') => bytes.push(b'\r'),
+            Some('t') => bytes.push(b'\t'),
+            Some('v') => bytes.push(0x0b),
+            Some(d) if d.is_ascii_digit() && d < '8' => {
+                let mut oct = String::from(d);
+                for _ in 0..2 {
+                    if let Some(&next) = chars.peek() {
+                        if next.is_ascii_digit() && next < '8' {
+                            oct.push(next);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                if let Ok(val) = u8::from_str_radix(&oct, 8) {
+                    bytes.push(val);
+                }
+            }
+            Some(other) => {
+                let mut buf = [0u8; 4];
+                bytes.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+            }
+            None => bytes.push(b'\\'),
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        PathBuf::from(std::ffi::OsString::from_vec(bytes))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
+fn strip_vcs_prefix(path: PathBuf, has_diff_git_header: bool) -> PathBuf {
+    if !has_diff_git_header {
+        return path;
+    }
+    let Some(s) = path.to_str() else {
+        return path;
+    };
+    if let Some((prefix, rest)) = s.split_once('/')
+        && matches!(prefix, "a" | "b" | "i" | "w" | "c" | "o")
+        && !rest.is_empty()
+    {
+        return PathBuf::from(rest);
+    }
+    path
+}
+
+fn parse_header_path(raw: &str, has_diff_git_header: bool) -> Option<PathBuf> {
+    let unquoted = unquote_git_path(raw);
+    if unquoted == Path::new("/dev/null") {
+        return None;
+    }
+    Some(strip_vcs_prefix(unquoted, has_diff_git_header))
+}
+
+fn parse_diff_git_header(line: &str) -> Option<(PathBuf, PathBuf)> {
+    let mut rest = line.strip_prefix("diff --git ")?.trim_start();
+    let first = take_git_header_token(&mut rest)?;
+    rest = rest.trim_start();
+    let second = take_git_header_token(&mut rest)?;
+
+    let a = strip_vcs_prefix(unquote_git_path(first), true);
+    let b = strip_vcs_prefix(unquote_git_path(second), true);
+    Some((a, b))
+}
+
+fn take_git_header_token<'a>(input: &mut &'a str) -> Option<&'a str> {
+    let s = *input;
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(after_open) = s.strip_prefix('"') {
+        let mut escaped = false;
+        for (idx, ch) in after_open.char_indices() {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                let end = 1 + idx + ch.len_utf8();
+                let token = &s[..end];
+                *input = &s[end..];
+                return Some(token);
+            }
+        }
+        None
+    } else if let Some(idx) = s.find(' ') {
+        let token = &s[..idx];
+        *input = &s[idx..];
+        Some(token)
+    } else {
+        *input = "";
+        Some(s)
+    }
+}
+
 fn parse_chunk(chunk: &str) -> Option<FilePatch> {
     let mut lines = chunk.lines();
-    // "diff --git a/<old> b/<new>"
-    let rest = lines.next()?.strip_prefix("diff --git a/")?;
-    let split = rest.find(" b/")?;
-    let mut old = PathBuf::from(&rest[..split]);
-    let mut new = PathBuf::from(&rest[split + 3..]);
+    let first = lines.next()?;
+    if !first.starts_with("diff --git ") {
+        return None;
+    }
+
+    let mut old: Option<PathBuf> = None;
+    let mut new: Option<PathBuf> = None;
 
     let mut status = FileStatus::Modified;
     let mut binary = false;
+    let mut binary_paths: Option<(Option<PathBuf>, Option<PathBuf>)> = None;
+
     for line in lines {
         if line.starts_with("@@") {
             break;
         }
-        if line.starts_with("new file mode") {
+        if let Some(p) = line.strip_prefix("--- ") {
+            old = parse_header_path(p, true);
+        } else if let Some(p) = line.strip_prefix("+++ ") {
+            new = parse_header_path(p, true);
+        } else if line.starts_with("new file mode") {
             status = FileStatus::Added;
         } else if line.starts_with("deleted file mode") {
             status = FileStatus::Deleted;
         } else if let Some(p) = line.strip_prefix("rename from ") {
             status = FileStatus::Renamed;
-            old = PathBuf::from(p);
+            old = Some(unquote_git_path(p));
         } else if let Some(p) = line.strip_prefix("rename to ") {
-            new = PathBuf::from(p);
+            new = Some(unquote_git_path(p));
         } else if let Some(p) = line.strip_prefix("copy from ") {
             status = FileStatus::Copied;
-            old = PathBuf::from(p);
+            old = Some(unquote_git_path(p));
         } else if let Some(p) = line.strip_prefix("copy to ") {
-            new = PathBuf::from(p);
-        } else if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
+            new = Some(unquote_git_path(p));
+        } else if line.starts_with("GIT binary patch") {
             binary = true;
+        } else if let Some(rest) = line.strip_prefix("Binary files ") {
+            binary = true;
+            if let Some(paths_part) = rest.strip_suffix(" differ")
+                && let Some((left, right)) = paths_part.split_once(" and ")
+            {
+                binary_paths = Some((
+                    parse_header_path(left, true),
+                    parse_header_path(right, true),
+                ));
+            }
         }
     }
 
+    if let Some((bin_old, bin_new)) = binary_paths {
+        old = old.or(bin_old);
+        new = new.or(bin_new);
+    }
+
+    if (old.is_none() || new.is_none())
+        && let Some((hdr_old, hdr_new)) = parse_diff_git_header(first)
+    {
+        old = old.or(Some(hdr_old));
+        new = new.or(Some(hdr_new));
+    }
+
     let (old_path, new_path) = match status {
-        FileStatus::Added => (None, Some(new)),
-        FileStatus::Deleted => (Some(old), None),
-        _ => (Some(old), Some(new)),
+        FileStatus::Added => (None, new.or(old)),
+        FileStatus::Deleted => (old.or(new), None),
+        _ => (old.clone().or_else(|| new.clone()), new.or(old)),
     };
     let mut patch = FilePatch::new(old_path, new_path, status, chunk);
     patch.is_binary = binary;
@@ -232,5 +386,81 @@ rename to new.rs
         let plain = StdinBackend::new(SAMPLE.to_string()).unwrap();
         let coloured = StdinBackend::new(format!("\x1b[1m{SAMPLE}\x1b[m")).unwrap();
         assert_eq!(plain.info().head_commit, coloured.info().head_commit);
+    }
+
+    #[test]
+    fn parses_quoted_paths_and_paths_containing_b_slash() {
+        let text = "\
+diff --git \"a/dir b/file\\tname.txt\" \"b/dir b/file\\tname.txt\"
+--- \"a/dir b/file\\tname.txt\"
++++ \"b/dir b/file\\tname.txt\"
+@@ -1 +1 @@
+-old
++new
+";
+        let patches = split_git_diff(text);
+        assert_eq!(patches.len(), 1);
+        assert_eq!(
+            patches[0].new_path.as_deref(),
+            Some(Path::new("dir b/file\tname.txt"))
+        );
+    }
+
+    #[test]
+    fn backend_handles_mode_only_empty_binary_and_no_prefix_paths() {
+        let diff = "\
+diff --git a/mode_only.sh b/mode_only.sh
+old mode 100644
+new mode 100755
+diff --git a/empty_new.txt b/empty_new.txt
+new file mode 100644
+index 0000000..e69de29
+diff --git a/empty_gone.txt b/empty_gone.txt
+deleted file mode 100644
+index e69de29..0000000
+diff --git a/img.png b/img.png
+new file mode 100644
+index 0000000..1111111
+Binary files /dev/null and b/img.png differ
+diff --git t/foo.sh t/foo.sh
+index 1111111..2222222 100644
+--- t/foo.sh
++++ t/foo.sh
+@@ -1 +1 @@
+-a
++b
+";
+        let backend = StdinBackend::new(diff.to_string()).unwrap();
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .unwrap();
+
+        assert_eq!(files.len(), 5);
+        assert_eq!(
+            files[0].old_path.as_deref(),
+            Some(Path::new("mode_only.sh"))
+        );
+        assert_eq!(
+            files[0].new_path.as_deref(),
+            Some(Path::new("mode_only.sh"))
+        );
+
+        assert_eq!(files[1].old_path, None);
+        assert_eq!(
+            files[1].new_path.as_deref(),
+            Some(Path::new("empty_new.txt"))
+        );
+
+        assert_eq!(
+            files[2].old_path.as_deref(),
+            Some(Path::new("empty_gone.txt"))
+        );
+        assert_eq!(files[2].new_path, None);
+
+        assert_eq!(files[3].old_path, None);
+        assert_eq!(files[3].new_path.as_deref(), Some(Path::new("img.png")));
+
+        assert_eq!(files[4].old_path.as_deref(), Some(Path::new("t/foo.sh")));
+        assert_eq!(files[4].new_path.as_deref(), Some(Path::new("t/foo.sh")));
     }
 }

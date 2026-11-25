@@ -125,10 +125,10 @@ pub(crate) fn move_comment_cursor(
     let text = &buffer[row.clone()];
     // At a soft-wrap boundary, the cursor belongs to the following row.
     // A cursor can sit after a row's text only at a newline or the buffer's end.
-    let end_stop = rows
+    let end_stop = (!rows
         .get(target + 1)
-        .is_none_or(|next| next.start != row.end)
-        .then_some(text.len());
+        .is_some_and(|next| next.start == row.end))
+    .then_some(text.len());
     // Presentation selectors can shrink prefix widths; choose the last fitting boundary.
     let byte = text
         .char_indices()

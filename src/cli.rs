@@ -131,7 +131,7 @@ struct TuiOptions {
     #[arg(
         long = "stdin",
         action = ArgAction::SetTrue,
-        conflicts_with_all = ["path_filter", "revisions", "working_tree", "file_path", "all_files"],
+        conflicts_with_all = ["path_filter", "revisions", "working_tree", "file_paths", "all_files"],
     )]
     stdin: bool,
 
@@ -477,6 +477,7 @@ impl Cli {
                         ("--path", args.path_filter.is_some()),
                         ("--file", !args.file_paths.is_empty()),
                         ("--all-files", args.all_files),
+                        ("--stdin", args.stdin),
                     ] {
                         if given {
                             return Err(clap::Error::raw(
@@ -490,6 +491,14 @@ impl Cli {
                 // the root, `tui` and `pr` levels are merged afterwards.
                 let has_files = !args.file_paths.is_empty();
                 let has_other_scope = args.working_tree || args.path_filter.is_some();
+                if args.stdin
+                    && (args.revisions.is_some() || has_other_scope || has_files || args.all_files)
+                {
+                    return Err(clap::Error::raw(
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "--file, --all-files, --stdin and the diff scope flags (--revisions, --working-tree, --path) cannot be combined\n",
+                    ));
+                }
                 if args.all_files && (args.revisions.is_some() || has_other_scope || has_files)
                     || has_files && has_other_scope
                 {
