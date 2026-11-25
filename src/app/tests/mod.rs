@@ -3,6 +3,7 @@ mod comment_navigation_tests;
 mod commit_scoped_comment_tests;
 mod commit_selection_tests;
 mod decoration_skip_tests;
+mod default_keys_tests;
 mod diff_reload_tests;
 mod diff_search_tests;
 mod diff_source_tests;

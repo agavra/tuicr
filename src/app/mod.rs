@@ -1190,6 +1190,19 @@ pub struct CollapseOverride {
     pub content_hash: u64,
 }
 
+/// Which prefix key is waiting for its second key.
+#[derive(Debug, Default)]
+pub(crate) struct PendingPrefix {
+    /// `z`, for `zz` / `zt` / `zb`.
+    pub(crate) z: bool,
+    /// `Z`, for `ZZ` / `ZQ`.
+    pub(crate) shift_z: bool,
+    /// `d`, for `dd`.
+    pub(crate) d: bool,
+    /// The leader key.
+    pub(crate) leader: bool,
+}
+
 pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
@@ -1568,6 +1581,10 @@ pub struct App {
     pub update_info: Option<UpdateInfo>,
     /// Accumulated digit count for {N}G jump-to-line
     pub pending_count: Option<usize>,
+    /// The prefix key waiting for its second key.
+    pub(crate) pending_prefix: PendingPrefix,
+    /// When the first Ctrl+C of "press twice to exit" arrived.
+    pub(crate) pending_ctrl_c: Option<Instant>,
     /// Source line from `--line`, applied once after the first render
     /// (when the viewport height is known) so the target can be centered.
     pub pending_start_line: Option<u32>,

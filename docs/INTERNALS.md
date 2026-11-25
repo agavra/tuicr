@@ -10,7 +10,7 @@ Subsystem invariants, loaded on demand from `AGENTS.md`. Cross-cutting rules and
 - Marking a file reviewed while hiding deletes the cursor's row, so `toggle_reviewed_for_file_idx` calls `advance_past_hidden_file()` (next visible file, wrapping, parking at the overview when empty) regardless of `adjust_cursor`.
 - `file_filter.draft` makes the tree a text-input sub-state of `InputMode::Normal` (same shape as `pr_filter_draft`); `main.rs` routes to `map_file_tree_prompt_mode` while it is `Some`. An open prompt owns input whatever panel has focus (a click can move focus to the diff): `handler::handle_normal_action` checks it before `focused_panel`, and a diff drag is ignored while it is open (no `VisualSelect`).
 - `handler::handle_paste` is the one paste table: prompts and picker filters accept paste; other Normal-mode paste is dropped on purpose.
-- `main.rs` routes keys through `handler::map_normal_path_key` and `handler::dispatch_action`, so tests drive the real path. Keys are focus-scoped via `map_file_tree_mode`: the tree claims `i`/`e`/`I`/`E`/`/`; the diff keeps `i` = edit comment, `/` = search diff.
+- `main.rs` routes keys through `handler::handle_key` (which handles double `Ctrl-c`, `z`/`Z`/`d`/leader prefixes, `{N}` counts, vim comment editor routing, `handler::map_normal_path_key`, and `handler::dispatch_action`), so tests drive the real path. Keys are focus-scoped via `map_file_tree_mode`: the tree claims `i`/`e`/`I`/`E`/`/`; the diff keeps `i` = edit comment, `/` = search diff.
 - Filters apply at render/measure time and are never persisted, unlike `.tuicrignore`, which drops files at load time.
 
 ## Modes and pickers (`InputMode`, `src/app/mod.rs`)
