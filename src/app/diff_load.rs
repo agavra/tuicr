@@ -928,8 +928,7 @@ impl App {
         }
     }
 
-    /// The range to diff for these commits. Exactly the `-r` range's own commits keep its base, not
-    /// the oldest commit's parent, which differs once the range contains a merge.
+    /// The range to diff for these commits. Exactly the `-r` range's own commits keep its base.
     fn range_for<'a>(
         revision_range: Option<&ResolvedRevisionRange<'_>>,
         commit_ids: &'a [String],

@@ -370,11 +370,9 @@ pub trait VcsBackend: Send {
         ))
     }
 
-    /// Get a combined diff from the base of a resolved revision range through to the working tree.
-    ///
-    /// When the range came from a revision expression (`RevisionDiffTarget::Explicit`) the base is
-    /// the expression's own base, so `A...B` keeps its merge base even when the range contains a
-    /// merge. Otherwise, and by default, the base is the parent of the oldest selected commit.
+    /// Combined diff from the range's base through to the working tree. A range from a revision
+    /// expression keeps its own base, so `A...B` keeps its merge base across a merge. By default the
+    /// base is the parent of the oldest commit.
     fn get_working_tree_with_range_diff(
         &self,
         revision_range: &ResolvedRevisionRange<'_>,

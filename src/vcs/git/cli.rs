@@ -98,8 +98,7 @@ impl GitCliBackend {
         self.repo_mode
     }
 
-    /// The old side of a range diff. A range from a revision expression keeps its own base. With a
-    /// merge in the range, the parent of the oldest commit can sit before that base.
+    /// The old side of a range diff. It is the expression's own base, else the oldest commit's parent.
     fn range_base_rev(&self, revision_range: &ResolvedRevisionRange<'_>) -> Result<String> {
         match &revision_range.diff_target {
             RevisionDiffTarget::Explicit {
@@ -110,27 +109,6 @@ impl GitCliBackend {
                 parent_rev_or_empty(&self.root_path, &revision_range.commit_ids[0])
             }
         }
-    }
-
-    /// Diff from `base_rev` (a commit or tree) through to the working tree.
-    fn get_working_tree_diff_from(
-        &self,
-        base_rev: String,
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
-        self.get_cli_diff(
-            vec![
-                "diff".into(),
-                "--no-ext-diff".into(),
-                "--binary".into(),
-                base_rev.clone(),
-                "--".into(),
-            ],
-            self.include_untracked,
-            GitContentSource::Revision(&base_rev),
-            GitContentSource::Workdir,
-            highlighter,
-        )
     }
 
     fn get_cli_diff(
@@ -465,12 +443,10 @@ impl VcsBackend for GitCliBackend {
         commit_ids: &[String],
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
-        if commit_ids.is_empty() {
-            return self.get_working_tree_diff(highlighter);
-        }
-
-        let base_rev = parent_rev_or_empty(&self.root_path, &commit_ids[0])?;
-        self.get_working_tree_diff_from(base_rev, highlighter)
+        self.get_working_tree_with_range_diff(
+            &ResolvedRevisionRange::from_commit_ids(commit_ids, RevisionDiffTarget::CommitList),
+            highlighter,
+        )
     }
 
     fn get_working_tree_with_range_diff(
@@ -483,7 +459,19 @@ impl VcsBackend for GitCliBackend {
         }
 
         let base_rev = self.range_base_rev(revision_range)?;
-        self.get_working_tree_diff_from(base_rev, highlighter)
+        self.get_cli_diff(
+            vec![
+                "diff".into(),
+                "--no-ext-diff".into(),
+                "--binary".into(),
+                base_rev.clone(),
+                "--".into(),
+            ],
+            self.include_untracked,
+            GitContentSource::Revision(&base_rev),
+            GitContentSource::Workdir,
+            highlighter,
+        )
     }
 
     fn stage_file(&self, path: &Path) -> Result<()> {

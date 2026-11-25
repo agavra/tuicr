@@ -278,7 +278,7 @@ pub fn get_working_tree_with_commits_diff(
 }
 
 /// Like `get_working_tree_with_commits_diff`, but a range from a revision expression keeps its own
-/// base. With a merge in the range, the parent of the oldest commit can sit before that base.
+/// base.
 pub fn get_working_tree_with_range_diff(
     repo: &Repository,
     revision_range: &ResolvedRevisionRange<'_>,
