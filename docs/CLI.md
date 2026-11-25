@@ -66,9 +66,9 @@ command (`tuicr review add --help`).
 These apply to the TUI and can be given on the bare command, on `tui`, or on
 `pr` / `mr`. When the same option appears at more than one level, string values
 take the last one given and boolean flags stay on once set, so
-`tuicr --stdout tui pr 125 --theme nord-dark` is valid. Conflicts between
-options (`--file` / `--all-files` against `-r`, `-w`, `-p`) are checked on the
-merged set, so they also fail when split across levels. `pr` rejects the
+`tuicr --stdout tui pr 125 --theme nord-dark` is valid. A revision review
+collects every `--file` path in order. Scope conflicts are checked on the merged
+options, including flags split across levels. `pr` rejects the
 local-review flags `-r`, `-w`, `-p`, `--file` and `-A`.
 
 | Flag | Short | Value | Description |
@@ -78,7 +78,7 @@ local-review flags `-r`, `-w`, `-p`, `--file` and `-A`.
 | `--appearance` | | `light`, `dark`, `system` | Appearance mode, used when no explicit theme is set |
 | `--path` | `-p` | `PATH` | Filter the diff to a file or directory |
 | `--working-tree` | `-w` | | Include uncommitted changes and skip the target selector |
-| `--file` | | `PATH` | Open a file or directory for annotation with no VCS required |
+| `--file` | | `PATH` | Annotate a file or directory with no VCS required. With a Git revision range, add an untracked file. Repeat to include more files |
 | `--line` | | `N` | Start with the cursor on line `N` (new side). Requires `--file` or `--path`; not with `pr` |
 | `--all-files` | `-A` | | Review every tracked file in the current repo |
 | `--stdout` | | | Print the export to stdout instead of copying to the clipboard |
@@ -118,9 +118,8 @@ succeed before a full PR URL or `owner/repo#N` target takes precedence. Omit
 
 ### Scope selection
 
-`--file` and `--all-files` pick their own review scope, so each conflicts with
-`--path`, `--working-tree`, `--revisions` and the other; passing a conflicting
-pair is a usage error. `--path` combines with `--working-tree` and/or
+`--all-files` selects a review scope on its own. `--file` can be used on its
+own or with `--revisions`. `--path` combines with `--working-tree` and/or
 `--revisions`.
 
 `--path` on its own implies `--working-tree`. Pair it with `-r` to filter a
@@ -131,11 +130,30 @@ tuicr -p src/cli.rs                 # uncommitted changes to one file
 tuicr -r main..HEAD -p src/cli.rs   # that file's changes across a range
 ```
 
+### Reviewing untracked files with a Git range
+
+Use one `--file` per untracked file to review it alongside the committed diff.
+
+```bash
+tuicr -r main..HEAD --file notes.md --file checklist.md
+```
+
+Paths are relative to the invocation directory or absolute. Each path must
+point to an untracked regular file inside the Git checkout. Git-ignored files
+are eligible when named explicitly. The files appear in the sidebar, and
+their comments export with code comments from the same review. The files and
+their comments stay visible whichever commits are selected. After
+editing a file on disk, use `:e` to reread it. Existing comments keep their
+original line numbers.
+
+You can also use this to review a draft PR description saved in a local file.
+
 ### Starting at a line
 
 `--line N` puts the cursor on source line `N` of the first file in the review,
-on the new side, and centers it. It needs `--file` or `--path`, which name the
-file the line belongs to, and cannot be combined with `tuicr pr`:
+on the new side, and centers it. With a revision range and explicit files, it targets
+the first `--file` path. It requires `--file` or `--path` and cannot be combined
+with `tuicr pr`.
 
 ```bash
 tuicr --file README.md --line 42      # annotate a file, starting at line 42

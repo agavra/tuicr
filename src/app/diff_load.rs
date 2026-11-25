@@ -533,6 +533,7 @@ impl App {
 
         self.diff_files = diff_files;
         self.diff_source = diff_source;
+        self.revision_review = None;
         self.clear_commit_pane();
         self.input_mode = InputMode::Normal;
         self.reset_diff_state();
@@ -578,7 +579,14 @@ impl App {
     ) -> Result<()> {
         self.pr_commits.clear();
         self.pr_last_reviewed_commit_index = None;
-        self.range_diff_files = Some(self.diff_files.clone());
+        let draft_paths = self.revision_draft_paths();
+        self.range_diff_files = Some(
+            self.diff_files
+                .iter()
+                .filter(|file| !draft_paths.contains(file.display_path()))
+                .cloned()
+                .collect(),
+        );
         self.commit_list = review_commits.clone();
         let range = Self::initial_commit_range(start, review_commits.len());
         self.commit_selection_range = range;
@@ -802,14 +810,77 @@ impl App {
             &self.review_commits,
             self.commit_selection_range,
         );
-        Self::fetch_diff_files_for_source(
+        Self::fetch_diff_files_with_revision_review(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             &fetch_source,
-            self.revision_range.as_ref(),
+            self.revision_review.as_ref(),
             highlighter,
             self.diff_load_options(),
         )
+    }
+
+    pub(in crate::app) fn revision_draft_paths(&self) -> &[PathBuf] {
+        if !matches!(self.diff_source, DiffSource::CommitRange(_)) {
+            return &[];
+        }
+        self.revision_review
+            .as_ref()
+            .map_or(&[], |review| review.draft_paths.as_slice())
+    }
+
+    pub(in crate::app) fn append_revision_drafts(
+        diff: Result<Vec<DiffFile>>,
+        root: &Path,
+        draft_paths: &[PathBuf],
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        if draft_paths.is_empty() {
+            return diff;
+        }
+        let mut files = match diff {
+            Err(TuicrError::NoChanges) => Vec::new(),
+            other => other?,
+        };
+        let drafts = crate::vcs::git::drafts::load_diff(root, draft_paths, highlighter)?;
+        for draft in &drafts {
+            let path = draft.display_path();
+            if files.iter().any(|file| {
+                file.old_path.as_ref() == Some(path) || file.new_path.as_ref() == Some(path)
+            }) {
+                return Err(TuicrError::InvalidInput(format!(
+                    "Draft file '{}' overlaps a path in the revision diff",
+                    path.display()
+                )));
+            }
+        }
+        files.extend(drafts);
+        Ok(files)
+    }
+
+    pub(in crate::app) fn fetch_diff_files_with_revision_review(
+        vcs: &dyn VcsBackend,
+        root: &Path,
+        source: &DiffSource,
+        review: Option<&RevisionReview>,
+        highlighter: &SyntaxHighlighter,
+        options: DiffLoadOptions<'_>,
+    ) -> Result<Vec<DiffFile>> {
+        let diff = Self::fetch_diff_files_for_source(
+            vcs,
+            root,
+            source,
+            review.map(|review| &review.range),
+            highlighter,
+            options,
+        );
+        if let Some(review) = review
+            && matches!(source, DiffSource::CommitRange(_))
+        {
+            Self::append_revision_drafts(diff, root, &review.draft_paths, highlighter)
+        } else {
+            diff
+        }
     }
 
     /// Which `DiffSource` a fetch should run against.
@@ -1089,6 +1160,10 @@ impl App {
         if full_reload {
             self.persist_diff_reconciliation(&diff_files)?;
         }
+        if !self.revision_draft_paths().is_empty() {
+            // A watch tick that read an earlier draft must not overwrite the reload.
+            self.diff_watch_reload = None;
+        }
         let (count, applied_invalidated) = self.apply_diff_files(diff_files);
         Ok((
             count,
@@ -1121,7 +1196,7 @@ impl App {
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             &fetch_source,
-            self.revision_range.as_ref(),
+            self.revision_review.as_ref(),
             self.theme.syntax_highlighter(),
             self.diff_load_options(),
             diff_files_fingerprint(&self.diff_files, self.vcs_open_options.staged_markers),
@@ -1145,16 +1220,16 @@ impl App {
         vcs: &dyn VcsBackend,
         root_path: &Path,
         fetch_source: &DiffSource,
-        revision_range: Option<&ResolvedRevisionRange<'_>>,
+        revision_review: Option<&RevisionReview>,
         highlighter: &SyntaxHighlighter,
         options: DiffLoadOptions<'_>,
         current: u64,
     ) -> Result<Option<Vec<DiffFile>>> {
-        let probe = Self::fetch_diff_files_for_source(
+        let probe = Self::fetch_diff_files_with_revision_review(
             vcs,
             root_path,
             fetch_source,
-            revision_range,
+            revision_review,
             probe_highlighter(),
             options,
         )?;
@@ -1166,11 +1241,11 @@ impl App {
         // edit that lands between them can be reverted, leaving a fetch that matches
         // the screen again. Applying it would reset collapsed folders and expanded
         // gaps with nothing new to show.
-        let fetched = Self::fetch_diff_files_for_source(
+        let fetched = Self::fetch_diff_files_with_revision_review(
             vcs,
             root_path,
             fetch_source,
-            revision_range,
+            revision_review,
             highlighter,
             options,
         )?;
@@ -1212,6 +1287,7 @@ impl App {
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedUnstagedAndCommits(selected_ids);
+        self.revision_review = None;
         self.input_mode = InputMode::Normal;
         self.reset_diff_state();
         self.file_list_state = FileListState::default();
@@ -1318,7 +1394,7 @@ impl App {
         let current =
             diff_files_fingerprint(&self.diff_files, self.vcs_open_options.staged_markers);
         let review_commits = self.review_commits.clone();
-        let revision_range = self.revision_range.clone();
+        let revision_review = self.revision_review.clone();
         let path_filter = self.path_filter.clone();
         let vcs_open_options = self.vcs_open_options.clone();
         let highlighter = self.theme.syntax_highlighter_arc();
@@ -1335,7 +1411,7 @@ impl App {
                 vcs_open_options,
                 &request,
                 &review_commits,
-                revision_range.as_ref(),
+                revision_review.as_ref(),
                 path_filter.as_deref(),
                 &highlighter,
                 current,
@@ -1359,7 +1435,7 @@ impl App {
         vcs_open_options: VcsOpenOptions,
         request: &DiffWatchReloadRequest,
         review_commits: &[CommitInfo],
-        revision_range: Option<&ResolvedRevisionRange<'_>>,
+        revision_review: Option<&RevisionReview>,
         path_filter: Option<&str>,
         highlighter: &SyntaxHighlighter,
         current: u64,
@@ -1378,7 +1454,7 @@ impl App {
             vcs.as_ref(),
             root_path,
             &fetch_source,
-            revision_range,
+            revision_review,
             highlighter,
             vcs_open_options.load_options(path_filter),
             current,
