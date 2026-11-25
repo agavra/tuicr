@@ -559,6 +559,7 @@ impl App {
             comment_preferred_column: None,
             comment_vim_enabled: false,
             q_quits: false,
+            copy_on_quit: CopyOnQuit::default(),
             comment_tab_width: crate::vcs::TAB_WIDTH,
             comment_vim_editor: None,
             comment_vim_command: None,

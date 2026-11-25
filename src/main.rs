@@ -304,6 +304,11 @@ fn main() -> anyhow::Result<()> {
                 }
                 app.comment_vim_enabled = cfg.comment_vim.unwrap_or(false);
                 app.q_quits = cfg.q_quits.unwrap_or(false);
+                app.copy_on_quit = cfg
+                    .copy_on_quit
+                    .as_deref()
+                    .and_then(app::CopyOnQuit::from_config)
+                    .unwrap_or_default();
                 app.editor_override = cfg.editor.clone();
                 if let Some(w) = cfg.comment_tab_width {
                     app.comment_tab_width = w;
