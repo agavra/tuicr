@@ -11,12 +11,15 @@ def main(s: Scenario) -> None:
     repos.git(mb.repo, "checkout", "-q", "topic")
     # The oldest listed commit now has a parent before the merge base.
     repos.git(mb.repo, "merge", "-q", "--no-edit", "main")
-    repos.write(mb.repo / "topic.txt", "topic change\nuncommitted edit\n")
 
     for backend in ("libgit2", "cli"):
         name = f"{s.name}_{backend}"
         repos.write(s.path_of(name) / "config/tuicr/config.toml", f'backend = "{backend}"\n')
+        repos.write(mb.repo / "topic.txt", "topic change\nuncommitted edit\n")
         tui = s.start("-r", "main...topic", "-w", cwd=mb.repo, name=name, keep=True)
         tui.wait_for(r"▢ A topic\.txt")  # added on the branch, with its uncommitted edit on top
         tui.expect("Files · 0/1").reject(r"mainonly\.txt")  # only the branch's own file, not what main added
+        repos.write(mb.repo / "topic.txt", "topic change\nuncommitted edit\nreloaded edit\n")
+        tui.cmd("e").wait_for("reloaded edit")  # a reload keeps the range's base
+        tui.expect("Files · 0/1").reject(r"mainonly\.txt")
         tui.quit()

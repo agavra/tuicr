@@ -268,6 +268,7 @@ impl App {
                     options.repo_url_override.clone(),
                 )?
                 .with_vcs_open_options(options.vcs_open_options());
+                app.revision_range = Some(revision_range);
 
                 app.worktree_status = Some(worktree_status);
                 app.install_review_commits(all_commits, options.commit_selection)?;
