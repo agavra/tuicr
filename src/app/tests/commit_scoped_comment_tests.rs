@@ -194,6 +194,32 @@ fn commit_id_for_new_comment_is_sha_for_single_commit() {
 }
 
 #[test]
+fn draft_file_comments_stay_unscoped_on_a_single_commit() {
+    let mut app = build_app_with_review_commits(vec![commit("aaa"), commit("bbb")]);
+    let commit_ids = vec!["aaa".to_string(), "bbb".to_string()];
+    app.diff_source = DiffSource::CommitRange(commit_ids.clone());
+    app.revision_review = Some(RevisionReview {
+        range: ResolvedRevisionRange {
+            commit_ids: std::borrow::Cow::Owned(commit_ids),
+            diff_target: RevisionDiffTarget::CommitList,
+        },
+        draft_paths: vec![PathBuf::from("notes.md")],
+    });
+    app.commit_selection_range = Some((1, 1));
+
+    assert_eq!(
+        app.commit_id_for_new_comment_on(Path::new("notes.md")),
+        None,
+        "draft files stay visible on every commit, so their comments must too"
+    );
+    assert_eq!(
+        app.commit_id_for_new_comment_on(Path::new("src/lib.rs")),
+        Some("bbb".to_string()),
+        "revision files keep the single-commit stamp"
+    );
+}
+
+#[test]
 fn add_comment_to_session_stamps_commit_id_when_provided() {
     use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
     use std::path::PathBuf;

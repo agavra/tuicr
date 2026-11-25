@@ -282,6 +282,7 @@ impl App {
                 Ok(diff_files) => {
                     self.diff_files = diff_files;
                     self.diff_source = DiffSource::StagedAndUnstaged;
+                    self.revision_review = None;
 
                     // Update session for new files
                     for file in &self.diff_files {
@@ -936,6 +937,21 @@ impl App {
             .map(|c| c.id.clone())
     }
 
+    /// Commit to stamp on a new comment anchored to `path`.
+    ///
+    /// Draft files stay visible across every commit selection, so their
+    /// comments must not be scoped to the commit narrowed at the time.
+    pub(in crate::app) fn commit_id_for_new_comment_on(&self, path: &Path) -> Option<String> {
+        if self
+            .revision_draft_paths()
+            .iter()
+            .any(|draft| draft == path)
+        {
+            return None;
+        }
+        self.commit_id_for_new_comment()
+    }
+
     pub(in crate::app) fn set_pr_last_reviewed_commit_from_metadata(
         &mut self,
         commits: &[crate::forge::traits::PullRequestCommit],
@@ -1143,7 +1159,11 @@ impl App {
 
         // Update app state
         self.diff_files = diff_files;
+        if !self.revision_draft_paths().is_empty() {
+            self.diff_watch_reload = None;
+        }
         self.diff_source = DiffSource::CommitRange(selected_ids);
+        self.revision_review = None;
         self.input_mode = InputMode::Normal;
 
         // Reset navigation state
@@ -1203,7 +1223,7 @@ impl App {
                     self.vcs.as_ref(),
                     &self.vcs_info.root_path,
                     &fetch_source,
-                    self.revision_range.as_ref(),
+                    self.revision_review.as_ref().map(|review| &review.range),
                     highlighter,
                     self.diff_load_options(),
                 ) {
@@ -1218,7 +1238,12 @@ impl App {
             }
         };
 
-        self.diff_files = diff_files;
+        self.diff_files = Self::append_revision_drafts(
+            Ok(diff_files),
+            &self.vcs_info.root_path,
+            self.revision_draft_paths(),
+            self.theme.syntax_highlighter(),
+        )?;
 
         // Register the files in the session. `r`, `R` and the comment path all
         // look a file up here, so a file reachable only through a narrowed

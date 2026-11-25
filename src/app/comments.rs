@@ -1122,6 +1122,7 @@ impl App {
                 Err(e) => format!("Error: Could not save comment: {e}"),
             };
         } else if let Some(path) = self.current_file_path().cloned() {
+            let commit_id = self.commit_id_for_new_comment_on(&path);
             let (target, success_message) = if self.comment_is_file_level {
                 (
                     CommentTarget::File { path },
@@ -1151,7 +1152,7 @@ impl App {
                 content,
                 comment_type: self.comment_type.clone(),
                 author: self.username.clone(),
-                commit_id: self.commit_id_for_new_comment(),
+                commit_id,
             };
             message = match add_comment_to_session(&mut self.session, request) {
                 Ok(_) => success_message,

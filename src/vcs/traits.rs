@@ -371,7 +371,7 @@ pub trait VcsBackend: Send {
     }
 
     /// Combined diff from the range's base through to the working tree. A range from a revision
-    /// expression keeps its own base, so `A...B` keeps its merge base across a merge. By default the
+    /// expression uses its own base, so `A...B` keeps its merge base across a merge. By default the
     /// base is the parent of the oldest commit.
     fn get_working_tree_with_range_diff(
         &self,

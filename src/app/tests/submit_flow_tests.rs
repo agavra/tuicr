@@ -2421,6 +2421,57 @@ fn should_leave_a_draft_read_only_when_the_forge_cannot_delete_it() {
     assert_eq!(app.input_mode, InputMode::Normal);
 }
 
+/// Press `dd` through the key handler.
+fn press_dd(app: &mut App) {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
+    crate::handler::handle_key(app, d);
+    crate::handler::handle_key(app, d);
+}
+
+fn message(app: &App) -> &str {
+    app.message.as_ref().map_or("", |m| m.content.as_str())
+}
+
+#[test]
+fn should_keep_a_locked_comment_on_dd() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let mut c = line_comment(LineSide::New, Some(11), None);
+    c.lifecycle_state = CommentLifecycleState::PushedDraft;
+    add_line_comment(&mut app, "src/lib.rs", 11, c);
+    app.rebuild_annotations();
+    app.diff_state.cursor_line = app
+        .line_annotations
+        .iter()
+        .position(|a| matches!(a, AnnotatedLine::LineComment { .. }))
+        .expect("expected a LineComment annotation");
+
+    press_dd(&mut app);
+
+    assert_eq!(app.session.comment_count(), 1);
+    assert!(message(&app).starts_with("Comment already pushed"));
+}
+
+#[test]
+fn should_ask_before_deleting_a_remote_draft_on_dd() {
+    let mut app = app_with_remote_draft(true, 1);
+
+    press_dd(&mut app);
+
+    assert_eq!(app.input_mode, InputMode::Confirm);
+    assert_eq!(app.pending_confirm, Some(ConfirmAction::DeleteRemoteDraft));
+}
+
+#[test]
+fn should_call_a_published_remote_comment_read_only_on_dd() {
+    let mut app = app_with_remote_draft(true, 0);
+
+    press_dd(&mut app);
+
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(message(&app).ends_with("read only in tuicr"));
+}
+
 #[test]
 fn should_keep_the_remote_draft_and_stay_open_when_the_prompt_is_declined() {
     // given the prompt is up

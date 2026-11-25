@@ -162,7 +162,7 @@ impl GitCliBackend {
         };
 
         if include_untracked {
-            append_untracked_cli_diffs(&self.root_path, &mut files, highlighter)?;
+            append_untracked_cli_diffs(&self.root_path, &mut files)?;
         }
         normalize_git_cli_paths(&mut files);
 
@@ -835,16 +835,12 @@ fn parse_whitespace_filtered_patches(
     Ok(patches)
 }
 
-fn append_untracked_cli_diffs(
-    workdir: &Path,
-    files: &mut Vec<DiffFile>,
-    highlighter: &SyntaxHighlighter,
-) -> Result<usize> {
+fn append_untracked_cli_diffs(workdir: &Path, files: &mut Vec<DiffFile>) -> Result<usize> {
     let pathspecs = sparse_checkout_untracked_pathspecs(workdir)?;
     let previous_len = files.len();
     for_each_untracked_path(workdir, &pathspecs, |path| {
         let full_path = workdir.join(&path);
-        let Some(file) = build_untracked_diff_file(&path, &full_path, highlighter) else {
+        let Some(file) = build_untracked_diff_file(&path, &full_path) else {
             return Ok(());
         };
         files.push(file);
@@ -929,11 +925,7 @@ fn is_simple_sparse_path(pattern: &str) -> bool {
         && !pattern.contains('\\')
 }
 
-fn build_untracked_diff_file(
-    path: &Path,
-    full_path: &Path,
-    _highlighter: &SyntaxHighlighter,
-) -> Option<DiffFile> {
+pub(super) fn build_untracked_diff_file(path: &Path, full_path: &Path) -> Option<DiffFile> {
     // Never follow the link: its target may be outside the repository or a
     // device that never ends. Like Git, show the link text itself.
     let metadata = full_path.symlink_metadata().ok()?;
@@ -2353,9 +2345,8 @@ mod tests {
 
     #[test]
     fn untracked_diff_skips_special_files() {
-        let hl = SyntaxHighlighter::default();
         let dev_null = Path::new("/dev/null");
-        assert!(build_untracked_diff_file(Path::new("null"), dev_null, &hl).is_none());
+        assert!(build_untracked_diff_file(Path::new("null"), dev_null).is_none());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 mod cli;
 pub mod context;
 pub mod diff;
+pub(crate) mod drafts;
 mod libgit2;
 pub(crate) mod raw;
 #[cfg(test)]

@@ -1,13 +1,15 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Flex, Layout, Rect},
+    text::Line,
     widgets::Block,
 };
+use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, ConfirmAction, FileListPosition, InputMode};
-use crate::ui::comment_navigator::render_comment_navigator;
+use crate::app::{App, CommentNavigatorItem, ConfirmAction, FileListPosition, InputMode};
+use crate::ui::comment_navigator::{render_comment_navigator, widest_navigator_title};
 use crate::ui::diff_view::render_diff_view;
-use crate::ui::file_list::render_file_list;
+use crate::ui::file_list::{file_list_desired_width, file_tree_lines, render_file_list};
 use crate::ui::inline_commit_selector::render_inline_commit_selector;
 use crate::ui::selector::render_commit_select;
 use crate::ui::{
@@ -16,6 +18,7 @@ use crate::ui::{
 };
 
 const FILE_LIST_MIN_HEIGHT: u16 = 4;
+const SIDEBAR_MAX_PERCENT: u16 = 20;
 const COMMENT_NAVIGATOR_MIN_HEIGHT: u16 = 4;
 const COMMENT_NAVIGATOR_MAX_HEIGHT: u16 = 12;
 
@@ -156,26 +159,33 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     if app.show_file_list {
-        const SIDEBAR: Constraint = Constraint::Percentage(20);
-        const DIFF: Constraint = Constraint::Percentage(80);
+        const DIFF: Constraint = Constraint::Fill(1);
+        let visible_items = app.build_visible_items();
+        let tree_lines = file_tree_lines(app, &visible_items);
+        let comment_items = app.build_comment_navigator_items();
+        let sidebar = Constraint::Length(sidebar_width(
+            app,
+            &tree_lines,
+            &comment_items,
+            content_area.width,
+        ));
         let (sidebar_area, diff_area) = match app.file_list_position {
             FileListPosition::Left => {
                 let chunks = Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([SIDEBAR, DIFF])
+                    .constraints([sidebar, DIFF])
                     .split(content_area);
                 (chunks[0], chunks[1])
             }
             FileListPosition::Right => {
                 let chunks = Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([DIFF, SIDEBAR])
+                    .constraints([DIFF, sidebar])
                     .split(content_area);
                 (chunks[1], chunks[0])
             }
         };
 
-        let comment_items = app.build_comment_navigator_items();
         if !comment_items.is_empty()
             && sidebar_area.height >= FILE_LIST_MIN_HEIGHT + COMMENT_NAVIGATOR_MIN_HEIGHT
         {
@@ -195,13 +205,13 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
 
             app.file_list_area = Some(sidebar_chunks[0]);
             app.comment_navigator_area = Some(sidebar_chunks[1]);
-            render_file_list(frame, app, sidebar_chunks[0]);
+            render_file_list(frame, app, sidebar_chunks[0], &visible_items, tree_lines);
             render_comment_navigator(frame, app, sidebar_chunks[1], &comment_items);
         } else {
             app.file_list_area = Some(sidebar_area);
             app.comment_navigator_area = None;
             app.comment_navigator_inner_area = None;
-            render_file_list(frame, app, sidebar_area);
+            render_file_list(frame, app, sidebar_area, &visible_items, tree_lines);
         }
         render_content_view(frame, app, diff_area);
     } else {
@@ -211,6 +221,24 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
         app.comment_navigator_inner_area = None;
         render_content_view(frame, app, content_area);
     }
+}
+
+/// Width of the sidebar: what the file list and the comment navigator's title
+/// need, capped at `SIDEBAR_MAX_PERCENT` of the content width. A fixed share
+/// left most of the column empty on wide terminals.
+fn sidebar_width(
+    app: &App,
+    tree_lines: &[Line],
+    comment_items: &[CommentNavigatorItem],
+    content_width: u16,
+) -> u16 {
+    let mut desired = file_list_desired_width(app, tree_lines);
+    if !comment_items.is_empty() {
+        let title = widest_navigator_title(comment_items.len()).width() + 2;
+        desired = desired.max(u16::try_from(title).unwrap_or(u16::MAX));
+    }
+    let cap = u32::from(content_width) * u32::from(SIDEBAR_MAX_PERCENT) / 100;
+    desired.min(cap as u16)
 }
 
 fn render_content_view(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -391,8 +419,13 @@ mod tests {
             assert_eq!(diff.x, 0, "{mode:?}");
             assert_eq!(diff.right(), files.x, "{mode:?}");
             assert_eq!(files.right(), 100, "{mode:?}");
-            // Same 20/80 split as the left layout, just mirrored.
-            assert_eq!(files.width, 20, "{mode:?}");
+            // Same width as the left layout, just mirrored.
+            let mut left = app_with(FileListPosition::Left);
+            left.diff_view_mode = mode;
+            draw(&mut left);
+            let left_files = left.file_list_area.expect("left file list drawn");
+            assert_eq!(files.width, left_files.width, "{mode:?}");
+            assert!(files.width < 20, "{mode:?}: sized to its rows, not a fifth");
             assert!(column_of(&buffer, "Files") >= files.x, "{mode:?}");
             let inner = app.diff_inner_area.expect("diff inner drawn");
             assert!(inner.right() <= files.x, "{mode:?}");

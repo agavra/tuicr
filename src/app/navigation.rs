@@ -510,6 +510,14 @@ impl App {
         let Some(line) = self.pending_start_line.take() else {
             return false;
         };
+        if let Some(path) = self.revision_draft_paths().first()
+            && let Some(idx) = self
+                .diff_files
+                .iter()
+                .position(|file| file.display_path() == path)
+        {
+            self.jump_to_file(idx);
+        }
         self.go_to_source_line(line, LineSide::New);
         true
     }
