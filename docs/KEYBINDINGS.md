@@ -288,6 +288,7 @@ In command mode,
 | `:e` (`:reload`) | Reload diff files |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
+| `:clipq` | Copy review to clipboard and quit without saving, like `:q!` (stays open when nothing was copied) |
 | `:file <path>` | Write the same review to `<path>`, replacing any file there (`~/` means home) |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
 | `:summary` | Show all pending local-draft comments; `j`/`k` select, `dd` deletes, and `Enter` jumps |

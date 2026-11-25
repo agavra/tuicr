@@ -40,6 +40,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["e", "reload"], CommandKind::Reload),
     CommandSpec::new(&["edit"], CommandKind::Edit),
     CommandSpec::new(&["clip", "export"], CommandKind::Export),
+    CommandSpec::new(&["clipq"], CommandKind::ExportForceQuit),
     CommandSpec::new(&["copy-url"], CommandKind::CopyUrl),
     CommandSpec::new(
         &["clear"],
@@ -160,6 +161,7 @@ enum CommandKind {
     Reload,
     Edit,
     Export,
+    ExportForceQuit,
     CopyUrl,
     Clear(ClearScope),
     Help,
@@ -875,7 +877,8 @@ fn handle_copy_pr_url(app: &mut App) {
 
 /// Export review: either to clipboard or set pending stdout output based on app.output_to_stdout.
 /// When output_to_stdout is true, stores the content and sets should_quit.
-fn handle_export(app: &mut App) {
+/// Returns false when nothing was exported; the reason is then on the status line.
+fn handle_export(app: &mut App) -> bool {
     let slug = app.session_slug();
     if app.output_to_stdout {
         match generate_export_content(
@@ -890,8 +893,12 @@ fn handle_export(app: &mut App) {
             Ok(content) => {
                 app.pending_stdout_output = Some(content);
                 app.should_quit = true;
+                true
             }
-            Err(e) => app.set_warning(format!("{e}")),
+            Err(e) => {
+                app.set_warning(format!("{e}"));
+                false
+            }
         }
     } else {
         match export_to_clipboard_with(
@@ -905,8 +912,14 @@ fn handle_export(app: &mut App) {
             app.clipboard_override.as_deref(),
             app.clipboard_command.as_deref(),
         ) {
-            Ok(copy) => app.set_copy_status(&copy, copy.message("Review")),
-            Err(e) => app.set_warning(format!("{e}")),
+            Ok(copy) => {
+                app.set_copy_status(&copy, copy.message("Review"));
+                true
+            }
+            Err(e) => {
+                app.set_warning(format!("{e}"));
+                false
+            }
         }
     }
 }
@@ -1469,6 +1482,12 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::Export => {
             handle_export(app);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ExportForceQuit => {
+            if handle_export(app) {
+                app.should_quit = true;
+            }
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::CopyUrl => {
@@ -2525,7 +2544,9 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::EditComment => edit_comment_at_cursor(app, !app.comment_vim_enabled),
         // `A` (vim only) edits with the text cursor at end-of-line.
         Action::EditCommentAtEnd if app.comment_vim_enabled => edit_comment_at_cursor(app, true),
-        Action::ExportToClipboard => handle_export(app),
+        Action::ExportToClipboard => {
+            handle_export(app);
+        }
         Action::CopyCommentAtCursor => handle_copy_comment_at_cursor(app),
         Action::SearchNext => {
             app.search_next_in_diff();
