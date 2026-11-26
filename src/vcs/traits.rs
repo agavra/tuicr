@@ -370,6 +370,17 @@ pub trait VcsBackend: Send {
         ))
     }
 
+    /// Combined diff from the range's base through to the working tree. A range from a revision
+    /// expression uses its own base, so `A...B` keeps its merge base across a merge. By default the
+    /// base is the parent of the oldest commit.
+    fn get_working_tree_with_range_diff(
+        &self,
+        revision_range: &ResolvedRevisionRange<'_>,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        self.get_working_tree_with_commits_diff(&revision_range.commit_ids, highlighter)
+    }
+
     /// Stage a file (add to index).
     fn stage_file(&self, _path: &Path) -> Result<()> {
         Err(crate::error::TuicrError::UnsupportedOperation(

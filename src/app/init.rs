@@ -236,7 +236,7 @@ impl App {
                 let diff_files = Self::get_working_tree_with_commits_diff_with_ignore(
                     vcs.as_ref(),
                     &vcs_info.root_path,
-                    &commit_ids,
+                    &revision_range,
                     highlighter,
                     options.path_filter,
                 )?;
@@ -284,6 +284,10 @@ impl App {
                     options.repo_url_override.clone(),
                 )?
                 .with_vcs_open_options(options.vcs_open_options());
+                app.revision_review = Some(RevisionReview {
+                    range: revision_range,
+                    draft_paths: Vec::new(),
+                });
 
                 app.worktree_status = Some(worktree_status);
                 app.install_review_commits(all_commits, options.commit_selection)?;

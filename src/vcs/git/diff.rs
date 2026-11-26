@@ -268,10 +268,28 @@ pub fn get_working_tree_with_commits_diff(
     include_untracked: bool,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
+    get_working_tree_with_range_diff(
+        repo,
+        &ResolvedRevisionRange::from_commit_ids(commit_ids, RevisionDiffTarget::CommitList),
+        whitespace_mode,
+        include_untracked,
+        highlighter,
+    )
+}
+
+/// Like `get_working_tree_with_commits_diff`, but a range from a revision expression keeps its own
+/// base.
+pub fn get_working_tree_with_range_diff(
+    repo: &Repository,
+    revision_range: &ResolvedRevisionRange<'_>,
+    whitespace_mode: &DiffWhitespaceMode,
+    include_untracked: bool,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
     materialize_diff(whitespace_mode, |comparison| {
         get_working_tree_with_commits_diff_once(
             repo,
-            commit_ids,
+            revision_range,
             comparison,
             include_untracked,
             highlighter,
@@ -281,23 +299,24 @@ pub fn get_working_tree_with_commits_diff(
 
 fn get_working_tree_with_commits_diff_once(
     repo: &Repository,
-    commit_ids: &[String],
+    revision_range: &ResolvedRevisionRange<'_>,
     comparison: WhitespaceComparison,
     include_untracked: bool,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
-    if commit_ids.is_empty() {
+    if revision_range.commit_ids.is_empty() {
         // An empty revision range still has a meaningful working-tree diff.
         return get_working_tree_diff_once(repo, comparison, include_untracked, highlighter);
     }
 
-    let oldest_id = git2::Oid::from_str(&commit_ids[0])?;
-    let oldest_commit = repo.find_commit(oldest_id)?;
-
-    let old_tree = if oldest_commit.parent_count() > 0 {
-        Some(oldest_commit.parent(0)?.tree()?)
-    } else {
-        None
+    let old_tree = match &revision_range.diff_target {
+        RevisionDiffTarget::CommitList => {
+            commit_list_range_trees(repo, &revision_range.commit_ids)?.0
+        }
+        RevisionDiffTarget::Explicit { base, .. } => base
+            .as_deref()
+            .map(|base| tree_for_commit(repo, base))
+            .transpose()?,
     };
 
     let mut opts = diff_options(comparison);

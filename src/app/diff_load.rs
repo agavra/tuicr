@@ -327,13 +327,13 @@ impl App {
     pub(in crate::app) fn get_working_tree_with_commits_diff_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
-        commit_ids: &[String],
+        revision_range: &ResolvedRevisionRange<'_>,
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         let diff_files = crate::profile::time_with(
             "diff.load_working_tree_with_commits",
-            || vcs.get_working_tree_with_commits_diff(commit_ids, highlighter),
+            || vcs.get_working_tree_with_range_diff(revision_range, highlighter),
             profile_diff_result,
         )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
@@ -999,6 +999,20 @@ impl App {
         }
     }
 
+    /// The range to diff for `commit_ids`. It keeps the `-r` range's own base only when `commit_ids`
+    /// are exactly that range's commits.
+    fn range_for<'a>(
+        revision_range: Option<&ResolvedRevisionRange<'_>>,
+        commit_ids: &'a [String],
+    ) -> ResolvedRevisionRange<'a> {
+        let diff_target = revision_range
+            .filter(|range| range.commit_ids.as_ref() == commit_ids)
+            .map_or(RevisionDiffTarget::CommitList, |range| {
+                range.diff_target.clone()
+            });
+        ResolvedRevisionRange::from_commit_ids(commit_ids, diff_target)
+    }
+
     /// Backend-agnostic core of `fetch_diff_files_with`: takes `vcs` and
     /// `root_path` as parameters instead of reading `self.vcs`/`self.vcs_info`
     /// so the diff-watch worker thread (`diff_watch_fetch`) can call it
@@ -1013,27 +1027,18 @@ impl App {
     ) -> Result<Vec<DiffFile>> {
         let path_filter = options.path_filter;
         match diff_source {
-            DiffSource::CommitRange(commit_ids) => {
-                // The `-r` range's own base, not the oldest commit's parent,
-                // which differs once the range contains a merge.
-                let diff_target = revision_range
-                    .filter(|range| range.commit_ids.as_ref() == commit_ids.as_slice())
-                    .map_or(RevisionDiffTarget::CommitList, |range| {
-                        range.diff_target.clone()
-                    });
-                Self::get_commit_range_diff_with_ignore(
-                    vcs,
-                    root_path,
-                    &ResolvedRevisionRange::from_commit_ids(commit_ids, diff_target),
-                    highlighter,
-                    path_filter,
-                )
-            }
+            DiffSource::CommitRange(commit_ids) => Self::get_commit_range_diff_with_ignore(
+                vcs,
+                root_path,
+                &Self::range_for(revision_range, commit_ids),
+                highlighter,
+                path_filter,
+            ),
             DiffSource::StagedUnstagedAndCommits(commit_ids) => {
                 Self::get_working_tree_with_commits_diff_with_ignore(
                     vcs,
                     root_path,
-                    commit_ids,
+                    &Self::range_for(revision_range, commit_ids),
                     highlighter,
                     path_filter,
                 )
@@ -1264,7 +1269,7 @@ impl App {
         let diff_files = match Self::get_working_tree_with_commits_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
-            &selected_ids,
+            &ResolvedRevisionRange::from_commit_ids(&selected_ids, RevisionDiffTarget::CommitList),
             highlighter,
             self.path_filter.as_deref(),
         ) {
@@ -2308,9 +2313,20 @@ mod tests {
                 crate::vcs::VcsDiffOptions::default(),
             )
             .unwrap();
-            for revisions in ["main...feature", "main..feature"] {
+            // Each range form reloads as a plain range and with the working tree (`-w`).
+            for (revisions, with_worktree) in [
+                ("main...feature", false),
+                ("main..feature", false),
+                ("main...feature", true),
+                ("main..feature", true),
+            ] {
                 let range = vcs.resolve_revision_range(revisions).unwrap();
-                let source = DiffSource::CommitRange(range.commit_ids.to_vec());
+                let ids = range.commit_ids.to_vec();
+                let source = if with_worktree {
+                    DiffSource::StagedUnstagedAndCommits(ids)
+                } else {
+                    DiffSource::CommitRange(ids)
+                };
                 let reload = |range| {
                     App::fetch_diff_files_for_source(
                         &vcs,
@@ -2325,13 +2341,13 @@ mod tests {
                 assert_eq!(
                     paths(&reload(Some(&range))),
                     ["feature.txt"],
-                    "{preference:?} {revisions}"
+                    "{preference:?} {revisions} worktree={with_worktree}"
                 );
                 // Without the resolved base, the merged-in file shows up.
                 assert_eq!(
                     paths(&reload(None)),
                     ["feature.txt", "main-only.txt"],
-                    "{preference:?} {revisions}"
+                    "{preference:?} {revisions} worktree={with_worktree}"
                 );
             }
         }
