@@ -1021,7 +1021,9 @@ pub(crate) fn finish_write_quit(app: &mut App, key: WriteQuitKey) -> CommandAfte
     if app.output_to_stdout {
         match key {
             // `:wq` stays open to show an export failure; `ZZ` has always quit.
-            WriteQuitKey::Command => handle_export(app),
+            WriteQuitKey::Command => {
+                handle_export(app);
+            }
             WriteQuitKey::ZZ => handle_export_and_quit(app),
         }
         return CommandAfterDispatch::ExitCommandMode;
