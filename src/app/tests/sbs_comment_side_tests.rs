@@ -1003,3 +1003,22 @@ fn range_comment_ignores_a_head_row_empty_on_the_selection_side() {
         Some((LineRange::new(1, 1), LineSide::New))
     );
 }
+
+#[test]
+fn visual_page_motions_skip_rows_empty_on_the_selection_side() {
+    // (patch, text the selection must end on)
+    for (patch, last) in [
+        ("@@ -1,5 +1,2 @@\n a\n-x\n-y\n-z\n b\n", "b"),
+        ("@@ -1,4 +1,1 @@\n a\n-x\n-y\n-z\n", "a"),
+    ] {
+        let mut app = suggestion_app_from_patch_in_view(patch, DiffViewMode::SideBySide);
+        app.diff_state.viewport_height = 4;
+        let anchor = app.visual_selection.unwrap().anchor.annotation_idx;
+        app.move_cursor_to_annotation(anchor);
+
+        crate::handler::handle_visual_action(&mut app, Action::HalfPageDown);
+
+        let head = app.visual_selection.unwrap().head.annotation_idx;
+        assert_eq!(app.content_for_side(head, LineSide::New), Some(last));
+    }
+}

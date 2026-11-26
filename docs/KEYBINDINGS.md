@@ -228,6 +228,8 @@ from the checkout, never copied.
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Extend selection down / up |
+| `Ctrl-d` / `Ctrl-u` | Extend selection by half a page down / up |
+| `Ctrl-f` / `Ctrl-b`, `PageDown` / `PageUp` | Extend selection by a full page down / up |
 | `c` / `Enter` | Create comment for selected range |
 | `s` | Start an editable suggestion prefilled with the selected code lines |
 | `y` | Copy the selected source lines to the clipboard and leave visual mode |
@@ -235,7 +237,7 @@ from the checkout, never copied.
 
 Range comments must stay within one file: if the selection spans files, `c` / `Enter` warns "Invalid selection" and cancels visual mode without creating a comment.
 
-In side-by-side view the selection stays in the pane it started in: `j` / `k` step over rows that have no line on that side, and `y` copies only that pane's text.
+In side-by-side view the selection stays in the pane it started in: the motions above skip rows that have no line on that side, and `y` copies only that pane's text.
 
 Suggestions replace whole lines on the new side of a single diff hunk. Selections
 across gaps (including deleted-only rows) or expanded context are rejected.

@@ -724,6 +724,20 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  C-d/C-u   ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Extend selection half page down/up"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  C-f/C-b   ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Extend selection a page down/up (PgDn/PgUp)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  c/Enter   ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
