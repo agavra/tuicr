@@ -879,6 +879,12 @@ fn handle_copy_pr_url(app: &mut App) {
 /// When output_to_stdout is true, stores the content and sets should_quit.
 /// Returns false when nothing was exported; the reason is then on the status line.
 fn handle_export(app: &mut App) -> bool {
+    export_review(app, false)
+}
+
+/// Like `handle_export`, but with `quitting` a clipboard fallback warning is
+/// kept for after exit, since the status bar would never show it.
+fn export_review(app: &mut App, quitting: bool) -> bool {
     let slug = app.session_slug();
     if app.output_to_stdout {
         match generate_export_content(
@@ -913,7 +919,11 @@ fn handle_export(app: &mut App) -> bool {
             app.clipboard_command.as_deref(),
         ) {
             Ok(copy) => {
-                app.set_copy_status(&copy, copy.message("Review"));
+                if quitting {
+                    app.pending_exit_warning = copy.fallback_warning;
+                } else {
+                    app.set_copy_status(&copy, copy.message("Review"));
+                }
                 true
             }
             Err(e) => {
@@ -1485,7 +1495,7 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::ExportForceQuit => {
-            if handle_export(app) {
+            if export_review(app, true) {
                 app.should_quit = true;
             }
             CommandAfterDispatch::ExitCommandMode
