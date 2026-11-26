@@ -144,9 +144,15 @@ launch_tuicr_pane() {
 
   # Create the split pane with tuicr, signal when done
   # Use -d to not switch, -P to print pane info so we can capture the ID
+  #
+  # The pane starts in $target_dir via -c, so the directory never enters a
+  # shell string. The command goes to tmux as separate arguments, which tmux
+  # runs directly instead of handing one string to its default-shell (often
+  # /bin/sh or fish). That matters because $tuicr_cmd carries bash's printf %q
+  # quoting, which can emit $'...' forms only bash parses safely.
   local new_pane_id
   new_pane_id=$(tmux split-window -d -P -F '#{pane_id}' -t "$caller_pane" "${split_args[@]}" \
-    "cd '$target_dir' && $tuicr_cmd; tmux wait-for -S '$wait_channel'")
+    bash -c "$tuicr_cmd; tmux wait-for -S '$wait_channel'")
 
   # Focus the new pane only when the caller already has focus in its window.
   # If the human is working in another pane, leave them alone — they will
