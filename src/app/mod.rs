@@ -655,6 +655,9 @@ pub enum DiffSource {
     /// variants; keeping it inline would balloon `DiffSource` for every
     /// local-review caller.
     PullRequest(Box<PullRequestDiffSource>),
+    /// Static unified diff piped in on stdin (`pager.diff = tuicr`).
+    /// A snapshot: nothing to reload or watch.
+    Piped,
 }
 
 impl DiffSource {
@@ -2230,6 +2233,8 @@ pub struct AppStartupOptions<'a> {
     /// `ForgeRepository`. When `Some`, the canonical resolver short-circuits
     /// the `gh api` parent lookup and uses this value directly.
     pub repo_url_override: Option<ForgeRepository>,
+    /// Unified diff piped in on stdin (`pager.diff = tuicr`).
+    pub stdin_diff: Option<&'a str>,
 }
 
 impl AppStartupOptions<'_> {

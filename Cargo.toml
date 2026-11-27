@@ -16,7 +16,7 @@ categories = ["command-line-utilities", "development-tools"]
 # measure each line's word-wrapped height with ratatui's own wrapping engine so
 # per-row diff backgrounds/overlays align exactly with the rendered text.
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
-crossterm = "0.29"
+crossterm = { version = "0.29", features = ["use-dev-tty"] }
 
 # Vim-style modal editing engine for the review comment box (opt-in via
 # `comment_vim`). Used as the editing model + input engine only; we keep our
