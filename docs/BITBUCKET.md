@@ -100,6 +100,11 @@ request show up in tuicr's review-summary area, and existing inline comments
 show up as threads on their lines. Approvals appear through the pull request's
 participants rather than as comments.
 
+## Draft state
+
+`:ready` marks the open draft pull request ready for review, and `:draft` converts it back to a
+draft (a `PUT` setting `draft`). Both ask for confirmation first.
+
 ## Data Center
 
 Only Bitbucket Cloud is supported. `bkt` itself handles both, but the two

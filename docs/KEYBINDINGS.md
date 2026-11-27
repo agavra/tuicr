@@ -305,6 +305,8 @@ In command mode,
 | `:submit approve` | Submit an Approve review |
 | `:submit request-changes` | Submit a Request-changes review |
 | `:submit draft` | Submit a Draft (pending) review |
+| `:ready` | Mark the open draft PR ready for review, after a confirmation (Gerrit: clear work in progress) |
+| `:draft` | Convert the open PR back to a draft, after a confirmation (Gerrit: mark work in progress) |
 | `:comments unresolved` | Show unresolved remote comments (PR mode, default) |
 | `:comments all` | Show all remote comments including resolved and outdated |
 | `:comments hide` | Hide remote comments in PR mode |

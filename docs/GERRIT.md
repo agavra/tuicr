@@ -135,6 +135,12 @@ then deletes it from Gerrit. Comments by others stay read-only. A draft left on 
 only under `:comments all`; a status message says when there are any. Your review-level draft on
 `/PATCHSET_LEVEL` shows at the top of the diff as a `pending` review.
 
+## Work in progress
+
+`:ready` marks the open work-in-progress change ready for review, and `:draft` marks it work in
+progress again. Both ask for confirmation first and need credentials. Gerrit allows this only for
+the change owner or a user with the Toggle Work In Progress permission.
+
 ## The local-clone requirement
 
 Gerrit's `/revisions/{id}/patch` endpoint returns a patch ordered by git's rename-aware diff

@@ -876,6 +876,37 @@ where
         })();
         result.map_err(|err| receipts.into_error(err))
     }
+
+    fn can_set_draft_state(&self) -> bool {
+        true
+    }
+
+    fn set_draft_state(&self, pr: &PullRequestDetails, draft: bool) -> Result<()> {
+        let args = vec![
+            "mr".to_string(),
+            "update".to_string(),
+            pr.number.to_string(),
+            if draft { "--draft" } else { "--ready" }.to_string(),
+            "--repo".to_string(),
+            Self::repo_arg(&pr.repository),
+        ];
+        let host = &pr.repository.host;
+        self.runner.run(&args).map(|_| ()).map_err(|err| match err {
+            GlabCommandError::Failed { ref stderr, .. }
+                if looks_like_permission_failure(stderr) =>
+            {
+                TuicrError::Forge(
+                    "Cannot change draft state: you lack write access to this merge request."
+                        .to_string(),
+                )
+            }
+            err => {
+                let suggest_subfolder = !host.eq_ignore_ascii_case(DEFAULT_GITLAB_HOST)
+                    && self.install_subfolder(host).is_none();
+                map_glab_error(err, host, suggest_subfolder)
+            }
+        })
+    }
 }
 
 impl<R> GitLabGlabBackend<R>
@@ -3320,5 +3351,80 @@ mod tests {
         let message = approve_error_message("glab: not logged in. Run glab auth login");
         assert!(message.contains("authentication failed"), "{message}");
         assert!(!message.contains("rejected the approval"), "{message}");
+    }
+
+    // set_draft_state tests
+
+    fn draft_state_args(repo: ForgeRepository, draft: bool) -> Vec<String> {
+        let runner = RecordingRunner::new_with_responses(vec![String::new()]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo.clone()), runner);
+        backend
+            .set_draft_state(&make_pr_details(repo), draft)
+            .unwrap();
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        calls[0].0.clone()
+    }
+
+    #[test]
+    fn should_run_glab_mr_update_ready_when_marking_ready() {
+        let args = draft_state_args(
+            ForgeRepository::gitlab("gitlab.com", "owner", "repo"),
+            false,
+        );
+        assert_eq!(
+            args,
+            ["mr", "update", "42", "--ready", "--repo", "owner/repo"].map(String::from)
+        );
+    }
+
+    #[test]
+    fn should_run_glab_mr_update_draft_when_converting_to_draft() {
+        let args = draft_state_args(ForgeRepository::gitlab("gitlab.com", "owner", "repo"), true);
+        assert_eq!(
+            args,
+            ["mr", "update", "42", "--draft", "--repo", "owner/repo"].map(String::from)
+        );
+    }
+
+    #[test]
+    fn should_pass_full_url_repo_for_self_hosted_draft_state() {
+        let repo = ForgeRepository::gitlab("gitlab.example.com", "group", "repo");
+        let runner = RecordingRunner::new_with_responses(vec![String::new()]);
+        let backend = GitLabGlabBackend::with_runner_and_subfolder(
+            Some(repo.clone()),
+            runner,
+            "gitlab.example.com",
+            None,
+        );
+        backend
+            .set_draft_state(&make_pr_details(repo), false)
+            .unwrap();
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls[0].0[5], "https://gitlab.example.com/group/repo");
+    }
+
+    struct DraftStateForbidden;
+
+    impl GlabCommandRunner for DraftStateForbidden {
+        fn run(&self, _args: &[String]) -> GlabCommandResult<String> {
+            Err(GlabCommandError::Failed {
+                status: Some(1),
+                stderr: "PUT https://gitlab.com/api/v4/projects/1/merge_requests/42: 403 {message: 403 Forbidden}".to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn should_explain_missing_write_access_when_draft_state_is_forbidden() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let backend = GitLabGlabBackend::with_runner(Some(repo.clone()), DraftStateForbidden);
+        let err = backend
+            .set_draft_state(&make_pr_details(repo), false)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("you lack write access"),
+            "got: {err}"
+        );
     }
 }

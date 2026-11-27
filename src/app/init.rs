@@ -607,6 +607,8 @@ impl App {
             pr_threads_rx: None,
             pending_draft_delete: None,
             pr_draft_delete_rx: None,
+            pending_draft_state: None,
+            pr_draft_state_rx: None,
             forge_config: crate::config::ForgeConfig::default(),
             username: crate::model::comment::DEFAULT_AUTHOR.to_string(),
             submit_state: None,

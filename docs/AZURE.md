@@ -93,6 +93,11 @@ render inline on their lines; PR-level (conversation) comments show in the revie
 After you `:submit`, press `:e` to re-fetch and see your just-posted comments come back as
 threads. `az`/system threads (pushes, policy, votes) are filtered out.
 
+## Draft state
+
+`:ready` publishes the open draft PR (`isDraft: false`), and `:draft` converts it back to a draft.
+Both ask for confirmation first.
+
 ## The local-clone requirement
 
 Azure DevOps exposes no single "unified diff" endpoint, so tuicr builds the PR diff from a

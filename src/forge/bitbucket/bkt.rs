@@ -607,6 +607,37 @@ where
         })();
         result.map_err(|err| receipts.into_error(err))
     }
+
+    fn can_set_draft_state(&self) -> bool {
+        true
+    }
+
+    fn set_draft_state(&self, pr: &PullRequestDetails, draft: bool) -> Result<()> {
+        let path = format!(
+            "{}/pullrequests/{}",
+            Self::repo_path(&pr.repository),
+            pr.number
+        );
+        // Cloud's PUT rejects a body without `title`, so resend the current one.
+        let current: BbPullRequest = serde_json::from_str(&self.run_api(path.clone(), &[])?)?;
+        let body = serde_json::json!({ "title": current.title, "draft": draft });
+        let args = vec![
+            "api".to_string(),
+            path,
+            "--method".to_string(),
+            "PUT".to_string(),
+            "--input".to_string(),
+            body.to_string(),
+        ];
+        let output = self.runner.run(&args).map_err(map_set_draft_error)?;
+        let updated: BbPullRequest = serde_json::from_str(&output)?;
+        if updated.draft != draft {
+            return Err(TuicrError::Forge(
+                "Bitbucket did not change the pull request's draft state.".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Parse a pull request target string in Bitbucket format.
@@ -799,6 +830,18 @@ fn map_request_changes_error(error: BktCommandError) -> TuicrError {
             TuicrError::Forge(
                 "Comments were posted, but Bitbucket rejected the change request: \
                  you may not be a reviewer on this pull request."
+                    .to_string(),
+            )
+        }
+        _ => map_bkt_error(error),
+    }
+}
+
+fn map_set_draft_error(error: BktCommandError) -> TuicrError {
+    match &error {
+        BktCommandError::Failed { stderr, .. } if looks_like_permission_failure(stderr) => {
+            TuicrError::Forge(
+                "Cannot change draft state: you lack write access to this pull request."
                     .to_string(),
             )
         }
@@ -2109,5 +2152,72 @@ mod tests {
             }
             other => panic!("expected PartialSubmit, got {other:?}"),
         }
+    }
+
+    // set_draft_state tests
+
+    #[test]
+    fn should_put_draft_false_with_the_current_title_when_marking_ready() {
+        // given the PR is a draft
+        let draft_pr = PR_JSON.replace("\"draft\": false", "\"draft\": true");
+        let b = backend(vec![&draft_pr, PR_JSON]);
+        // when
+        b.set_draft_state(&details(), false).unwrap();
+        // then a GET for the title, then a PUT with title and draft
+        let calls = b.runner.calls.borrow();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        let path = "/2.0/repositories/example-workspace/repo/pullrequests/830";
+        assert_eq!(calls[0], ["api", path].map(String::from));
+        assert_eq!(
+            calls[1][..4],
+            ["api", path, "--method", "PUT"].map(String::from)
+        );
+        let body: serde_json::Value = serde_json::from_str(&calls[1][5]).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"title": "A change", "draft": false})
+        );
+    }
+
+    #[test]
+    fn should_put_draft_true_when_converting_to_draft() {
+        let draft_pr = PR_JSON.replace("\"draft\": false", "\"draft\": true");
+        let b = backend(vec![PR_JSON, &draft_pr]);
+        b.set_draft_state(&details(), true).unwrap();
+        let calls = b.runner.calls.borrow();
+        let body: serde_json::Value = serde_json::from_str(&calls[1][5]).unwrap();
+        assert_eq!(body["draft"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn should_report_when_bitbucket_leaves_the_draft_state_unchanged() {
+        let b = backend(vec![PR_JSON, PR_JSON]);
+        let err = b.set_draft_state(&details(), true).unwrap_err();
+        assert!(err.to_string().contains("did not change"), "got: {err}");
+    }
+
+    #[test]
+    fn should_explain_missing_write_access_when_bitbucket_forbids_the_edit() {
+        // given a reader who can GET the PR but not PUT it
+        struct ReadOnlyRunner;
+        impl BktCommandRunner for ReadOnlyRunner {
+            fn run(&self, args: &[String]) -> BktCommandResult<String> {
+                if args.iter().any(|a| a == "PUT") {
+                    return Err(BktCommandError::Failed {
+                        status: Some(1),
+                        stderr: "HTTP 403 Forbidden".to_string(),
+                    });
+                }
+                Ok(PR_JSON.to_string())
+            }
+        }
+        let b = BitbucketBktBackend::with_runner(Some(repo()), ReadOnlyRunner);
+        // when
+        let err = b.set_draft_state(&details(), true).unwrap_err();
+        // then
+        assert!(
+            err.to_string().contains("you lack write access"),
+            "got: {err}"
+        );
     }
 }
