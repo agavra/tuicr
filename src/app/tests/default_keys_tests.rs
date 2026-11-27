@@ -345,6 +345,10 @@ fn visual() -> Vec<Row> {
     vec![
         bind([ch('j'), code(Down)], A::CursorDown(1)),
         bind([ch('k'), code(Up)], A::CursorUp(1)),
+        bind([ctrl('d')], A::HalfPageDown),
+        bind([ctrl('u')], A::HalfPageUp),
+        bind([ctrl('f'), code(PageDown)], A::PageDown),
+        bind([ctrl('b'), code(PageUp)], A::PageUp),
         bind([ch('c'), code(Enter)], A::AddRangeComment),
         bind([ch('s')], A::AddRangeSuggestion),
         bind([ch('y')], A::ExportToClipboard),

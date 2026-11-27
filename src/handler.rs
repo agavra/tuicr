@@ -2126,10 +2126,10 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
         Action::QuitHint => app.set_message(QUIT_HINT_MESSAGE),
         Action::ScrollViewDown(n) | Action::MouseScrollDown(n) => app.scroll_view_down(n),
         Action::ScrollViewUp(n) | Action::MouseScrollUp(n) => app.scroll_view_up(n),
-        Action::HalfPageDown => app.page_down(app.diff_state.viewport_height / 2),
-        Action::HalfPageUp => app.page_up(app.diff_state.viewport_height / 2),
-        Action::PageDown => app.page_down(app.diff_state.viewport_height),
-        Action::PageUp => app.page_up(app.diff_state.viewport_height),
+        Action::HalfPageDown => app.visual_page_down(app.diff_state.viewport_height / 2),
+        Action::HalfPageUp => app.visual_page_up(app.diff_state.viewport_height / 2),
+        Action::PageDown => app.visual_page_down(app.diff_state.viewport_height),
+        Action::PageUp => app.visual_page_up(app.diff_state.viewport_height),
         _ => {}
     }
     clear_visual_if_cursor_offscreen(app);

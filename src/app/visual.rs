@@ -58,6 +58,39 @@ impl App {
         self.visual_cursor_move(lines, false);
     }
 
+    /// Visual-mode half/full page down: pages like normal mode, then extends
+    /// the selection to the new cursor row.
+    pub fn visual_page_down(&mut self, row_budget: usize) {
+        self.page_down(row_budget);
+        self.extend_visual_after_page(true);
+    }
+
+    /// Mirror of [`Self::visual_page_down`].
+    pub fn visual_page_up(&mut self, row_budget: usize) {
+        self.page_up(row_budget);
+        self.extend_visual_after_page(false);
+    }
+
+    /// A page can land on a side-by-side row with nothing on the selection's
+    /// side: step on in the paging direction, or back when none is left.
+    fn extend_visual_after_page(&mut self, down: bool) {
+        let Some(side) = self.visual_selection.map(|sel| sel.anchor.side) else {
+            return;
+        };
+        if self.diff_view_mode == DiffViewMode::SideBySide {
+            for direction in [down, !down] {
+                while !self.row_covers_side(self.diff_state.cursor_line, side) {
+                    let current = self.diff_state.cursor_line;
+                    self.step_cursor(direction);
+                    if self.diff_state.cursor_line == current {
+                        break;
+                    }
+                }
+            }
+        }
+        self.extend_visual_to_cursor();
+    }
+
     fn visual_cursor_move(&mut self, lines: usize, down: bool) {
         let Some(side) = self.visual_selection.map(|sel| sel.anchor.side) else {
             return;
