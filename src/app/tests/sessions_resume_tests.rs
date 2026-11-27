@@ -7,7 +7,7 @@
 
 use crate::app::*;
 use crate::handler::{CommandAfterDispatch, WriteQuitKey, finish_write_quit};
-use crate::input::keybindings::Action;
+use crate::input::Action;
 use crate::model::FileStatus;
 use crate::review_store::{SessionKind, SessionSummary};
 use crate::vcs::traits::{ResolvedRevisionRange, VcsType};

@@ -11,7 +11,7 @@ use crate::error::TuicrError;
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
 use crate::input::{
-    Action, map_file_picker_filter_mode, map_file_tree_mode_with_q_quits,
+    Action, Invocation, map_file_picker_filter_mode, map_file_tree_mode_with_q_quits,
     map_file_tree_prompt_mode, map_global_key, map_key_to_action_with_q_quits,
     map_target_filter_mode, map_theme_picker_filter_mode,
 };
@@ -426,7 +426,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     // route through the filter-specific key map so typed
     // characters update the filter buffer rather than driving
     // commit-list navigation.
-    let mut action = map_normal_path_key(app, key);
+    let action = map_normal_path_key(app, key);
 
     // Handle pending command setters (these work in any mode)
     match action {
@@ -454,58 +454,20 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     }
 
     // Vim-style {count}{motion} (Normal mode only): digits accumulate
-    // into `pending_count`, then a following motion either scales its
-    // inner count parameter or is dispatched repeatedly. `{count}G`
-    // jumps to source line `count` (already existing behaviour).
+    // into `pending_count`, and the next action consumes it.
+    let mut count = None;
     if app.input_mode == InputMode::Normal {
-        match action {
-            Action::Digit(d) => {
-                let n = app.pending_count.unwrap_or(0);
-                app.pending_count =
-                    Some((n.saturating_mul(10).saturating_add(d as usize)).min(999_999));
-                return false;
-            }
-            Action::GoToBottom if app.pending_count.is_some() => {
-                let count = app.pending_count.unwrap().max(1);
-                app.pending_count = None;
-                app.go_to_source_line(count as u32, LineSide::New);
-                return false;
-            }
-            _ => {
-                if let Some(count) = app.pending_count.take() {
-                    let count = count.max(1);
-                    match &mut action {
-                        Action::CursorDown(n)
-                        | Action::CursorUp(n)
-                        | Action::ScrollLeft(n)
-                        | Action::ScrollRight(n)
-                        | Action::ScrollViewDown(n)
-                        | Action::ScrollViewUp(n) => {
-                            *n = n.saturating_mul(count);
-                        }
-                        Action::NextFile
-                        | Action::PrevFile
-                        | Action::NextHunk
-                        | Action::PrevHunk => {
-                            // Dispatch `count - 1` extra times; the
-                            // last one runs through normal dispatch
-                            // below.
-                            for _ in 1..count {
-                                dispatch_action(app, action.clone());
-                            }
-                        }
-                        _ => {
-                            // Count silently discarded for non-motion
-                            // actions (mode changes, edits, etc.).
-                        }
-                    }
-                }
-            }
+        if let Action::Digit(d) = action {
+            let n = app.pending_count.unwrap_or(0);
+            app.pending_count =
+                Some((n.saturating_mul(10).saturating_add(d as usize)).min(999_999));
+            return false;
         }
+        count = app.pending_count.take();
     }
 
     let previous_mode = app.input_mode;
-    dispatch_action(app, action);
+    dispatch_action(app, Invocation::new(action, count));
     if previous_mode != InputMode::Summary && app.input_mode == InputMode::Summary {
         // Summary identities are populated by rendering before queued input.
         return true;
@@ -589,6 +551,60 @@ fn handle_comment_vim_key(app: &mut App, key: KeyEvent) -> bool {
     true
 }
 
+/// Run an invocation in the active context, applying its count.
+pub fn dispatch_action(app: &mut App, invocation: impl Into<Invocation>) {
+    let (invocation, times) = invocation.into().resolve();
+    // A count repeats the action; the last run takes the invocation itself.
+    for _ in 1..times {
+        dispatch_once(app, invocation.clone());
+    }
+    dispatch_once(app, invocation);
+}
+
+fn dispatch_once(app: &mut App, invocation: Invocation) {
+    if handle_mode_independent_action(app, &invocation) {
+        return;
+    }
+    let action = invocation.action;
+    match app.input_mode {
+        InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
+        InputMode::Summary => handle_summary_action(app, action),
+        InputMode::Command => handle_command_action(app, action),
+        InputMode::Search => handle_search_action(app, action),
+        InputMode::Comment => handle_comment_action(app, action),
+        InputMode::Confirm => handle_confirm_action(app, action),
+        InputMode::CommitSelect => handle_commit_select_action(app, action),
+        InputMode::VisualSelect => handle_visual_action(app, action),
+        InputMode::SubmitResolver => handle_submit_resolver_action(app, action),
+        InputMode::SubmitConfirm => handle_submit_confirm_action(app, action),
+        InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
+        InputMode::ThemePicker => handle_theme_picker_action(app, action),
+        InputMode::FilePicker => handle_file_picker_action(app, action),
+        InputMode::Normal => handle_normal_action(app, action),
+    }
+}
+
+/// Handle actions that behave the same in every mode.
+/// Returns `true` when `action` was one of them.
+fn handle_mode_independent_action(app: &mut App, invocation: &Invocation) -> bool {
+    let Invocation { action, count } = invocation;
+    match action {
+        Action::GoToLine | Action::GoToOldLine => {
+            let side = if *action == Action::GoToLine {
+                LineSide::New
+            } else {
+                LineSide::Old
+            };
+            match count {
+                Some(line) => app.go_to_source_line(*line as u32, side),
+                None => app.set_message("Type a line number first, e.g. 42G"),
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
 /// Handle a key that means the same thing in every input mode (see
 /// `map_global_key`). Returns `true` when the key was consumed, so the caller
 /// skips the per-mode maps.
@@ -618,26 +634,6 @@ pub fn map_normal_path_key(app: &App, key: KeyEvent) -> Action {
         map_file_tree_mode_with_q_quits(key, app.leader_key, app.q_quits)
     } else {
         map_key_to_action_with_q_quits(key, app.input_mode, app.leader_key, app.q_quits)
-    }
-}
-
-/// Route an action to the handler for the current input mode.
-pub fn dispatch_action(app: &mut App, action: Action) {
-    match app.input_mode {
-        InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
-        InputMode::Summary => handle_summary_action(app, action),
-        InputMode::Command => handle_command_action(app, action),
-        InputMode::Search => handle_search_action(app, action),
-        InputMode::Comment => handle_comment_action(app, action),
-        InputMode::Confirm => handle_confirm_action(app, action),
-        InputMode::CommitSelect => handle_commit_select_action(app, action),
-        InputMode::VisualSelect => handle_visual_action(app, action),
-        InputMode::SubmitResolver => handle_submit_resolver_action(app, action),
-        InputMode::SubmitConfirm => handle_submit_confirm_action(app, action),
-        InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
-        InputMode::ThemePicker => handle_theme_picker_action(app, action),
-        InputMode::FilePicker => handle_file_picker_action(app, action),
-        InputMode::Normal => handle_normal_action(app, action),
     }
 }
 

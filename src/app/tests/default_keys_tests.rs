@@ -1106,11 +1106,22 @@ fn position(app: &App) -> (usize, usize, usize) {
     (diff.cursor_line, diff.scroll_offset, diff.scroll_x)
 }
 
-/// Keep session saves out of the directory other tests on this thread use.
-fn isolated_reviews() -> tempfile::TempDir {
+/// Keeps session saves out of the directory other tests on this thread use,
+/// until it is dropped.
+struct IsolatedReviews {
+    _dir: tempfile::TempDir,
+}
+
+impl Drop for IsolatedReviews {
+    fn drop(&mut self) {
+        storage::set_test_reviews_dir(None);
+    }
+}
+
+fn isolated_reviews() -> IsolatedReviews {
     let dir = tempfile::tempdir().expect("temp dir");
     storage::set_test_reviews_dir(Some(dir.path().to_path_buf()));
-    dir
+    IsolatedReviews { _dir: dir }
 }
 
 /// A review of three commits that change four files,
