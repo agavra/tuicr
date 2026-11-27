@@ -849,6 +849,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :clipq    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Copy review to clipboard and quit without saving"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :file <p> ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

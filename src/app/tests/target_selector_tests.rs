@@ -2715,6 +2715,55 @@ fn should_block_q_when_unsaved_comments_exist() {
 }
 
 #[test]
+fn should_stay_open_on_clipq_when_nothing_to_copy() {
+    // given: a session without comments
+    let mut app = build_app();
+    app.command_buffer = "clipq".to_string();
+
+    // when
+    crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+
+    // then
+    assert!(!app.should_quit);
+    assert_eq!(
+        app.message.as_ref().map(|m| m.message_type.clone()),
+        Some(MessageType::Warning)
+    );
+}
+
+#[test]
+fn should_export_and_quit_on_clipq_with_unsaved_changes() {
+    // given: a comment and an unsaved change; `--stdout` keeps the test off the
+    // system clipboard
+    let mut app = build_app();
+    let path = PathBuf::from("src/main.rs");
+    app.session.add_file(path.clone(), FileStatus::Modified, 0);
+    app.session
+        .get_file_mut(&path)
+        .unwrap()
+        .add_file_comment(crate::model::Comment::new(
+            "needs work".to_string(),
+            crate::model::CommentType::from_id("note"),
+            None,
+        ));
+    app.dirty = true;
+    app.output_to_stdout = true;
+    app.command_buffer = "clipq".to_string();
+
+    // when
+    crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+
+    // then: exported and quitting, with the change still unsaved
+    assert!(app.should_quit);
+    assert!(
+        app.pending_stdout_output
+            .as_ref()
+            .is_some_and(|out| out.contains("needs work"))
+    );
+    assert!(app.dirty);
+}
+
+#[test]
 fn should_open_pr_selector_on_prs_command() {
     // given
     let _no_spawn = crate::app::pr::SuppressPrBackgroundSpawns::new();
