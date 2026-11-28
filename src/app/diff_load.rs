@@ -760,8 +760,102 @@ impl App {
         }
     }
 
+    /// Re-resolves the `-r` expression and reloads in place when it now names
+    /// different commits. The session object is kept, so comments survive and
+    /// the normal content-hash reconciliation keeps reviewed marks on
+    /// unchanged files while resetting them on changed ones.
+    pub(crate) fn refresh_revision_range(&mut self) -> Result<RevisionRefresh> {
+        let Some(review) = self.revision_review.clone() else {
+            return Ok(RevisionRefresh::NotApplicable);
+        };
+        let Some(spec) = review.spec.as_deref() else {
+            return Ok(RevisionRefresh::NotApplicable);
+        };
+        if !matches!(self.diff_source, DiffSource::CommitRange(_)) {
+            return Ok(RevisionRefresh::NotApplicable);
+        }
+
+        let new_range = self.vcs.resolve_revision_range(spec)?;
+        let old_ids = review.range.commit_ids.as_ref();
+        let new_ids = new_range.commit_ids.to_vec();
+        if new_ids == old_ids && new_range.diff_target == review.range.diff_target {
+            return Ok(RevisionRefresh::Unchanged);
+        }
+        if new_ids.is_empty() {
+            return Err(TuicrError::InvalidInput(format!(
+                "Revision range '{spec}' is empty"
+            )));
+        }
+
+        let added_commits = new_ids.iter().filter(|id| !old_ids.contains(id)).count();
+        let new_review = RevisionReview {
+            range: new_range,
+            draft_paths: review.draft_paths,
+            spec: Some(spec.to_string()),
+        };
+        let source = DiffSource::CommitRange(new_ids.clone());
+        let diff_files = Self::fetch_diff_files_with_revision_review(
+            self.vcs.as_ref(),
+            &self.vcs_info.root_path,
+            &source,
+            Some(&new_review),
+            self.theme.syntax_highlighter(),
+            self.diff_load_options(),
+        )?;
+        let review_commits: Vec<CommitInfo> = self
+            .vcs
+            .get_commits_info(&new_ids)?
+            .into_iter()
+            .rev()
+            .collect();
+
+        self.session.base_commit = new_ids.last().cloned().unwrap_or_default();
+        self.session.commit_range = Some(new_ids);
+        self.session.updated_at = Utc::now();
+        self.revision_review = Some(new_review);
+        self.diff_source = source;
+
+        self.persist_diff_reconciliation(&diff_files)?;
+        let (file_count, invalidated) = self.apply_diff_files(diff_files);
+        // Show the whole refreshed range; keeping a stale per-commit subrange
+        // would hide the commits this reload was asked to pick up.
+        self.install_review_commits(review_commits, CommitSelectionStart::All)?;
+
+        Ok(RevisionRefresh::Reloaded {
+            file_count,
+            invalidated,
+            added_commits,
+        })
+    }
+
     /// Reloads the review after an external `$EDITOR` finishes.
     pub fn reload_after_editor(&mut self, label: &str) {
+        match self.refresh_revision_range() {
+            Ok(RevisionRefresh::Reloaded {
+                file_count,
+                invalidated,
+                added_commits,
+            }) => {
+                let invalidated_suffix = if invalidated > 0 {
+                    format!(", {invalidated} changed since last review")
+                } else {
+                    String::new()
+                };
+                self.set_message(format!(
+                    "Opened {label} and refreshed the revision range: {file_count} files, \
+                     {added_commits} new commits{invalidated_suffix}"
+                ));
+                return;
+            }
+            // No re-resolution happened; the caller's existing reload path
+            // still owns the message.
+            Ok(RevisionRefresh::Unchanged | RevisionRefresh::NotApplicable) => {}
+            Err(err) => {
+                self.set_error(format!("Reload after editor failed: {err}"));
+                return;
+            }
+        }
+
         if self.diff_source.includes_worktree_changes() {
             match self.reload_diff_files() {
                 Ok((count, invalidated)) => {

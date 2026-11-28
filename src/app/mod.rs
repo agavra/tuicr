@@ -2196,6 +2196,24 @@ struct RevisionReview {
     // Reloads use the original base when fetching the same commits.
     range: ResolvedRevisionRange<'static>,
     draft_paths: Vec<PathBuf>,
+    /// The expression the user passed to `-r`, kept so `:reload` can resolve
+    /// it again after HEAD advances. `None` for sessions reconstructed from
+    /// disk, where only the resolved commits are known.
+    spec: Option<String>,
+}
+
+/// Result of re-resolving the `-r` expression on `:reload`.
+pub(crate) enum RevisionRefresh {
+    /// The active review was not opened from a revision expression.
+    NotApplicable,
+    /// The expression still names the same commits and diff boundary.
+    Unchanged,
+    /// The range moved and the review was reloaded in place.
+    Reloaded {
+        file_count: usize,
+        invalidated: usize,
+        added_commits: usize,
+    },
 }
 
 pub struct AppStartupOptions<'a> {

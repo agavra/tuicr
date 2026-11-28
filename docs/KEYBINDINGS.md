@@ -344,6 +344,11 @@ In command mode,
 Pressing bare `q` no longer quits by default; it prints a reminder to use `:q` instead. Set
 `q_quits = true` to restore `q` as a quit key in review modes.
 
+On a review opened from a symbolic revision expression (`tuicr -r main..HEAD`), `:e` resolves the
+expression again before reloading. Commits made since the review opened join the same session:
+reviewed marks on unchanged files stay, changed files reset, and comments remain. A range pinned
+to explicit commit SHAs keeps its original commits.
+
 `:wq`, `:x`, and `ZZ` copy the review to the clipboard when comments exist. By default `:wq`/`:x`
 ask first and `ZZ` copies without asking. Set `copy_on_quit = "always"` to never be asked, or
 `copy_on_quit = "never"` to quit without copying, for example when an agent reads the comments

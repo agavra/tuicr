@@ -204,6 +204,7 @@ fn draft_file_comments_stay_unscoped_on_a_single_commit() {
             diff_target: RevisionDiffTarget::CommitList,
         },
         draft_paths: vec![PathBuf::from("notes.md")],
+        spec: None,
     });
     app.commit_selection_range = Some((1, 1));
 

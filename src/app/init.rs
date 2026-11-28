@@ -287,6 +287,7 @@ impl App {
                 app.revision_review = Some(RevisionReview {
                     range: revision_range,
                     draft_paths: Vec::new(),
+                    spec: Some(revisions.to_string()),
                 });
 
                 app.worktree_status = Some(worktree_status);
@@ -301,6 +302,7 @@ impl App {
                     &vcs_info.root_path,
                     draft_paths,
                 )?,
+                spec: Some(revisions.to_string()),
             };
             let diff_files = Self::fetch_diff_files_with_revision_review(
                 vcs.as_ref(),
