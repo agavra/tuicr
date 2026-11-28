@@ -23,6 +23,8 @@ struct ScriptedVcs {
     /// call order, so a test can tell a narrowed subrange fetch apart from a
     /// full-range one.
     commit_range_diff_ids: Arc<Mutex<Vec<Vec<String>>>>,
+    resolve_results: RefCell<VecDeque<Result<ResolvedRevisionRange<'static>>>>,
+    resolve_specs: Arc<Mutex<Vec<String>>>,
 }
 
 impl ScriptedVcs {
@@ -38,6 +40,8 @@ impl ScriptedVcs {
             grammar_counts: Arc::new(Mutex::new(Vec::new())),
             commit_range_diff_results: RefCell::new(VecDeque::new()),
             commit_range_diff_ids: Arc::new(Mutex::new(Vec::new())),
+            resolve_results: RefCell::new(VecDeque::new()),
+            resolve_specs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -74,6 +78,10 @@ impl ScriptedVcs {
     fn commit_range_diff_ids(&self) -> Arc<Mutex<Vec<Vec<String>>>> {
         Arc::clone(&self.commit_range_diff_ids)
     }
+
+    fn push_resolved_range(&self, range: ResolvedRevisionRange<'static>) {
+        self.resolve_results.borrow_mut().push_back(Ok(range));
+    }
 }
 
 impl VcsBackend for ScriptedVcs {
@@ -106,6 +114,21 @@ impl VcsBackend for ScriptedVcs {
             .borrow_mut()
             .pop_front()
             .expect("ScriptedVcs: get_commit_range_diff called more times than scripted")
+    }
+
+    fn resolve_revision_range(&self, revisions: &str) -> Result<ResolvedRevisionRange<'static>> {
+        self.resolve_specs
+            .lock()
+            .expect("resolve specs poisoned")
+            .push(revisions.to_string());
+        self.resolve_results
+            .borrow_mut()
+            .pop_front()
+            .expect("ScriptedVcs: resolve_revision_range called more times than scripted")
+    }
+
+    fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {
+        Ok(ids.iter().map(|id| make_commit_info(id)).collect())
     }
 
     fn stage_file(&self, _path: &Path) -> Result<()> {
@@ -1184,4 +1207,170 @@ fn should_not_resurrect_an_externally_cleared_hunk_mark_when_saving() {
         app.persisted_session_snapshot.files[&path].reviewed_hunks,
         expected
     );
+}
+
+#[test]
+fn should_refresh_symbolic_revision_range_in_place() {
+    let _reviews = TestReviewsDir::new();
+    let old = make_diff_file("a.rs", FileStatus::Modified, 1);
+    let unchanged = make_diff_file("a.rs", FileStatus::Modified, 1);
+    let added = make_diff_file("b.rs", FileStatus::Added, 2);
+    let vcs = ScriptedVcs::new();
+    vcs.push_resolved_range(ResolvedRevisionRange::from_owned_commit_ids(
+        vec!["c1".to_string(), "c2".to_string(), "c3".to_string()],
+        RevisionDiffTarget::CommitList,
+    ));
+    vcs.push_commit_range_diff(Ok(vec![unchanged.clone(), added.clone()]));
+    let mut app = build_app_with_scripted_vcs(vec![old.clone()], vcs);
+    app.session.add_diff_file(&old);
+    app.session
+        .get_file_mut(old.display_path())
+        .expect("old file registered")
+        .reviewed = true;
+    app.session.review_comments.push(crate::model::Comment::new(
+        "keep me".to_string(),
+        crate::model::CommentType::from_id("note"),
+        None,
+    ));
+    app.diff_source = DiffSource::CommitRange(vec!["c1".to_string(), "c2".to_string()]);
+    app.revision_review = Some(RevisionReview {
+        range: ResolvedRevisionRange::from_owned_commit_ids(
+            vec!["c1".to_string(), "c2".to_string()],
+            RevisionDiffTarget::CommitList,
+        ),
+        draft_paths: Vec::new(),
+        spec: Some("main..HEAD".to_string()),
+    });
+    app.review_commits = vec![make_commit_info("c2"), make_commit_info("c1")];
+    app.commit_selection_range = Some((0, 1));
+    app.session.commit_range = Some(vec!["c1".to_string(), "c2".to_string()]);
+
+    let refresh = app
+        .refresh_revision_range()
+        .expect("refresh should resolve and reload");
+
+    match refresh {
+        RevisionRefresh::Reloaded {
+            file_count,
+            invalidated,
+            added_commits,
+        } => {
+            assert_eq!(file_count, 2);
+            assert_eq!(invalidated, 0);
+            assert_eq!(added_commits, 1);
+        }
+        _ => panic!("expected a reloaded range"),
+    }
+    assert_eq!(
+        app.diff_source,
+        DiffSource::CommitRange(vec!["c1".to_string(), "c2".to_string(), "c3".to_string()])
+    );
+    assert!(
+        app.session.is_file_reviewed(&PathBuf::from("a.rs")),
+        "unchanged file lost its reviewed mark"
+    );
+    assert_eq!(app.session.review_comments.len(), 1, "comment was dropped");
+    assert_eq!(
+        app.session.commit_range,
+        Some(vec!["c1".to_string(), "c2".to_string(), "c3".to_string()])
+    );
+    assert_eq!(
+        app.review_commits.first().map(|commit| commit.id.as_str()),
+        Some("c3"),
+        "the commit selector did not learn the new head"
+    );
+    assert!(
+        app.diff_files
+            .iter()
+            .any(|file| file.display_path() == &PathBuf::from("b.rs")),
+        "new commit's file is missing from the refreshed diff"
+    );
+}
+
+#[test]
+fn should_reset_reviewed_mark_when_a_refreshed_file_changes() {
+    let _reviews = TestReviewsDir::new();
+    let old = make_diff_file("a.rs", FileStatus::Modified, 1);
+    let changed = make_diff_file("a.rs", FileStatus::Modified, 2);
+    let vcs = ScriptedVcs::new();
+    vcs.push_resolved_range(ResolvedRevisionRange::from_owned_commit_ids(
+        vec!["c1".to_string(), "c2".to_string(), "c3".to_string()],
+        RevisionDiffTarget::CommitList,
+    ));
+    vcs.push_commit_range_diff(Ok(vec![changed]));
+    let mut app = build_app_with_scripted_vcs(vec![old.clone()], vcs);
+    app.session.add_diff_file(&old);
+    app.session
+        .get_file_mut(old.display_path())
+        .expect("old file registered")
+        .reviewed = true;
+    app.diff_source = DiffSource::CommitRange(vec!["c1".to_string(), "c2".to_string()]);
+    app.revision_review = Some(RevisionReview {
+        range: ResolvedRevisionRange::from_owned_commit_ids(
+            vec!["c1".to_string(), "c2".to_string()],
+            RevisionDiffTarget::CommitList,
+        ),
+        draft_paths: Vec::new(),
+        spec: Some("main..HEAD".to_string()),
+    });
+    app.review_commits = vec![make_commit_info("c2"), make_commit_info("c1")];
+    app.commit_selection_range = Some((0, 1));
+
+    let refresh = app.refresh_revision_range().expect("refresh should reload");
+
+    match refresh {
+        RevisionRefresh::Reloaded {
+            invalidated,
+            added_commits,
+            ..
+        } => {
+            assert_eq!(invalidated, 1);
+            assert_eq!(added_commits, 1);
+        }
+        _ => panic!("expected a reloaded range"),
+    }
+    assert!(
+        !app.session.is_file_reviewed(&PathBuf::from("a.rs")),
+        "a changed file kept its reviewed mark"
+    );
+}
+
+#[test]
+fn should_report_an_unchanged_revision_range() {
+    let _reviews = TestReviewsDir::new();
+    let old = make_diff_file("a.rs", FileStatus::Modified, 1);
+    let vcs = ScriptedVcs::new();
+    vcs.push_resolved_range(ResolvedRevisionRange::from_owned_commit_ids(
+        vec!["c1".to_string(), "c2".to_string()],
+        RevisionDiffTarget::CommitList,
+    ));
+    let mut app = build_app_with_scripted_vcs(vec![old], vcs);
+    app.diff_source = DiffSource::CommitRange(vec!["c1".to_string(), "c2".to_string()]);
+    app.revision_review = Some(RevisionReview {
+        range: ResolvedRevisionRange::from_owned_commit_ids(
+            vec!["c1".to_string(), "c2".to_string()],
+            RevisionDiffTarget::CommitList,
+        ),
+        draft_paths: Vec::new(),
+        spec: Some("main..HEAD".to_string()),
+    });
+
+    let refresh = app
+        .refresh_revision_range()
+        .expect("refresh should resolve");
+
+    assert!(matches!(refresh, RevisionRefresh::Unchanged));
+}
+
+#[test]
+fn should_not_refresh_a_review_without_a_revision_expression() {
+    let _reviews = TestReviewsDir::new();
+    let old = make_diff_file("a.rs", FileStatus::Modified, 1);
+    let vcs = ScriptedVcs::new();
+    let mut app = build_app_with_scripted_vcs(vec![old], vcs);
+    app.diff_source = DiffSource::CommitRange(vec!["c1".to_string()]);
+
+    let refresh = app.refresh_revision_range().expect("no-op refresh");
+
+    assert!(matches!(refresh, RevisionRefresh::NotApplicable));
 }

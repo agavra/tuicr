@@ -1666,6 +1666,36 @@ fn reload_review(app: &mut App) {
             app.set_error(format!("Reload failed: {e}"));
         }
     } else {
+        match app.refresh_revision_range() {
+            Ok(app::RevisionRefresh::Reloaded {
+                file_count,
+                invalidated,
+                added_commits,
+            }) => {
+                let comment_suffix = match &comment_reload {
+                    Ok(added) if *added > 0 => format!(", loaded {added} external comments"),
+                    Ok(_) => String::new(),
+                    Err(e) => format!(", comment reload failed: {e}"),
+                };
+                let changed_suffix = if invalidated > 0 {
+                    format!(", {invalidated} changed since last review")
+                } else {
+                    String::new()
+                };
+                app.set_message(format!(
+                    "Refreshed the revision range: {file_count} files, {added_commits} new \
+                     commits{changed_suffix}{comment_suffix}"
+                ));
+                return;
+            }
+            // No re-resolution happened, but the reload still has to run: it
+            // refreshes `-r --file` drafts and any other on-disk input.
+            Ok(app::RevisionRefresh::Unchanged | app::RevisionRefresh::NotApplicable) => {}
+            Err(e) => {
+                app.set_error(format!("Reload failed: {e}"));
+                return;
+            }
+        }
         match app.reload_diff_files() {
             Ok((count, invalidated)) => {
                 let comment_suffix = match comment_reload {
