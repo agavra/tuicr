@@ -100,6 +100,7 @@ comments, and `comment_types` adds `**[ISSUE]**`-style tags ([docs/CONFIG.md](do
 - **Scripting saved reviews.** `tuicr review` lists, reads, adds and deletes comments without
   opening the TUI, for example
   `tuicr review add --session <slug> --target-file src/main.rs --line 42 "Handle the empty case"`.
+  Preview empty-session cleanup with `tuicr review prune --empty --dry-run`.
   See [docs/REVIEW_CLI.md](docs/REVIEW_CLI.md). Rust tools can use the
   [library API](docs/LIBRARY.md).
 

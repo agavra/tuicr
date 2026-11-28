@@ -70,6 +70,24 @@ If the user's intent is ambiguous, ask which workflow they want.
 The CLI works even if the agent is not running inside tmux, Zellij, or Herdr,
 so do not require a multiplexer just to connect to an existing active session.
 
+## Remove Saved Sessions
+
+Remove an explicitly named session with `tuicr review rm --session <slug-or-path>`.
+`rm` rejects an active session. Ask the user to close the owning TUI first.
+
+Preview bulk removal before applying it:
+
+```bash
+tuicr review prune --empty --repo /path/to/repo --dry-run
+tuicr review prune --older-than 30d --all --dry-run
+```
+
+`prune` skips active sessions in both modes. It checks which sessions match
+again when it runs, so the deletion can include sessions absent from the
+preview. Get approval for the scope and criterion before running without
+`--dry-run`. If approval covers only individual reviews, use `rm` for those
+sessions.
+
 ## Start A Session
 
 When the user needs an interactive tuicr pane and no active session exists:
